@@ -117,6 +117,18 @@ _last_output_path  = [None]        # main()이 저장한 최종 출력 경로
 _last_date_str     = [None]        # main()이 사용한 날짜 문자열
 _preloaded_inputs  = [None]        # EXE 흐름에서 main() 호출 전에 미리 수집한 입력값
 
+# ─── UI 테마 (brokenbaykcc.org Look & Feel) ─────────────────────────────────
+_UI = {
+    'bg':       '#ffffff',
+    'fg':       '#2c2c2c',
+    'primary':  '#871b24',
+    'pri_dark': '#59001d',
+    'fg_light': '#ffffff',
+    'font':     'Malgun Gothic',
+    'font_sz':  10,
+    'font_h':   11,
+}
+
 _ICON_PATH = Path(r'C:\Users\Scott\OneDrive\Photos_OneDrive\Misc\성당 로고 아이콘.PNG')
 _icon_image = [None]  # PhotoImage를 GC로부터 보호하기 위해 캐시
 
@@ -142,6 +154,41 @@ def _set_window_icon(root):
     except Exception:
 
         pass
+
+
+
+def _apply_theme(root):
+    """창 전체에 brokenbaykcc.org 색상·폰트(Malgun Gothic / #871b24)를 적용한다."""
+    root.configure(bg=_UI['bg'])
+    root.option_add('*Background',              _UI['bg'])
+    root.option_add('*Foreground',              _UI['fg'])
+    root.option_add('*Font',                    f'{{{_UI["font"]}}} {_UI["font_sz"]}')
+    root.option_add('*Label.background',        _UI['bg'])
+    root.option_add('*Label.foreground',        _UI['fg'])
+    root.option_add('*Frame.background',        _UI['bg'])
+    root.option_add('*Entry.background',        _UI['bg'])
+    root.option_add('*Entry.foreground',        _UI['fg'])
+    root.option_add('*Entry.relief',            'solid')
+    root.option_add('*Entry.borderWidth',       1)
+    root.option_add('*Button.background',       _UI['primary'])
+    root.option_add('*Button.foreground',       _UI['fg_light'])
+    root.option_add('*Button.font',             f'{{{_UI["font"]}}} {_UI["font_sz"]} bold')
+    root.option_add('*Button.relief',           'flat')
+    root.option_add('*Button.cursor',           'hand2')
+    root.option_add('*Button.padX',             10)
+    root.option_add('*Button.padY',             4)
+    root.option_add('*Button.activeBackground', _UI['pri_dark'])
+    root.option_add('*Button.activeForeground', _UI['fg_light'])
+
+
+def _center_window(root):
+    """창을 화면 정중앙에 배치한다."""
+    root.update_idletasks()
+    w = root.winfo_reqwidth()
+    h = root.winfo_reqheight()
+    sw = root.winfo_screenwidth()
+    sh = root.winfo_screenheight()
+    root.geometry(f'+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 2)}')
 
 
 
@@ -334,7 +381,7 @@ def parse_args():
 
 
 
-def _ask_numbers_popup(defaults: dict, pos=None) -> dict:
+def _ask_numbers_popup(defaults: dict) -> dict:
 
     import tkinter as tk
 
@@ -342,21 +389,15 @@ def _ask_numbers_popup(defaults: dict, pos=None) -> dict:
 
     root = tk.Tk()
 
+    root.withdraw()
+
     root.title('성가 번호 입력')
 
     root.resizable(False, False)
 
-    if pos and pos[0] is not None:
-
-        root.geometry(f'360x300+{pos[0]}+{pos[1]}')
-
-    else:
-
-        root.geometry('360x300')
-
     _set_window_icon(root)
 
-
+    _apply_theme(root)
 
     frame = tk.Frame(root, padx=24, pady=16)
 
@@ -374,7 +415,7 @@ def _ask_numbers_popup(defaults: dict, pos=None) -> dict:
 
         tk.Label(frame, text=label).grid(row=i, column=0, sticky='w', pady=6)
 
-        entry = tk.Entry(frame, width=10)
+        entry = tk.Entry(frame, width=6)
 
         entry.grid(row=i, column=1, sticky='w', pady=6, padx=(8, 0))
 
@@ -414,6 +455,18 @@ def _ask_numbers_popup(defaults: dict, pos=None) -> dict:
 
     )
 
+    root.update_idletasks()
+
+    _w, _h = 280, root.winfo_reqheight()
+
+    _sw, _sh = root.winfo_screenwidth(), root.winfo_screenheight()
+
+    root.geometry(f'{_w}x{_h}+{max(0,(_sw-_w)//2)}+{max(0,(_sh-_h)//2)}')
+
+    root.deiconify()
+
+    root.after(50, lambda: entries['입당'].focus_set())
+
     root.mainloop()
 
     return result
@@ -442,13 +495,15 @@ def _ask_date_popup() -> str:
 
     root = tk.Tk()
 
-    root.title('미사 일자 입력')
+    root.withdraw()
 
-    root.geometry('320x160')
+    root.title('미사 일자 입력')
 
     root.resizable(False, False)
 
     _set_window_icon(root)
+
+    _apply_theme(root)
 
 
 
@@ -492,6 +547,10 @@ def _ask_date_popup() -> str:
 
     tk.Button(frame, text='확인', command=on_ok, width=10).pack()
 
+    _center_window(root)
+
+    root.deiconify()
+
     root.mainloop()
 
 
@@ -519,11 +578,15 @@ def _ask_input_files_popup() -> dict:
 
     root = tk.Tk()
 
+    root.withdraw()
+
     root.title('입력 파일 선택')
 
     root.resizable(False, False)
 
     _set_window_icon(root)
+
+    _apply_theme(root)
 
 
 
@@ -581,7 +644,7 @@ def _ask_input_files_popup() -> dict:
 
                 v.set(path)
 
-        tk.Button(frame, text='찾아보기', command=_browse).grid(
+        tk.Button(frame, text='찾아보기', command=_browse, pady=0).grid(
 
             row=i, column=2, pady=6
 
@@ -635,7 +698,9 @@ def _ask_input_files_popup() -> dict:
 
     )
 
+    _center_window(root)
 
+    root.deiconify()
 
     root.mainloop()
 
@@ -672,11 +737,15 @@ def _ask_combined_input_popup() -> tuple:
 
     root = tk.Tk()
 
+    root.withdraw()
+
     root.title(DIALOG_TITLE)
 
     root.resizable(False, False)
 
     _set_window_icon(root)
+
+    _apply_theme(root)
 
 
 
@@ -698,8 +767,6 @@ def _ask_combined_input_popup() -> tuple:
     date_entry = tk.Entry(frame, textvariable=date_var, width=20)
 
     date_entry.grid(row=0, column=1, sticky='w', pady=(6, 20), padx=(8, 6), columnspan=2)
-
-    date_entry.focus_set()
 
 
 
@@ -738,13 +805,15 @@ def _ask_combined_input_popup() -> tuple:
 
         def _browse(v=var):
 
+            root.focus_set()
+
             path = filedialog.askopenfilename(parent=root, filetypes=PPTX_TYPES)
 
             if path:
 
                 v.set(path)
 
-        tk.Button(frame, text='찾아보기', command=_browse).grid(row=r, column=2, pady=6)
+        tk.Button(frame, text='찾아보기', command=_browse, pady=0).grid(row=r, column=2, pady=6)
 
 
 
@@ -836,24 +905,11 @@ def _ask_combined_input_popup() -> tuple:
 
 
 
-    # 화면 중앙 배치
-    root.update_idletasks()
+    _center_window(root)
 
-    sw = root.winfo_screenwidth()
+    root.deiconify()
 
-    sh = root.winfo_screenheight()
-
-    w = root.winfo_reqwidth()
-
-    h = root.winfo_reqheight()
-
-    x = max(0, (sw - w) // 2)
-
-    y = max(0, (sh - h) // 2)
-
-    root.geometry(f'+{x}+{y}')
-
-
+    root.after(50, date_entry.focus_set)
 
     root.mainloop()
 
@@ -907,19 +963,15 @@ def _run_with_progress_window(main_func):
 
     root = tk.Tk()
 
+    root.withdraw()
+
     root.title('처리 중...')
 
     root.resizable(False, False)
 
-    if _first_dialog_pos[0] is not None:
-
-        root.geometry(f'420x150+{_first_dialog_pos[0]}+{_first_dialog_pos[1]}')
-
-    else:
-
-        root.geometry('420x150')
-
     _set_window_icon(root)
+
+    _apply_theme(root)
 
 
 
@@ -931,13 +983,33 @@ def _run_with_progress_window(main_func):
 
     label_var = tk.StringVar(value='시작 중...')
 
-    tk.Label(frame, textvariable=label_var, font=('', 10), anchor='w').pack(
+    tk.Label(frame, textvariable=label_var, anchor='w').pack(
 
         fill='x', pady=(0, 6)
 
     )
 
-    pbar = ttk.Progressbar(frame, length=380, mode='determinate', maximum=100)
+    _pb_style = ttk.Style()
+
+    _pb_style.theme_use('default')
+
+    _pb_style.configure(
+
+        'KCC.Horizontal.TProgressbar',
+
+        background=_UI['primary'],
+
+        troughcolor='#e8e8e8',
+
+        bordercolor=_UI['bg'],
+
+        lightcolor=_UI['primary'],
+
+        darkcolor=_UI['primary'],
+
+    )
+
+    pbar = ttk.Progressbar(frame, style='KCC.Horizontal.TProgressbar', length=380, mode='determinate', maximum=100)
 
     pbar.pack()
 
@@ -1005,6 +1077,8 @@ def _run_with_progress_window(main_func):
 
     polling = [True]
 
+    _after_id = [None]
+
     def poll():
 
         if not polling[0]:
@@ -1025,6 +1099,18 @@ def _run_with_progress_window(main_func):
 
                 _, text, err = item
 
+                polling[0] = False
+
+                if _after_id[0]:
+
+                    try:
+
+                        root.after_cancel(_after_id[0])
+
+                    except Exception:
+
+                        pass
+
                 pbar['value'] = 100
 
                 pct_var.set('100%')
@@ -1036,8 +1122,6 @@ def _run_with_progress_window(main_func):
                 result[1] = err
 
                 def _close():
-
-                    polling[0] = False
 
                     try:
 
@@ -1067,7 +1151,7 @@ def _run_with_progress_window(main_func):
 
             try:
 
-                root.after(80, poll)
+                _after_id[0] = root.after(80, poll)
 
             except Exception:
 
@@ -1075,7 +1159,11 @@ def _run_with_progress_window(main_func):
 
 
 
-    root.after(80, poll)
+    _center_window(root)
+
+    root.deiconify()
+
+    _after_id[0] = root.after(80, poll)
 
     root.mainloop()
 
@@ -5049,13 +5137,17 @@ def _show_result_window(title: str, text: str, is_error: bool = False) -> None:
 
     root = tk.Tk()
 
+    root.withdraw()
+
     root.title(title)
 
-    root.geometry('750x480')
+    root.minsize(750, 480)
 
     root.resizable(True, True)
 
     _set_window_icon(root)
+
+    _apply_theme(root)
 
 
 
@@ -5065,11 +5157,11 @@ def _show_result_window(title: str, text: str, is_error: bool = False) -> None:
 
 
 
-    bg_color = '#fff0f0' if is_error else '#f0fff0'
+    bg_color = '#fff0f0' if is_error else '#f9f9f9'
 
     text_widget = _st_mod.ScrolledText(
 
-        frame, wrap=tk.WORD, font=('Consolas', 10), bg=bg_color
+        frame, wrap=tk.WORD, font=('Consolas', 11), bg=bg_color, fg=_UI['fg']
 
     )
 
@@ -5113,7 +5205,9 @@ def _show_result_window(title: str, text: str, is_error: bool = False) -> None:
 
             btn_frame, text='파일 열기', command=open_file,
 
-            bg='#2980b9', fg='white', font=('Arial', 10, 'bold'), width=12
+            bg=_UI['primary'], fg=_UI['fg_light'],
+
+            font=(_UI['font'], _UI['font_sz'], 'bold'), width=12, relief='flat', cursor='hand2'
 
         ).pack(side=tk.LEFT, padx=6)
 
@@ -5121,23 +5215,29 @@ def _show_result_window(title: str, text: str, is_error: bool = False) -> None:
 
             btn_frame, text='폴더 열기', command=open_folder,
 
-            bg='#8e44ad', fg='white', font=('Arial', 10, 'bold'), width=12
+            bg='#546ea3', fg=_UI['fg_light'],
+
+            font=(_UI['font'], _UI['font_sz'], 'bold'), width=12, relief='flat', cursor='hand2'
 
         ).pack(side=tk.LEFT, padx=6)
 
 
 
-    btn_color = '#c0392b' if is_error else '#27ae60'
+    btn_color = '#c0392b' if is_error else _UI['primary']
 
     tk.Button(
 
         btn_frame, text='닫기', command=root.destroy,
 
-        bg=btn_color, fg='white', font=('Arial', 11, 'bold'), width=14
+        bg=btn_color, fg=_UI['fg_light'],
+
+        font=(_UI['font'], _UI['font_sz'], 'bold'), width=14, relief='flat', cursor='hand2'
 
     ).pack(side=tk.LEFT, padx=6)
 
+    _center_window(root)
 
+    root.deiconify()
 
     root.mainloop()
 
@@ -5167,7 +5267,7 @@ if __name__ == '__main__':
 
         try:
 
-            _hymn_numbers = _ask_numbers_popup({}, pos=tuple(_first_dialog_pos))
+            _hymn_numbers = _ask_numbers_popup({})
 
         except RuntimeError:
 
