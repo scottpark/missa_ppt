@@ -100,7 +100,7 @@ PresentationPart._next_slide_partname = _safe_next_slide_partname
 
 
 
-CHARS_PER_LINE = 25   # 32pt 바탕체 24.6cm 텍스트박스 기준 약 25자/줄 (소스 줄 단위)
+CHARS_PER_LINE = 27   # 32pt 바탕체 24.8cm 텍스트박스 실측 기준 약 27자/줄
 
 LINES_PER_SLIDE = 9
 
@@ -2551,10 +2551,38 @@ def parse_into_verse_units(content: str) -> list:
 
 
 def _visual_lines(text: str) -> int:
-
+    """문자 수 기반 줄 수 추정 (영성체송 높이 조정 등 레이아웃 외 용도 전용)."""
     return max(1, (len(text) + CHARS_PER_LINE - 1) // CHARS_PER_LINE)
 
 
+def _wrap_line_count(text: str) -> int:
+    """단어 경계 word-wrap 시뮬레이션으로 줄 수 계산.
+
+    layout_units_on_slides의 청킹 로직과 동일하므로 1 dl = 1줄이 보장된다.
+    독서·복음 슬라이드 줄 수 계산에 사용한다.
+    """
+    if not text.strip():
+        return 0
+    count = 0
+    pos = 0
+    n = len(text)
+    while pos < n:
+        end = pos + CHARS_PER_LINE
+        if end >= n:
+            pos = n
+        else:
+            space = text.rfind(' ', pos, end + 1)
+            if space > pos:
+                pos = space + 1
+            else:
+                pos = end
+        count += 1
+    return count
+
+
+def _page_visual_lines(page: list) -> int:
+    """display_lines 리스트의 시각적 줄 수 — dl 1개 = 1줄."""
+    return len(page)
 
 
 
@@ -2700,25 +2728,82 @@ def layout_units_on_slides(units: list) -> list:
 
             first_dl = False
 
-    # 시각적 줄 수 기반으로 슬라이드 분배 (각 display_line의 실제 화면 줄 수 합산)
+    # dl 1개 = 시각적 1줄 (단어 경계 분리 기준)
+    # _visual_lines 기반 추정 대신 dl 개수로 직접 분배
     slides = []
     current_slide = []
-    current_lines = 0
+
     for dl in display_lines:
-        dl_lines = _visual_lines(dl['text'])
-        if current_lines + dl_lines > LINES_PER_SLIDE and current_slide:
+        if len(current_slide) >= LINES_PER_SLIDE:
             slides.append(current_slide)
-            current_slide = [dl]
-            current_lines = dl_lines
-        else:
-            current_slide.append(dl)
-            current_lines += dl_lines
+            current_slide = []
+        current_slide.append(dl)
+
     if current_slide:
         slides.append(current_slide)
 
     return slides if slides else [[]]
 
 
+
+def _verify_and_rebalance_pages(pages: list, label: str) -> list:
+    """layout_units_on_slides() 결과를 검증하고 줄 수 이상 슬라이드를 재조정.
+
+    - 비마지막 슬라이드가 LINES_PER_SLIDE 초과 → 마지막 dl들을 다음 슬라이드로 이동
+    - 비마지막 슬라이드가 LINES_PER_SLIDE 미만 → 다음 슬라이드 앞 dl들을 흡수 시도
+    - 마지막 슬라이드는 어떤 줄 수여도 건드리지 않음
+    """
+    i = 0
+    while i < len(pages):
+        lines = _page_visual_lines(pages[i])
+        is_last = (i == len(pages) - 1)
+
+        if lines > LINES_PER_SLIDE:
+            if len(pages[i]) > 1:
+                moved = []
+                while _page_visual_lines(pages[i]) > LINES_PER_SLIDE and len(pages[i]) > 1:
+                    moved.insert(0, pages[i].pop())
+                if i + 1 < len(pages):
+                    pages[i + 1] = moved + pages[i + 1]
+                else:
+                    pages.append(moved)
+                new_lines = _page_visual_lines(pages[i])
+                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 ({len(moved)}개 항목 다음 슬라이드로 이동)')
+                continue  # 현재 슬라이드 재검사
+            else:
+                print(f'  [{label}] 경고 슬라이드 {i+1}: {lines}줄 (항목 1개라 분리 불가)')
+
+        elif not is_last and lines < LINES_PER_SLIDE:
+            absorbed = 0
+            while i + 1 < len(pages) and pages[i + 1]:
+                test = pages[i] + [pages[i + 1][0]]
+                if _page_visual_lines(test) <= LINES_PER_SLIDE:
+                    pages[i].append(pages[i + 1].pop(0))
+                    absorbed += 1
+                    if not pages[i + 1]:
+                        pages.pop(i + 1)
+                        break
+                else:
+                    break
+            if absorbed:
+                new_lines = _page_visual_lines(pages[i])
+                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 ({absorbed}개 항목 흡수)')
+
+        i += 1
+
+    # 최종 검증 보고
+    issues = []
+    for i, page in enumerate(pages):
+        lines = _page_visual_lines(page)
+        is_last = (i == len(pages) - 1)
+        if lines > LINES_PER_SLIDE:
+            issues.append(f'슬라이드 {i+1}: {lines}줄 (분리 불가)')
+        elif not is_last and lines < LINES_PER_SLIDE:
+            issues.append(f'슬라이드 {i+1}: {lines}줄 (흡수 불가)')
+    if issues:
+        print(f'  [{label}] 미해결 이슈: {", ".join(issues)}')
+
+    return pages
 
 
 
@@ -3059,12 +3144,98 @@ def _set_reading_text(tf, units: list, line_spacing: float = None):
 
 
 
+def _count_slide_lines(slide) -> int:
+    """슬라이드 본문 shape의 시각적 줄 수 계산 (word-wrap 시뮬레이션 기준)."""
+    shape = _find_content_shape(slide)
+    if shape is None:
+        return 0
+    return sum(
+        _wrap_line_count(para.text)
+        for para in shape.text_frame.paragraphs
+        if para.text.strip()
+    )
+
+
+def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int, label: str) -> None:
+    """독서/복음 본문 슬라이드 기록 후 실제 줄 수 검증 및 재조정.
+
+    비마지막 슬라이드가 LINES_PER_SLIDE 미만(7·8줄) 또는 초과(10줄 이상)이면
+    인접 슬라이드와 단락을 이동하여 LINES_PER_SLIDE에 맞춤.
+    마지막 슬라이드는 건드리지 않음.
+    """
+    if n_content < 2:
+        return
+
+    def _content_paras(slide):
+        shape = _find_content_shape(slide)
+        if shape is None:
+            return []
+        return [p for p in shape.text_frame.paragraphs if p.text.strip()]
+
+    def _get_txBody(slide):
+        shape = _find_content_shape(slide)
+        return shape.text_frame._txBody if shape else None
+
+    changed = True
+    while changed:
+        changed = False
+        for i in range(n_content - 1):  # 마지막 슬라이드 제외
+            cur_slide = prs.slides[content_start + i]
+            nxt_slide = prs.slides[content_start + i + 1]
+            lines = _count_slide_lines(cur_slide)
+
+            if lines == LINES_PER_SLIDE:
+                continue
+
+            if lines > LINES_PER_SLIDE:
+                # 마지막 단락을 다음 슬라이드 앞으로 이동
+                cur_paras = _content_paras(cur_slide)
+                if len(cur_paras) <= 1:
+                    print(f'  [{label}] 경고 슬라이드 {i+1}: {lines}줄 (단락 1개, 분리 불가)')
+                    continue
+                p_elem = cur_paras[-1]._p
+                cur_txBody = _get_txBody(cur_slide)
+                nxt_txBody = _get_txBody(nxt_slide)
+                cur_txBody.remove(p_elem)
+                first_nxt_p = nxt_txBody.find(qn('a:p'))
+                if first_nxt_p is not None:
+                    first_nxt_p.addprevious(p_elem)
+                else:
+                    nxt_txBody.append(p_elem)
+                new_lines = _count_slide_lines(cur_slide)
+                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (마지막 단락 → 다음 슬라이드)')
+                changed = True
+
+            else:  # lines < LINES_PER_SLIDE
+                # 다음 슬라이드의 첫 단락을 이 슬라이드로 흡수
+                nxt_paras = _content_paras(nxt_slide)
+                if len(nxt_paras) <= 1:
+                    continue  # 다음 슬라이드가 빈 슬라이드가 됨 → 건드리지 않음
+                first_para_text = nxt_paras[0].text
+                if lines + _visual_lines(first_para_text) > LINES_PER_SLIDE:
+                    continue  # 흡수 시 9줄 초과
+                p_elem = nxt_paras[0]._p
+                nxt_txBody = _get_txBody(nxt_slide)
+                cur_txBody = _get_txBody(cur_slide)
+                nxt_txBody.remove(p_elem)
+                cur_all_p = cur_txBody.findall(qn('a:p'))
+                if cur_all_p:
+                    cur_all_p[-1].addnext(p_elem)
+                else:
+                    cur_txBody.append(p_elem)
+                new_lines = _count_slide_lines(cur_slide)
+                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (다음 슬라이드 첫 단락 흡수)')
+                changed = True
+
+
 
 def replace_reading_slides(prs, content_start: int, content_end: int,
 
                             units_pages: list, template_idx: int,
 
-                            line_spacing: float = None, merge_threshold: int = 5) -> int:
+                            line_spacing: float = None, merge_threshold: int = 5,
+
+                            label: str = '') -> int:
 
     """
 
@@ -3144,6 +3315,10 @@ def replace_reading_slides(prs, content_start: int, content_end: int,
 
 
 
+    # 기록 후 실제 줄 수 검증 및 재조정 (비마지막 슬라이드 7·8·10줄 → 9줄)
+    if needed > 1:
+        _rebalance_reading_slides_post_write(prs, content_start, needed, label)
+
     # 종료 슬라이드의 본문 텍스트박스 비우기 (참조 PPT 잔여 내용 제거)
 
     for i in range(content_start + needed, content_start + needed + n_ending):
@@ -3160,7 +3335,7 @@ def replace_reading_slides(prs, content_start: int, content_end: int,
 
     # 마지막 본문 슬라이드의 줄 수가 merge_threshold 이하이면 ending shape를 본문 슬라이드로 통합
     if n_ending > 0 and units_pages and needed > 0:
-        last_page_lines = sum(_visual_lines(u['text']) for u in units_pages[-1])
+        last_page_lines = _page_visual_lines(units_pages[-1])
         if last_page_lines <= merge_threshold:
             ENDING_KW = ('주님의 말씀입니다', '◎ 하느님', '◎ 그리스도님')
             ending_slide_idx = content_start + needed
@@ -3347,7 +3522,7 @@ def _reposition_merged_ending_shapes(prs, sections: dict):
 
                 if text:
 
-                    line_count += _visual_lines(text)
+                    line_count += _wrap_line_count(text)
 
             if line_count == 0:
 
@@ -3655,7 +3830,7 @@ def update_화답송(prs, json_data: dict, sections: dict, 화답송_pptx_path):
 
         for k in range(needed - cur_total):
 
-            tmpl = start if k % 2 == 0 else text_tmpl
+            tmpl = start if (cur_total + k) % 2 == 0 else text_tmpl
 
             insert_slide_copy(prs, cur_end + k, tmpl)
 
@@ -3734,6 +3909,8 @@ def update_화답송(prs, json_data: dict, sections: dict, 화답송_pptx_path):
                     if t and '화 답 송' not in t and '전례문' not in t and 'Responsorial' not in t:
 
                         _set_single_para_text(shape.text_frame, verse_text)
+
+                        _adjust_fit_if_needed(prs.slides[idx], shape, prs)
 
                         break
 
@@ -3931,8 +4108,281 @@ def update_복음환호송(prs, json_data: dict, sections: dict):
 
                     txBody.append(new_p)
 
+            _adjust_fit_if_needed(slide, shape, prs)
+
             break
 
+
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 텍스트 오버플로우 자동 조정
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+
+def _find_last_row_top(slide, prs) -> int:
+
+    """슬라이드·레이아웃·마스터에서 전례문 텍스트 상단 위치 반환 (없으면 슬라이드 높이)."""
+
+    LAST_ROW_KW = ('전례문', '한국천주교', '©')
+
+    best = prs.slide_height
+
+    sources = [slide.shapes]
+
+    try:
+
+        sources.append(slide.slide_layout.shapes)
+
+    except Exception:
+
+        pass
+
+    try:
+
+        sources.append(slide.slide_layout.slide_master.shapes)
+
+    except Exception:
+
+        pass
+
+    for shapes in sources:
+
+        for shape in shapes:
+
+            if not hasattr(shape, 'text_frame'):
+
+                continue
+
+            try:
+
+                t = shape.text_frame.text
+
+            except Exception:
+
+                continue
+
+            if any(kw in t for kw in LAST_ROW_KW):
+
+                best = min(best, shape.top)
+
+    return best
+
+
+
+
+def _shape_first_run_font_size_emu(shape) -> int:
+
+    """도형 첫 번째 run 폰트 크기 (EMU). 없으면 32pt."""
+
+    for para in shape.text_frame.paragraphs:
+
+        for run in para.runs:
+
+            if run.font.size:
+
+                return run.font.size
+
+    return int(32 * 12700)
+
+
+
+
+def _shape_first_para_line_spacing_pct(shape) -> int:
+
+    """도형 첫 번째 단락 줄간격 (spcPct 단위). 없으면 100000 (= 100%)."""
+
+    for para in shape.text_frame.paragraphs:
+
+        pPr = para._p.find(qn('a:pPr'))
+
+        if pPr is None:
+
+            continue
+
+        lnSpc = pPr.find(qn('a:lnSpc'))
+
+        if lnSpc is None:
+
+            continue
+
+        el = lnSpc.find(qn('a:spcPct'))
+
+        if el is not None:
+
+            return int(el.get('val', '100000'))
+
+    return 100000
+
+
+
+
+def _set_shape_all_para_line_spacing(shape, spc_pct: int):
+
+    """도형 모든 단락 줄간격을 배수(spcPct) 형식으로 설정."""
+
+    from pptx.oxml import parse_xml as pptx_parse_xml
+
+    A_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+
+    for para in shape.text_frame.paragraphs:
+
+        pPr = para._p.find(qn('a:pPr'))
+
+        if pPr is None:
+
+            pPr = pptx_parse_xml(f'<a:pPr xmlns:a="{A_NS}"/>')
+
+            para._p.insert(0, pPr)
+
+        for old in pPr.findall(qn('a:lnSpc')):
+
+            pPr.remove(old)
+
+        pPr.insert(0, pptx_parse_xml(
+
+            f'<a:lnSpc xmlns:a="{A_NS}"><a:spcPct val="{spc_pct}"/></a:lnSpc>'
+
+        ))
+
+
+
+
+def _set_shape_all_run_font_size(shape, font_size_pt: float):
+
+    """도형 모든 run 폰트 크기 설정 (pt)."""
+
+    sz = str(int(font_size_pt * 100))
+
+    for para in shape.text_frame.paragraphs:
+
+        for run in para.runs:
+
+            rPr = run._r.find(qn('a:rPr'))
+
+            if rPr is not None:
+
+                rPr.set('sz', sz)
+
+
+
+
+def _estimate_text_lines(text: str, font_size_emu: int, box_width_emu: int) -> int:
+
+    """단어 경계 줄바꿈 시뮬레이션으로 추정 줄 수 반환."""
+
+    font_pt = font_size_emu / 12700
+
+    # 한국어 문자 평균 너비: em 크기의 약 0.92배 (전각 문자 기준)
+
+    chars_per_line = max(1.0, (box_width_emu / 12700) / (font_pt * 0.92))
+
+    total = 0
+
+    for para_text in text.split('\n'):
+
+        if not para_text.strip():
+
+            total += 1
+
+            continue
+
+        words = para_text.split(' ')
+
+        lines = 1
+
+        cur = 0.0
+
+        for i, word in enumerate(words):
+
+            wl = len(word) + (1 if i > 0 else 0)
+
+            if cur + wl > chars_per_line and cur > 0:
+
+                lines += 1
+
+                cur = float(len(word))
+
+            else:
+
+                cur += wl
+
+        total += lines
+
+    return max(1, total)
+
+
+
+
+def _adjust_fit_if_needed(slide, content_shape, prs):
+
+    """텍스트가 전례문 줄 또는 슬라이드 마스터 텍스트와 겹치면 자동 조정.
+
+    (a) 줄간격을 배수 1.0으로 변경하고 검증.
+
+    (b) 그래도 겹치면 폰트 크기를 단계적으로 축소.
+
+    """
+
+    boundary = _find_last_row_top(slide, prs)
+
+    available = boundary - content_shape.top
+
+    if available <= 0:
+
+        return
+
+    font_emu = _shape_first_run_font_size_emu(content_shape)
+
+    spc_pct = _shape_first_para_line_spacing_pct(content_shape)
+
+    text = content_shape.text_frame.text
+
+    box_w = content_shape.width
+
+    font_pt = font_emu / 12700
+
+    num_lines = _estimate_text_lines(text, font_emu, box_w)
+
+    est_h = int(num_lines * font_pt * (spc_pct / 100000) * 12700)
+
+    if est_h <= available:
+
+        return
+
+    # (a) 줄간격을 배수 1.0으로 변경
+
+    _set_shape_all_para_line_spacing(content_shape, 100000)
+
+    est_h = int(num_lines * font_pt * 12700)
+
+    if est_h <= available:
+
+        print(f'    [높이조정] 줄간격 → 배수 1.0 (줄수={num_lines}, 추정={est_h//12700:.0f}pt)')
+
+        return
+
+    # (b) 폰트 크기 단계적 축소
+
+    while font_pt > 16:
+
+        font_pt -= 1
+
+        num_lines = _estimate_text_lines(text, int(font_pt * 12700), box_w)
+
+        est_h = int(num_lines * font_pt * 12700)
+
+        if est_h <= available:
+
+            break
+
+    _set_shape_all_run_font_size(content_shape, font_pt)
+
+    print(f'    [높이조정] 줄간격 1.0 + 폰트 {font_pt:.0f}pt (줄수={num_lines}, 추정={est_h//12700:.0f}pt)')
 
 
 
@@ -3968,6 +4418,8 @@ def update_영성체송(prs, json_data: dict, sections: dict):
         if t and '영성체송' not in t and '전례문' not in t and 'COMMUNION' not in t:
 
             _set_single_para_text(shape.text_frame, content)
+
+            _adjust_fit_if_needed(slide, shape, prs)
 
             break
 
@@ -4899,11 +5351,13 @@ def main():
 
         pages = layout_units_on_slides(units)
 
+        pages = _verify_and_rebalance_pages(pages, '제1독서')
+
         shift = replace_reading_slides(
 
             prs, sec['제1독서_start'], sec['제1독서_end'],
 
-            pages, sec['제1독서_start'], line_spacing=1.1
+            pages, sec['제1독서_start'], line_spacing=1.1, label='제1독서'
 
         )
 
@@ -4951,11 +5405,13 @@ def main():
 
             pages = layout_units_on_slides(units)
 
+            pages = _verify_and_rebalance_pages(pages, '제2독서')
+
             shift = replace_reading_slides(
 
                 prs, sec['제2독서_start'], sec['제2독서_end'],
 
-                pages, sec['제2독서_start']
+                pages, sec['제2독서_start'], label='제2독서'
 
             )
 
@@ -5001,11 +5457,13 @@ def main():
 
         pages = layout_units_on_slides(units)
 
+        pages = _verify_and_rebalance_pages(pages, '복음')
+
         shift = replace_reading_slides(
 
             prs, sec['복음_start'], sec['복음_end'],
 
-            pages, sec['복음_start']
+            pages, sec['복음_start'], label='복음'
 
         )
 
