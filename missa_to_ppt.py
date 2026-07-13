@@ -341,6 +341,10 @@ def parse_args():
 
                         help='화답송 악보 PPT 경로 (기본: 날짜 폴더의 화답송 악보.pptx)')
 
+    parser.add_argument('--미사후기도', dest='미사후기도', type=str, default=None,
+
+                        help='미사 후 기도 PPT 경로 (평일미사 전용)')
+
     parser.add_argument('--test', action='store_true', help='팝업 없이 폴더 파일로 번호 자동 추론')
 
     args = parser.parse_args()
@@ -375,8 +379,16 @@ def parse_args():
 
 
 
-    return args.date, numbers, args.화답송_pptx
+    return args.date, numbers, args.화답송_pptx, getattr(args, '미사후기도', None)
 
+
+
+
+
+def is_sunday_mass(date_str: str) -> bool:
+    """날짜 문자열(YYYYMMDD)이 일요일이면 True."""
+    from datetime import datetime
+    return datetime.strptime(date_str, '%Y%m%d').weekday() == 6
 
 
 
@@ -602,11 +614,13 @@ def _ask_input_files_popup() -> dict:
 
     rows = [
 
-        ('ref_pptx',    '참조 미사 PPT  *', True),
+        ('ref_pptx',    '참조 미사 PPT  *',  True),
 
-        ('시작기도',    '시작기도 PPT',     False),
+        ('화답송_pptx', '화답송 악보 PPT',   False),
 
-        ('화답송_pptx', '화답송 악보 PPT *', True),
+        ('시작기도',    '시작기도 PPT',      False),
+
+        ('미사후기도',  '미사 후 기도 PPT',  False),
 
     ]
 
@@ -660,29 +674,27 @@ def _ask_input_files_popup() -> dict:
 
         ref = vars_['ref_pptx'].get()
 
-        화답송 = vars_['화답송_pptx'].get()
-
         if not ref:
 
             messagebox.showwarning('입력 오류', '참조 미사 PPT를 선택해 주세요.', parent=root)
 
             return
 
-        if not 화답송:
-
-            messagebox.showwarning('입력 오류', '화답송 악보 PPT를 선택해 주세요.', parent=root)
-
-            return
+        화답송 = vars_['화답송_pptx'].get()
 
         시작기도 = vars_['시작기도'].get()
+
+        미사후기도 = vars_['미사후기도'].get()
 
         result[0] = {
 
             'ref_pptx':    Path(ref),
 
+            '화답송_pptx': Path(화답송) if 화답송 else None,
+
             '시작기도':    Path(시작기도) if 시작기도 else None,
 
-            '화답송_pptx': Path(화답송),
+            '미사후기도':  Path(미사후기도) if 미사후기도 else None,
 
             '성가':        {},
 
@@ -775,9 +787,11 @@ def _ask_combined_input_popup() -> tuple:
 
         ('ref_pptx',    '참조 미사 PPT  *',  True),
 
+        ('화답송_pptx', '화답송 악보 PPT',   False),
+
         ('시작기도',    '시작기도 PPT',      False),
 
-        ('화답송_pptx', '화답송 악보 PPT *', True),
+        ('미사후기도',  '미사 후 기도 PPT',  False),
 
     ]
 
@@ -841,21 +855,31 @@ def _ask_combined_input_popup() -> tuple:
 
         ref = vars_['ref_pptx'].get()
 
-        화답송 = vars_['화답송_pptx'].get()
-
         if not ref:
 
             messagebox.showwarning('입력 오류', '참조 미사 PPT를 선택해 주세요.', parent=root)
 
             return
 
-        if not 화답송:
+        화답송 = vars_['화답송_pptx'].get()
 
-            messagebox.showwarning('입력 오류', '화답송 악보 PPT를 선택해 주세요.', parent=root)
+        if not 화답송 and is_sunday_mass(date_val):
 
-            return
+            if not messagebox.askyesno(
+
+                '확인',
+
+                '주일미사인데 화답송 악보 PPT가 선택되지 않았습니다.\n계속하시겠습니까?',
+
+                parent=root,
+
+            ):
+
+                return
 
         시작기도 = vars_['시작기도'].get()
+
+        미사후기도 = vars_['미사후기도'].get()
 
         result[0] = (
 
@@ -865,9 +889,11 @@ def _ask_combined_input_popup() -> tuple:
 
                 'ref_pptx':    Path(ref),
 
+                '화답송_pptx': Path(화답송) if 화답송 else None,
+
                 '시작기도':    Path(시작기도) if 시작기도 else None,
 
-                '화답송_pptx': Path(화답송),
+                '미사후기도':  Path(미사후기도) if 미사후기도 else None,
 
                 '성가':        {},
 
@@ -1184,7 +1210,7 @@ def find_files(date_str: str, hymn_numbers: dict) -> dict:
 
 
 
-    files = {'ref_pptx': None, '시작기도': None, '화답송_pptx': None, '성가': {}}
+    files = {'ref_pptx': None, '시작기도': None, '화답송_pptx': None, '미사후기도': None, '성가': {}}
 
 
 
@@ -1251,6 +1277,11 @@ def find_files(date_str: str, hymn_numbers: dict) -> dict:
             files['시작기도'] = f
 
 
+
+    # 미사 후 기도 PPT
+    for f in folder.iterdir():
+        if f.suffix.lower() == '.pptx' and '미사후기도' in f.name and not f.name.startswith('~$'):
+            files['미사후기도'] = f
 
     # 참조 PPT: YYYYMMDD_ 로 시작하는 파일 중 현재 날짜가 아닌 것을 우선 선택
 
@@ -3782,7 +3813,7 @@ def _update_화답송_title_in_slide(slide, new_title: str):
 
 
 
-def update_화답송(prs, json_data: dict, sections: dict, 화답송_pptx_path):
+def update_화답송(prs, json_data: dict, sections: dict, 화답송_pptx_path, is_sunday: bool = True):
 
     if '화답송_start' not in sections or not json_data.get('화답송'):
 
@@ -3798,6 +3829,76 @@ def update_화답송(prs, json_data: dict, sections: dict, 화답송_pptx_path):
 
 
 
+    start = sections['화답송_start']
+
+    cur_end = sections['화답송_end']
+
+    cur_total = cur_end - start
+
+    text_tmpl = start + 1 if cur_total > 1 else start
+
+
+
+    if not is_sunday:
+
+        # 평일미사: 텍스트 슬라이드만, 후렴(◎) 포함 모든 절 표시
+
+        segments = [s.strip() for s in content.split('\n') if s.strip()]
+
+        needed = max(1, len(segments))
+
+        # 기존 범위 뒤에 텍스트 템플릿 복제본 needed개 삽입
+
+        for k in range(needed):
+
+            insert_slide_copy(prs, cur_end + k, text_tmpl)
+
+        # 기존 슬라이드 삭제
+
+        for i in range(cur_end - 1, start - 1, -1):
+
+            delete_slide(prs, i)
+
+        # 새 슬라이드 [start, start+needed-1] 채우기
+
+        for i in range(needed):
+
+            idx = start + i
+
+            _update_화답송_title_in_slide(prs.slides[idx], title)
+
+            seg_text = segments[i]
+
+            if seg_text.startswith('○ '):
+
+                seg_text = '○\t' + seg_text[2:]
+
+            elif seg_text.startswith('◎ '):
+
+                seg_text = '◎\t' + seg_text[2:]
+
+            for shape in prs.slides[idx].shapes:
+
+                if not shape.has_text_frame:
+
+                    continue
+
+                t = shape.text_frame.text.strip()
+
+                if t and '화 답 송' not in t and '전례문' not in t and 'Responsorial' not in t:
+
+                    _set_single_para_text(shape.text_frame, seg_text)
+
+                    _adjust_fit_if_needed(prs.slides[idx], shape, prs)
+
+                    break
+
+        return
+
+
+
+    # 주일미사: 악보(n+1) + 텍스트(n) = 2n+1 슬라이드
+
     # \n으로 분리; 첫 번째 항목(◎ 후렴)은 악보 슬라이드에 포함되므로 제외
 
     segments = [s.strip() for s in content.split('\n') if s.strip()]
@@ -3808,14 +3909,6 @@ def update_화답송(prs, json_data: dict, sections: dict, 화답송_pptx_path):
 
 
 
-    start = sections['화답송_start']
-
-    cur_end = sections['화답송_end']
-
-    cur_total = cur_end - start
-
-
-
     # 필요 슬라이드: 악보(n+1) + 텍스트(n) = 2n+1
 
     needed = max(1, 2 * n + 1)
@@ -3823,8 +3916,6 @@ def update_화답송(prs, json_data: dict, sections: dict, 화답송_pptx_path):
 
 
     # 슬라이드 수 조정 (텍스트 템플릿 = start+1)
-
-    text_tmpl = start + 1 if cur_total > 1 else start
 
     if needed > cur_total:
 
@@ -4591,6 +4682,35 @@ def replace_시작기도문(prs, 시작기도_path: Path, sections: dict):
 
 
 
+def append_미사후기도(prs, path: Path) -> int:
+
+    """파견성가 이후에 미사 후 기도 PPT 슬라이드를 삽입한다 (평일미사 전용)."""
+
+    if not path or not path.exists():
+
+        return 0
+
+    src_prs = Presentation(str(path))
+
+    n_src = len(src_prs.slides)
+
+    if n_src == 0:
+
+        return 0
+
+    insert_pos = len(prs.slides)
+
+    for i in range(n_src):
+
+        copy_slide_from_prs(prs, insert_pos + i, src_prs, i)
+
+    print(f'  미사 후 기도: {n_src}장 삽입')
+
+    return n_src
+
+
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 # 성가 교체
@@ -4725,7 +4845,7 @@ def _update_성가_header(slide, expected_type: str, new_number: int):
 
 
 
-def replace_성가(prs, 성가_map: dict, hymn_numbers: dict):
+def replace_성가(prs, 성가_map: dict, hymn_numbers: dict, copy_scores: bool = True):
 
     """5종 성가 슬라이드 교체. 각 타입마다 find_sections 재호출로 정확한 위치 파악."""
 
@@ -4787,14 +4907,6 @@ def replace_성가(prs, 성가_map: dict, hymn_numbers: dict):
 
 
 
-        # 새 성가 PPT 슬라이드 로드
-
-        src_prs = Presentation(str(pptx_path))
-
-        n_src = len(src_prs.slides)
-
-
-
         # 기존 콘텐츠 슬라이드 삭제
 
         for i in range(ce - 1, cs - 1, -1):
@@ -4803,25 +4915,31 @@ def replace_성가(prs, 성가_map: dict, hymn_numbers: dict):
 
 
 
-        # 새 슬라이드 삽입
+        if copy_scores:
 
-        for i in range(n_src):
+            # 새 성가 PPT 슬라이드 로드 및 삽입
 
-            copy_slide_from_prs(prs, cs + i, src_prs, i)
+            src_prs = Presentation(str(pptx_path))
 
-
-
-        # 헤더 업데이트
-
-        if num:
+            n_src = len(src_prs.slides)
 
             for i in range(n_src):
 
-                _update_성가_header(prs.slides[cs + i], htype, num)
+                copy_slide_from_prs(prs, cs + i, src_prs, i)
 
+            # 헤더 업데이트
 
+            if num:
 
-        print(f'  [{htype}] 성가 {num}: {n_existing}장 → {n_src}장')
+                for i in range(n_src):
+
+                    _update_성가_header(prs.slides[cs + i], htype, num)
+
+            print(f'  [{htype}] 성가 {num}: {n_existing}장 → {n_src}장')
+
+        else:
+
+            print(f'  [{htype}] 성가 {num}: 번호 업데이트 (악보 없음, {n_existing}장 삭제)')
 
 
 
@@ -4835,7 +4953,7 @@ def replace_성가(prs, 성가_map: dict, hymn_numbers: dict):
 
 
 
-def validate(prs, json_data: dict) -> bool:
+def validate(prs, json_data: dict, is_sunday: bool = True) -> bool:
 
     texts = all_slide_texts(prs)
 
@@ -5241,7 +5359,7 @@ def main():
 
     else:
 
-        date_str, hymn_numbers, 화답송_override = parse_args()
+        date_str, hymn_numbers, 화답송_override, 미사후기도_override = parse_args()
 
         files = find_files(date_str, hymn_numbers)
 
@@ -5249,9 +5367,17 @@ def main():
 
             files['화답송_pptx'] = Path(화답송_override)
 
+        if 미사후기도_override:
 
+            files['미사후기도'] = Path(미사후기도_override)
+
+
+
+    is_sunday = is_sunday_mass(date_str)
 
     print(f'날짜: {date_str}')
+
+    print(f'미사 유형: {"주일미사" if is_sunday else "평일미사"}')
 
     print(f'성가: {hymn_numbers}')
 
@@ -5276,6 +5402,14 @@ def main():
     print(f'  시작기도: {files["시작기도"].name if files["시작기도"] else "없음"}')
 
     print(f'  화답송 악보: {files["화답송_pptx"].name if files["화답송_pptx"] else "없음"}')
+
+    if is_sunday and not files.get('화답송_pptx'):
+
+        print('  [경고] 주일미사인데 화답송 악보 PPT가 없습니다.')
+
+    if files.get('미사후기도'):
+
+        print(f'  미사 후 기도: {files["미사후기도"].name}')
 
     for k, v in files['성가'].items():
 
@@ -5379,7 +5513,7 @@ def main():
 
         print('  화답송...')
 
-        update_화답송(prs, json_data, sec, files.get('화답송_pptx'))
+        update_화답송(prs, json_data, sec, files.get('화답송_pptx'), is_sunday=is_sunday)
 
 
 
@@ -5519,7 +5653,19 @@ def main():
 
     print('\n[6] 성가 교체...')
 
-    replace_성가(prs, files['성가'], hymn_numbers)
+    replace_성가(prs, files['성가'], hymn_numbers, copy_scores=is_sunday)
+
+
+
+    # 6.5. 미사 후 기도 (평일미사 전용)
+
+    if not is_sunday and files.get('미사후기도'):
+
+        _report_progress(92, '미사 후 기도 삽입 중...')
+
+        print('\n[6.5] 미사 후 기도...')
+
+        append_미사후기도(prs, files['미사후기도'])
 
 
 
@@ -5543,7 +5689,7 @@ def main():
 
     prs2 = Presentation(str(output_path))
 
-    validate(prs2, json_data)
+    validate(prs2, json_data, is_sunday=is_sunday)
 
 
 
