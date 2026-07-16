@@ -105,6 +105,57 @@ class TestParseIntoVerseUnits:
         assert units[0]["verse_num"] == "1"
 
 
+class TestSplitParaPreservesVerseColors:
+    """2026-07-26 발견: 여러 절이 하나의 논리 단락으로 병합된 경우(예: continuation
+    절), _split_para_at_lines()가 문단을 두 슬라이드로 분리하면서 단락 중간에 있는
+    절 번호 run의 오렌지색이 사라지는 회귀를 방지한다. 당시 원인은 이 함수가 단락에
+    run이 정확히 2개(절 번호+본문)라고 가정하고 3개 이상이면 뒤쪽 run들의 서식을
+    버렸기 때문이다."""
+
+    @staticmethod
+    def _build_two_verse_para():
+        from PIL import ImageFont
+        from pptx.oxml import parse_xml as pptx_parse_xml
+
+        A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+        xml = (
+            f'<a:p xmlns:a="{A}">'
+            f'<a:r><a:rPr sz="3200"><a:solidFill><a:srgbClr val="FFC000"/></a:solidFill></a:rPr><a:t>51 </a:t></a:r>'
+            f'<a:r><a:rPr sz="3200"><a:solidFill><a:schemeClr val="bg1"/></a:solidFill></a:rPr><a:t>many words here for wrapping test purposes today </a:t></a:r>'
+            f'<a:r><a:rPr sz="3200"><a:solidFill><a:srgbClr val="FFC000"/></a:solidFill></a:rPr><a:t>52 </a:t></a:r>'
+            f'<a:r><a:rPr sz="3200"><a:solidFill><a:schemeClr val="bg1"/></a:solidFill></a:rPr><a:t>more words after the second verse marker appear here</a:t></a:r>'
+            f'</a:p>'
+        )
+        p_elem = pptx_parse_xml(xml)
+        font = ImageFont.truetype(r'C:\Windows\Fonts\arial.ttf', 32)
+        return p_elem, font
+
+    @staticmethod
+    def _orange_texts(p_elem):
+        A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+        out = []
+        for r in p_elem.findall(f'{{{A}}}r'):
+            rPr = r.find(f'{{{A}}}rPr')
+            t = r.find(f'{{{A}}}t')
+            if rPr is None or t is None:
+                continue
+            sf = rPr.find(f'{{{A}}}solidFill')
+            if sf is None:
+                continue
+            sc = sf.find(f'{{{A}}}srgbClr')
+            if sc is not None and sc.get('val', '').upper() == 'FFC000':
+                out.append((t.text or '').strip())
+        return out
+
+    def test_verse_numbers_survive_paragraph_split(self):
+        p_elem, font = self._build_two_verse_para()
+        box_px = 220  # 좁게 잡아 여러 줄로 강제 wrap
+        rest_p = m._split_para_at_lines(p_elem, keep_lines=1, pil_font=font, box_px=box_px)
+        assert rest_p is not None, "테스트 문단이 1줄에 다 들어가 분리가 일어나지 않음 — box_px를 줄일 것"
+        combined = set(self._orange_texts(p_elem)) | set(self._orange_texts(rest_p))
+        assert combined == {"51", "52"}, f"절 번호 오렌지색 유실: {combined}"
+
+
 # ─────────────────────────────────────────────────────────────────
 # 2. 통합 테스트 — 실제 PPT 생성 + 구조 검증
 # ─────────────────────────────────────────────────────────────────
@@ -151,7 +202,11 @@ def generated_case(request):
     path = _find_output(case["date"])
     prs = Presentation(str(path))
     sections = m.find_sections(prs)
-    return {"case": case, "prs": prs, "sections": sections, "log": log, "path": path}
+    json_data = m.get_json_data(case["date"])
+    return {
+        "case": case, "prs": prs, "sections": sections, "log": log,
+        "path": path, "json_data": json_data,
+    }
 
 
 def test_output_opens_without_corruption(generated_case):
@@ -191,6 +246,32 @@ def test_no_reading_slide_line_overflow(generated_case):
             lines = m._count_slide_lines_rendered(prs.slides[idx])
             if lines > m.LINES_PER_SLIDE:
                 problems.append(f"{start_key} 슬라이드 {idx + 1}: {lines}줄 (>{m.LINES_PER_SLIDE})")
+    assert not problems, "\n".join(problems)
+
+
+def test_no_missing_orange_verse_numbers(generated_case):
+    """독서·복음의 모든 절 번호가 실제로 오렌지색 run으로 렌더링됐는지 확인한다.
+    텍스트 자체는 남아 있어도 색상만 사라지는 경우(2026-07-26)가 있어, 슬라이드
+    텍스트 존재 여부가 아니라 절 번호 단위로 오렌지색 run을 직접 대조한다."""
+    prs, sections, json_data = (
+        generated_case["prs"], generated_case["sections"], generated_case["json_data"]
+    )
+    problems = []
+    for label, start_key, end_key in [
+        ("제1독서", "제1독서_start", "제1독서_end"),
+        ("제2독서", "제2독서_start", "제2독서_end"),
+        ("복음", "복음_start", "복음_end"),
+    ]:
+        reading = json_data.get(label)
+        if not reading or not reading.get("content"):
+            continue
+        if start_key not in sections or end_key not in sections:
+            continue
+        missing = m._missing_orange_verse_numbers(
+            prs, sections[start_key], sections[end_key], reading["content"]
+        )
+        if missing:
+            problems.append(f"{label} 절 번호 오렌지색 누락: {', '.join(missing)}")
     assert not problems, "\n".join(problems)
 
 

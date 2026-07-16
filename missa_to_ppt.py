@@ -3355,18 +3355,23 @@ def _split_para_at_lines(p_elem, keep_lines: int, pil_font, box_px: float):
     """단락 XML 요소를 word-wrap 기준 keep_lines 줄에서 분리.
 
     p_elem을 keep_lines 줄에 맞게 수정하고, 나머지 텍스트를 담은
-    새 a:p 요소를 반환. 분리 불필요하거나 불가하면 None 반환."""
+    새 a:p 요소를 반환. 분리 불필요하거나 불가하면 None 반환.
+
+    run 개수를 2개(절 번호+본문)로 가정하지 않는다. 여러 절이 하나의 논리 단락으로
+    병합된 경우(예: continuation 절) 절 번호 run이 단락 중간에도 나타날 수 있으므로,
+    분리 지점이 어느 run에 속하는지 실제로 찾아 그 run의 서식(rPr, 오렌지색 포함)을
+    그대로 유지한 채 텍스트만 자른다."""
     from copy import deepcopy
-    from lxml import etree
     A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
 
     runs = p_elem.findall(f'{{{A}}}r')
     if not runs:
         return None
-    full_text = ''.join(
+    run_texts = [
         (r.find(f'{{{A}}}t').text or '') if r.find(f'{{{A}}}t') is not None else ''
         for r in runs
-    )
+    ]
+    full_text = ''.join(run_texts)
     if not full_text.strip():
         return None
 
@@ -3400,40 +3405,40 @@ def _split_para_at_lines(p_elem, keep_lines: int, pil_font, box_px: float):
     if not rest_text:
         return None
 
-    # 수정 전에 먼저 deepcopy → rest_p는 원본 그대로 유지
+    # first_text/rest_text는 full_text를 공백 기준으로 재분할한 것이므로,
+    # 경계는 full_text[len(first_text)] 위치의 공백이다.
+    split_idx = len(first_text)
+    rest_start = split_idx + 1 if full_text[split_idx:split_idx + 1] == ' ' else split_idx
+
+    def _locate(pos):
+        """full_text상의 문자 위치 → (run 인덱스, run 내부 offset)."""
+        acc = 0
+        for i, t in enumerate(run_texts):
+            if pos <= acc + len(t):
+                return i, pos - acc
+            acc += len(t)
+        return len(run_texts) - 1, len(run_texts[-1])
+
+    front_idx, front_off = _locate(split_idx)
+    rest_idx, rest_off = _locate(rest_start)
+
+    # 수정 전에 먼저 deepcopy → rest_p는 원본 run 서식을 그대로 유지
     rest_p = deepcopy(p_elem)
-
-    # 원래 단락(p_elem): 오렌지 runs[0](절 번호) 보존, 흰색 runs[1](본문)에 body만 기록
-    run0_t = runs[0].find(f'{{{A}}}t')
-    run0_text = (run0_t.text or '') if run0_t is not None else ''
-    if len(runs) >= 2 and run0_text and first_text.startswith(run0_text):
-        body_first = first_text[len(run0_text):]
-        if body_first:
-            t1 = runs[1].find(f'{{{A}}}t')
-            if t1 is not None:
-                t1.text = body_first
-            for r in runs[2:]:
-                p_elem.remove(r)
-        else:
-            for r in runs[1:]:
-                p_elem.remove(r)
-    else:
-        # 단일 런 또는 절 번호 없음 — 기존 방식
-        t0 = runs[0].find(f'{{{A}}}t')
-        if t0 is not None:
-            t0.text = first_text
-        for r in runs[1:]:
-            p_elem.remove(r)
-
-    # rest_p: 마지막 런(흰색 본문)만 남기고 앞쪽(오렌지 포함) 모두 제거
     rest_runs = rest_p.findall(f'{{{A}}}r')
-    if rest_runs:
-        body_run = rest_runs[-1]
-        rest_t = body_run.find(f'{{{A}}}t')
-        if rest_t is not None:
-            rest_t.text = rest_text
-        for rr in rest_runs[:-1]:
-            rest_p.remove(rr)
+
+    # 앞부분(p_elem): front_idx까지 run 유지, 그 run은 앞쪽 글자만 남김 (서식은 그 run 고유의 것)
+    for r in runs[front_idx + 1:]:
+        p_elem.remove(r)
+    t_front = runs[front_idx].find(f'{{{A}}}t')
+    if t_front is not None:
+        t_front.text = run_texts[front_idx][:front_off]
+
+    # 뒷부분(rest_p): rest_idx부터 run 유지, 그 run은 뒤쪽 글자만 남김 (서식은 원본 그대로)
+    for r in rest_runs[:rest_idx]:
+        rest_p.remove(r)
+    t_rest = rest_runs[rest_idx].find(f'{{{A}}}t')
+    if t_rest is not None:
+        t_rest.text = run_texts[rest_idx][rest_off:]
 
     return rest_p
 
@@ -5662,6 +5667,43 @@ def validate_pptx_structure(pptx_path: str) -> list:
 
 
 
+def _orange_verse_numbers_in_range(prs, start: int, end: int) -> set:
+    """[start, end) 슬라이드 범위에서 오렌지색으로 표시된 절 번호 집합을 수집."""
+    found = set()
+    for idx in range(start, end):
+        slide = prs.slides[idx]
+        for shape in slide.shapes:
+            if not shape.has_text_frame:
+                continue
+            for para in shape.text_frame.paragraphs:
+                for run in para.runs:
+                    try:
+                        if run.font.color.rgb != ORANGE:
+                            continue
+                    except Exception:
+                        continue
+                    m = re.match(r'^(\d+(?:,\d+)?)', run.text.strip())
+                    if m:
+                        found.add(m.group(1))
+    return found
+
+
+def _missing_orange_verse_numbers(prs, start: int, end: int, content: str) -> list:
+    """content에서 파싱한 절 번호 중, [start, end) 범위에 오렌지색으로 나타나지 않은 것들.
+
+    절 번호 run이 병합/분리 과정에서 다른 run에 흡수되면 텍스트는 남아도 색상만
+    사라질 수 있어(2026-07-26 발견), 전체 텍스트 존재 여부가 아니라 실제 오렌지색
+    run으로 렌더링됐는지를 절 번호 단위로 확인한다."""
+    expected = {
+        u['verse_num'] for u in parse_into_verse_units(content)
+        if u.get('verse_num')
+    }
+    if not expected:
+        return []
+    found = _orange_verse_numbers_in_range(prs, start, end)
+    return sorted(expected - found, key=lambda v: [int(x) for x in v.split(',')])
+
+
 def validate(prs, json_data: dict, is_sunday: bool = True) -> bool:
 
     texts = all_slide_texts(prs)
@@ -5692,47 +5734,35 @@ def validate(prs, json_data: dict, is_sunday: bool = True) -> bool:
 
 
 
-    # 독서 절 번호 오렌지 확인 (샘플)
+    # 독서·복음 절 번호 오렌지색 확인 (절 번호 단위로 정확히 대조)
 
-    if json_data.get('제1독서'):
+    sections = find_sections(prs)
 
-        found_orange = False
+    for label, start_key, end_key in [
+        ('제1독서', '제1독서_start', '제1독서_end'),
+        ('제2독서', '제2독서_start', '제2독서_end'),
+        ('복음', '복음_start', '복음_end'),
+    ]:
 
-        for slide in prs.slides:
+        reading = json_data.get(label)
 
-            for shape in slide.shapes:
+        if not reading or not reading.get('content'):
 
-                if not shape.has_text_frame:
+            continue
 
-                    continue
+        if start_key not in sections or end_key not in sections:
 
-                for para in shape.text_frame.paragraphs:
+            warnings.append(f'{label} 슬라이드 위치를 찾을 수 없어 절 번호 확인 생략')
 
-                    for run in para.runs:
+            continue
 
-                        try:
+        missing = _missing_orange_verse_numbers(
+            prs, sections[start_key], sections[end_key], reading['content']
+        )
 
-                            if run.font.color.rgb == ORANGE:
+        if missing:
 
-                                found_orange = True
-
-                                break
-
-                        except Exception:
-
-                            pass
-
-                    if found_orange:
-
-                        break
-
-                if found_orange:
-
-                    break
-
-        if not found_orange:
-
-            warnings.append('독서 절 번호 오렌지색 미확인')
+            warnings.append(f'{label} 절 번호 오렌지색 누락: {", ".join(missing)}')
 
 
 
