@@ -1,0 +1,190 @@
+# missa_to_ppt 구현 계획 v1.1
+
+- 작성일: 2026-06-30
+- 이전 버전: `docs/archive/missa_to_ppt 구현 계획 v1.0.docx`
+
+## v1.0 대비 변경사항 요약
+
+1. 대화형 실행 모드 추가 (`_ask_date_popup`, `_ask_input_files_popup`)
+2. 성가 파일 OneDrive 연동 (`config.json`, `get_onedrive_hymn_folder`)
+3. 종료 슬라이드 ending shape 동적 위치 재조정 (`_reposition_merged_ending_shapes`)
+4. `main()` 분기: 인수 없이 실행 시 대화형 모드
+
+## [공통] 서식 보존 원칙 (v1.0과 동일)
+
+- 모든 텍스트 수정 시 기존 run XML을 deepcopy한 후 텍스트만 교체
+- 텍스트박스 위치·크기·폰트·색상·스타일 변경 없음
+
+## [공통] 핵심 상수
+
+- `CHARS_PER_LINE = 25` (32pt 바탕체 24.6cm 텍스트박스 기준)
+- `LINES_PER_SLIDE = 9`
+- `ORANGE = RGBColor(255, 192, 0)`
+- `HYMN_TYPES = ['입당', '봉헌', '성체', '2차봉헌', '파견']`
+- `CONFIG_FILE = <script_dir>/config.json`
+
+## 신규: config.json 기반 OneDrive 경로 관리
+
+저장 위치: 스크립트와 같은 디렉터리의 `config.json`
+
+형식:
+```json
+{
+  "onedrive_hymn_folder": "C:/Users/.../OneDrive/성가폴더"
+}
+```
+
+함수:
+
+- `_load_config() -> dict`
+  - `config.json` 존재 시 로드, 없거나 파싱 실패 시 `{}` 반환
+- `_save_config(config: dict)`
+  - `config.json`에 저장 (`ensure_ascii=False, indent=2`)
+- `_ask_onedrive_path_popup() -> str`
+  - tkinter `filedialog.askdirectory()`로 폴더 선택 다이얼로그 표시
+- `get_onedrive_hymn_folder() -> Path`
+  - config에 저장된 경로가 유효하면 반환
+  - 없거나 폴더가 사라진 경우 팝업 호출 후 경로 저장
+
+## 신규: 대화형 실행 모드 팝업
+
+- `_ask_date_popup() -> str`
+  - tkinter Entry로 YYYYMMDD 형식 미사 일자 입력
+  - 형식 불일치 시 경고 메시지, 재입력 요구
+  - Enter 키 또는 확인 버튼으로 제출
+- `_ask_input_files_popup() -> dict`
+  - 하나의 tkinter 창에 3행 배치:
+    1. 참조 미사 PPT * (필수)
+    2. 시작기도 PPT (선택)
+    3. 화답송 악보 PPT * (필수)
+  - 각 행: 라벨 + 경로 표시 Entry(읽기전용) + 찾아보기 버튼
+  - 확인 시 필수 항목 미선택이면 경고 후 차단
+  - 반환: `{'ref_pptx': Path, '시작기도': Path|None, '화답송_pptx': Path, '성가': {}}`
+- `_ask_numbers_popup(defaults: dict) -> dict` (기존 유지)
+  - 5종 성가번호 입력 팝업
+
+## 변경: `find_files()` — 성가 OneDrive 우선 탐색
+
+기존: 날짜 폴더에서만 성가 PPT 탐색
+
+변경:
+1. `get_onedrive_hymn_folder()`로 OneDrive 폴더 취득
+2. `onedrive_folder.rglob('*.pptx')`로 재귀 탐색
+3. `re.search(rf'성가 {num}(?!\d)', f.name)`으로 매칭
+4. OneDrive에서 못 찾으면 날짜 폴더 fallback
+
+참조PPT·시작기도PPT·화답송PPT는 기존대로 날짜 폴더에서 탐색 (CLI 모드 전용)
+
+## 변경: `replace_reading_slides()` — 종료 슬라이드 통합
+
+`merge_threshold = 5`
+
+마지막 본문 슬라이드의 줄 수가 `merge_threshold` 이하이면:
+- 별도 ending 슬라이드의 "주님의 말씀입니다." shape를 본문 슬라이드로 이동
+- ending 슬라이드 삭제
+- 본문+ending 통합 슬라이드의 content shape는 위치 조정 제외
+
+## 신규: `_reposition_merged_ending_shapes(prs, sections)`
+
+호출 시점: `_align_ending_slides_to_제2독서()` 실행 후
+
+동작 (대상 섹션: 제1독서, 제2독서, 복음). 각 섹션의 마지막 ending 슬라이드에 대해:
+
+1. `_find_content_shape()`로 본문 shape 탐색
+2. 본문 shape의 단락별 `_visual_lines()` 합산 → `line_count`
+3. `line_count == 0`이면 건너뜀 (별도 ending 슬라이드, 본문 없음)
+4. `line_height = content_shape.height // LINES_PER_SLIDE`
+5. `ending_shape.top = content_shape.top + (line_count + 2) * line_height` (본문 마지막 줄 다음 두 줄 공백)
+
+효과:
+- 본문+ending 통합 슬라이드에서 "주님의 말씀입니다." 텍스트박스가 실제 본문 끝 위치 기준으로 동적 배치됨
+- `_align_ending_slides_to_제2독서()` 이후 실행하여 위치 재조정 보장
+
+## 변경: `main()` — 실행 모드 분기
+
+```python
+if len(sys.argv) == 1:   # 대화형 모드
+    date_str = _ask_date_popup()
+    files = _ask_input_files_popup()
+    hymn_numbers = _ask_numbers_popup({})
+    # 성가: OneDrive 탐색
+    onedrive_folder = get_onedrive_hymn_folder()
+    ...rglob 탐색...
+    Path(date_str).mkdir(exist_ok=True)
+else:                    # CLI 모드 (기존)
+    date_str, hymn_numbers, 화답송_override = parse_args()
+    files = find_files(date_str, hymn_numbers)
+    if 화답송_override:
+        files['화답송_pptx'] = Path(화답송_override)
+```
+
+공통 이후 흐름:
+
+1. 파일 확인
+2. JSON 로딩 (`missa_to_json.py`)
+3. 참조 PPT 열기
+4. 전례 텍스트 교체 (제목/입당송/독서/화답송/복음환호송/복음/영성체송)
+   → `_align_ending_slides_to_제2독서()`
+   → `_reposition_merged_ending_shapes()` ← v1.1 추가
+5. 시작기도문 교체
+6. 성가 교체
+7. 저장: `YYYYMMDD/<liturgy>.pptx`
+8. 검증
+
+## 전체 함수 목록
+
+**설정 관련 (v1.1 신규)**
+- `_load_config() -> dict`
+- `_save_config(config: dict)`
+- `_ask_onedrive_path_popup() -> str`
+- `get_onedrive_hymn_folder() -> Path`
+
+**팝업 UI (v1.1 신규)**
+- `_ask_date_popup() -> str`
+- `_ask_input_files_popup() -> dict`
+
+**팝업 UI (기존)**
+- `_ask_numbers_popup(defaults: dict) -> dict`
+
+**파일 탐색**
+- `find_files(date_str, hymn_numbers) -> dict` [성가 탐색 변경]
+
+**슬라이드 유틸 (기존 유지)**
+- `delete_slide` / `move_slide` / `duplicate_slide`
+- `insert_slide_copy` / `copy_slide_from_prs`
+- `_copy_spTree` / `_copy_image_rels` / `_update_rId_in_spTree`
+- `_effective_bg` / `_copy_bg_image_rels`
+- `_set_slide_bg_black`
+
+**텍스트 서식 유틸 (기존 유지)**
+- `_replace_para_text_clone` / `_set_single_para_text`
+- `_set_reading_text` / `_clear_text_frame`
+- `_para_append_run`
+
+**콘텐츠 파싱·배분 (기존 유지)**
+- `parse_into_verse_units` / `layout_units_on_slides`
+- `_visual_lines` / `_find_content_shape` / `_has_ending_text`
+
+**섹션 탐색 (기존 유지)**
+- `find_sections` / `find_content_range` / `find_복음_content_range`
+- `find_slide_with_text` / `find_shape_exact_text` / `_is_hymn_divider`
+
+**독서·복음 처리**
+- `replace_reading_slides()` [merge_threshold 로직 추가]
+- `_align_ending_slides_to_제2독서()` [기존 유지]
+- `_reposition_merged_ending_shapes()` [v1.1 신규]
+
+**섹션별 업데이트 (기존 유지)**
+- `update_title_slide` / `update_입당송` / `update_reading_title_slide`
+- `update_복음_title_slide` / `update_화답송` / `update_복음환호송`
+- `update_영성체송` / `replace_시작기도문` / `replace_성가`
+
+**검증 및 저장 (기존 유지)**
+- `validate` / `strip_ppt2007_incompatible`
+
+## 의존성
+
+- python-pptx
+- tkinter (표준 라이브러리)
+- json, pathlib, re, copy, io, subprocess (표준 라이브러리)
+</content>
