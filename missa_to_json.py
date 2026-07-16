@@ -87,32 +87,29 @@ def find_section_block(soup, section_name: str):
     return None, None
 
 
-def parse_reading_title(block) -> str:
+def parse_reading_title(block) -> dict:
     """제1독서/제2독서/복음처럼 h4에 출처가 없는 섹션의 title 추출.
 
-    h5.float-right 안의 구절 번호와, 그 h5를 포함하는 div의 책 이름 텍스트를 조합한다.
-    예: "▥ 탈출기의 말씀입니다." + "19,2-6ㄱ" → "탈출기 19,2-6ㄱ"
+    h5.float-right 안의 구절 번호와, 그 h5를 포함하는 div의 책 이름 텍스트를 분리한다.
+    예: "▥ 에제키엘 예언서의 말씀입니다." + "34,11-16"
+        → {"title": "에제키엘 예언서의 말씀입니다.", "chapter_verse": "34,11-16"}
+    예: "✠ 루카가 전한 거룩한 복음입니다." + "15,3-7"
+        → {"title": "루카가 전한 거룩한 복음입니다.", "chapter_verse": "15,3-7"}
     """
     h5 = block.find("h5", class_="float-right")
     if not h5:
-        return ""
-    verse = h5.get_text(strip=True)
+        return {"title": "", "chapter_verse": ""}
+    chapter_verse = h5.get_text(strip=True)
 
     source_container = h5.find_parent("div")
     if source_container:
         full_text = source_container.get_text(strip=True)
-        book_text = full_text.replace(verse, "").strip()
-        book_text = re.sub(r"^[▥✠]\s*", "", book_text)
-        # Remove trailing reading/gospel markers in order (most specific first)
-        book_text = re.sub(r"가 전한 거룩한 복음입니다\.\s*$", "", book_text).strip()
-        book_text = re.sub(r"의\s*말씀입니다\.\s*$", "", book_text).strip()
-        book_text = re.sub(r"\s*말씀입니다\.\s*$", "", book_text).strip()
-        # "사도 바오로의 로마서" → "로마서" (take last segment after "의 ")
-        if "의 " in book_text:
-            book_text = book_text.split("의 ")[-1].strip()
-        return f"{book_text} {verse}".strip()
+        book_text = full_text.replace(chapter_verse, "").strip()
+        # ▥/✠ 전례 기호 제거
+        book_text = re.sub(r"^[▥✠]\s*", "", book_text).strip()
+        return {"title": book_text, "chapter_verse": chapter_verse}
 
-    return verse
+    return {"title": "", "chapter_verse": chapter_verse}
 
 
 def parse_section(soup, section_name: str):
@@ -123,13 +120,16 @@ def parse_section(soup, section_name: str):
     # Determine title
     title_from_h4 = extract_title_from_h4_span(h4)
 
+    chapter_verse = None
     if title_from_h4:
         title = title_from_h4
         if section_name in PSALM_SECTIONS:
             title = truncate_psalm_title(title)
     else:
-        # Readings and Gospel: compose from book name + verse
-        title = parse_reading_title(block)
+        # Readings and Gospel: use full "말씀입니다." text from HTML
+        reading_info = parse_reading_title(block)
+        title = reading_info["title"]
+        chapter_verse = reading_info["chapter_verse"]
 
     content = build_content(block)
 
@@ -151,7 +151,10 @@ def parse_section(soup, section_name: str):
                 lines = lines[:-2]
         content = " ".join(lines)
 
-    return {"title": title, "content": content}
+    result = {"title": title, "content": content}
+    if chapter_verse is not None:
+        result["chapter_verse"] = chapter_verse
+    return result
 
 
 def extract_liturgy_name(soup) -> str:

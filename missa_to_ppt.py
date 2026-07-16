@@ -104,6 +104,13 @@ CHARS_PER_LINE = 27   # 32pt 바탕체 24.8cm 텍스트박스 실측 기준 약 
 
 LINES_PER_SLIDE = 9
 
+# Pillow(libraqm 미지원)는 커닝을 반영하지 못해 실제 PowerPoint 렌더링보다
+# 텍스트 폭을 넓게 계산한다. 실측 슬라이드(2026-07-12 연중 제15주일 복음) 기준
+# 1.03~1.04에서만 전체 일치 — 1.02 이하는 과소보정, 1.05 이상은 과보정됨.
+_RENDER_WIDTH_CALIBRATION = 1.03
+
+_PILLOW_FONT_CACHE: dict = {}  # (font_name, font_size_pt) → PIL ImageFont or None
+
 ORANGE = RGBColor(255, 192, 0)
 
 
@@ -369,13 +376,7 @@ def parse_args():
 
     if any(v is None for v in numbers.values()):
 
-        if args.test:
-
-            numbers = _infer_hymn_numbers(numbers)
-
-        else:
-
-            numbers = _ask_numbers_popup(numbers)
+        numbers = _infer_hymn_numbers(numbers)
 
 
 
@@ -1272,7 +1273,9 @@ def find_files(date_str: str, hymn_numbers: dict) -> dict:
 
     for f in folder.iterdir():
 
-        if f.suffix.lower() == '.pptx' and '시작기도' in f.name:
+        if (f.suffix.lower() == '.pptx' and '시작기도' in f.name
+
+                and not f.name.startswith('~$') and not f.name.startswith('_')):
 
             files['시작기도'] = f
 
@@ -2233,6 +2236,141 @@ def _replace_para_text_clone(para, new_text: str):
 
 
 
+def _set_두_줄_text(tf, line1: str, line2: str):
+
+    """TextFrame을 두 단락으로 설정 (서식·탭스톱 보존). 화답송 ◎◎ 슬라이드 전용."""
+
+    from pptx.oxml import parse_xml as pptx_parse_xml
+
+    A_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+
+    txBody = tf._txBody
+
+    existing_paras = txBody.findall(qn('a:p'))
+
+    # 템플릿 단락(pPr 포함)과 run 캡처 (deepcopy로 제거 전 보존)
+
+    template_p = copy.deepcopy(existing_paras[0]) if existing_paras else None
+
+    template_r = None
+
+    if template_p is not None:
+
+        for r in template_p.findall(qn('a:r')):
+
+            template_r = r
+
+            break
+
+    # 기존 단락 모두 제거
+
+    for p in existing_paras:
+
+        txBody.remove(p)
+
+    # 두 단락 생성
+
+    for text in [line1, line2]:
+
+        if template_p is not None:
+
+            new_p = copy.deepcopy(template_p)
+
+            for r in new_p.findall(qn('a:r')): new_p.remove(r)
+
+            for br in new_p.findall(qn('a:br')): new_p.remove(br)
+
+        else:
+
+            new_p = pptx_parse_xml(f'<a:p xmlns:a="{A_NS}"/>')
+
+        if template_r is not None:
+
+            new_r = copy.deepcopy(template_r)
+
+        else:
+
+            new_r = pptx_parse_xml(f'<a:r xmlns:a="{A_NS}"><a:t/></a:r>')
+
+        t_el = new_r.find(qn('a:t'))
+
+        if t_el is not None:
+
+            t_el.text = text
+
+        _para_append_run(new_p, new_r)
+
+        txBody.append(new_p)
+
+
+
+def _set_화답송_content_text(tf, refrain_text: str, verse_text: str):
+    """화답송 본문에 ◎ 후렴(para0) + ○ 절(para1) 설정.
+
+    2단락 템플릿: 각 단락의 서식(pPr/rPr)을 보존하고 텍스트만 교체.
+    1단락 템플릿(○만 있는 경우): ○ 단락은 그대로 두고 ◎ 단락을 앞에 구성.
+    """
+    from pptx.oxml import parse_xml as pptx_parse_xml
+    A_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+    txBody = tf._txBody
+    paras = txBody.findall(qn('a:p'))
+
+    if len(paras) >= 2:
+        # 2단락 템플릿: para[0]=◎ 서식, para[1]=○ 서식 각각 보존
+        for p, text in zip(paras[:2], [refrain_text, verse_text]):
+            runs = p.findall(qn('a:r'))
+            tmpl_r = copy.deepcopy(runs[0]) if runs else pptx_parse_xml(f'<a:r xmlns:a="{A_NS}"><a:t/></a:r>')
+            for r in runs: p.remove(r)
+            for br in p.findall(qn('a:br')): p.remove(br)
+            tmpl_r.find(qn('a:t')).text = text
+            _para_append_run(p, tmpl_r)
+        for p in paras[2:]:
+            txBody.remove(p)
+    else:
+        # 1단락 템플릿(○만 있음): 기존 단락을 ○ 절로 쓰고 ◎ 단락을 앞에 추가
+        verse_p = paras[0] if paras else None
+        verse_tmpl_r = None
+        if verse_p is not None:
+            runs = verse_p.findall(qn('a:r'))
+            verse_tmpl_r = copy.deepcopy(runs[0]) if runs else pptx_parse_xml(f'<a:r xmlns:a="{A_NS}"><a:t/></a:r>')
+            for r in runs: verse_p.remove(r)
+            for br in verse_p.findall(qn('a:br')): verse_p.remove(br)
+            verse_tmpl_r.find(qn('a:t')).text = verse_text
+            _para_append_run(verse_p, verse_tmpl_r)
+
+        # ◎ 단락: verse_p의 pPr(들여쓰기/탭) 복사 + ◎ 서식(37pt, bg2)
+        refrain_p = pptx_parse_xml(f'<a:p xmlns:a="{A_NS}"/>')
+        if verse_p is not None:
+            pPr_src = verse_p.find(qn('a:pPr'))
+            if pPr_src is not None:
+                refrain_p.insert(0, copy.deepcopy(pPr_src))
+
+        rPr_extra = 'lang="ko-KR" dirty="0" '
+        if verse_tmpl_r is not None:
+            verse_rPr = verse_tmpl_r.find(qn('a:rPr'))
+            if verse_rPr is not None:
+                lang = verse_rPr.get('lang', 'ko-KR')
+                dirty = verse_rPr.get('dirty', '0')
+                rPr_extra = f'lang="{lang}" dirty="{dirty}" '
+
+        refrain_r = pptx_parse_xml(
+            f'<a:r xmlns:a="{A_NS}">'
+            f'<a:rPr {rPr_extra}sz="3700" b="1">'
+            f'<a:solidFill><a:schemeClr val="bg2"/></a:solidFill>'
+            f'</a:rPr>'
+            f'<a:t/>'
+            f'</a:r>'
+        )
+        refrain_r.find(qn('a:t')).text = refrain_text
+        _para_append_run(refrain_p, refrain_r)
+
+        if verse_p is not None:
+            txBody.insert(list(txBody).index(verse_p), refrain_p)
+        else:
+            txBody.append(refrain_p)
+
+
+
 def _set_single_para_text(tf, text: str):
 
     """TextFrame을 단일 단락으로 설정 (서식 보존)."""
@@ -2301,19 +2439,6 @@ def _set_single_para_text(tf, text: str):
 
 
 
-def _extract_book_name(json_title: str) -> str:
-
-    """JSON title에서 성서 이름만 추출 (절 번호 제거).
-
-    예: '열왕기 하권 4,8-11.14-16ㄴ' → '열왕기 하권'
-
-    예: '마태오 10,37-42' → '마태오'
-
-    """
-
-    m = re.match(r'^(.+?)\s+\d', json_title.strip())
-
-    return m.group(1).strip() if m else json_title.strip()
 
 
 
@@ -2341,10 +2466,8 @@ def _josa(word: str) -> str:
 
 
 
-def _update_book_name_after_br(para, new_book_name: str) -> bool:
-
-    """<a:br/> 이후 첫 run에서 성서 이름만 교체하고 접미사('의 말씀입니다.') 보존."""
-
+def _update_book_name_after_br(para, title: str) -> bool:
+    """<a:br/> 이후 runs를 title 텍스트로 교체."""
     p = para._p
 
     brs = p.findall(qn('a:br'))
@@ -2352,8 +2475,6 @@ def _update_book_name_after_br(para, new_book_name: str) -> bool:
     if not brs:
 
         return False
-
-
 
     br = brs[0]
 
@@ -2373,89 +2494,25 @@ def _update_book_name_after_br(para, new_book_name: str) -> bool:
 
             after_runs.append(child)
 
-
-
     if not after_runs:
 
         return False
 
+    t_el = after_runs[0].find(qn('a:t'))
 
+    if t_el is not None:
 
-    full_text = ''.join(
+        t_el.text = title
 
-        (r.find(qn('a:t')).text or '') for r in after_runs
+    for extra_r in after_runs[1:]:
 
-        if r.find(qn('a:t')) is not None
+        t_el2 = extra_r.find(qn('a:t'))
 
-    )
+        if t_el2 is not None:
 
+            t_el2.text = ''
 
-
-    # 패턴 1: "[book]의 말씀입니다" (구약/사도행전 등)
-
-    # 예: "신명기의 말씀입니다." → old_book="신명기"
-
-    m1 = re.match(r'^(.+?)의 말씀입니다', full_text)
-
-    if m1:
-
-        old_book = m1.group(1)
-
-        t_el = after_runs[0].find(qn('a:t'))
-
-        if t_el is not None:
-
-            old_run_text = t_el.text or ''
-
-            if old_run_text.startswith(old_book):
-
-                t_el.text = new_book_name + old_run_text[len(old_book):]
-
-            else:
-
-                t_el.text = new_book_name + '의 말씀입니다'
-
-        return True
-
-
-
-    # 패턴 2: "사도 [author]의 [book] 말씀입니다" (서신서)
-
-    # 예: "사도 바오로의 코린토 1서 말씀입니다." → new: "사도 바오로의 로마서 말씀입니다."
-
-    m2 = re.match(r'^((?:사도 )?[가-힣]+의 )(.+?)( 말씀입니다)', full_text)
-
-    if m2:
-
-        prefix = m2.group(1)
-
-        suffix = m2.group(3)
-
-        ending = '.' if full_text.rstrip().endswith('.') else ''
-
-        new_text = prefix + new_book_name + suffix + ending
-
-        t_el = after_runs[0].find(qn('a:t'))
-
-        if t_el is not None:
-
-            t_el.text = new_text
-
-        # run이 여러 개로 분할된 경우 나머지 run 텍스트 제거
-
-        for r in after_runs[1:]:
-
-            t_el2 = r.find(qn('a:t'))
-
-            if t_el2 is not None:
-
-                t_el2.text = ''
-
-        return True
-
-
-
-    return False
+    return True
 
 
 
@@ -3145,7 +3202,8 @@ def _set_reading_text(tf, units: list, line_spacing: float = None):
 
                 val = int(line_spacing * 100000)
 
-                pPr.append(pptx_parse_xml(f'<a:lnSpc xmlns:a="{A_NS}"><a:spcPct val="{val}"/></a:lnSpc>'))
+                # lnSpc는 OOXML 스키마상 pPr의 첫 번째 자식이어야 함 (spcAft 앞에 위치)
+                pPr.insert(0, pptx_parse_xml(f'<a:lnSpc xmlns:a="{A_NS}"><a:spcPct val="{val}"/></a:lnSpc>'))
 
             txBody.append(new_p)
 
@@ -3187,15 +3245,210 @@ def _count_slide_lines(slide) -> int:
     )
 
 
-def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int, label: str) -> None:
+def _rendered_wrap_count(text: str, pil_font, box_px: float) -> int:
+    """Pillow 폰트 메트릭으로 word-wrap 줄 수 계산."""
+    if not text.strip():
+        return 0
+    words = text.split(' ')
+    lines = 1
+    cur = ''
+    for word in words:
+        candidate = (cur + ' ' + word) if cur else word
+        if pil_font.getlength(candidate) <= box_px:
+            cur = candidate
+        else:
+            if cur:
+                lines += 1
+            cur = word
+    return lines
+
+
+def _get_slide_render_params(slide):
+    """슬라이드의 콘텐츠 shape에서 Pillow 폰트와 박스 너비(px)를 반환.
+    실패 또는 Pillow 미설치 시 (None, 0.0) 반환."""
+    try:
+        from PIL import ImageFont
+    except ImportError:
+        return None, 0.0
+
+    shape = _find_content_shape(slide)
+    if shape is None:
+        return None, 0.0
+
+    tf = shape.text_frame
+    margin_l = tf.margin_left or 0
+    margin_r = tf.margin_right or 0
+    box_emu = shape.width - margin_l - margin_r
+    if box_emu <= 0:
+        box_emu = shape.width
+    box_px = box_emu / 914400 * 96
+    # 보정 계수: Pillow는 libraqm(커닝/복합 텍스트 셰이핑) 미지원 환경에서
+    # 글자 advance width를 단순 합산해 실제 PowerPoint(DirectWrite) 렌더링보다
+    # 폭을 약간(2~4%) 넓게 계산한다. 실측 확인된 슬라이드 기준으로 보정.
+    box_px *= _RENDER_WIDTH_CALIBRATION
+
+    font_name = 'BatangChe'
+    font_size_pt = 32.0
+    for para_el in tf._txBody.findall(qn('a:p')):
+        for r_el in para_el.findall(qn('a:r')):
+            rPr = r_el.find(qn('a:rPr'))
+            if rPr is not None:
+                sz = rPr.get('sz')
+                latin = rPr.find(qn('a:latin'))
+                if sz:
+                    font_size_pt = int(sz) / 100.0
+                if latin is not None:
+                    fn = latin.get('typeface', '')
+                    if fn and not fn.startswith('+'):
+                        font_name = fn
+                if sz or (latin is not None and latin.get('typeface')):
+                    break
+        else:
+            continue
+        break
+
+    cache_key = (font_name, round(font_size_pt, 1))
+    if cache_key not in _PILLOW_FONT_CACHE:
+        import os
+        _FONT_MAP = {
+            'Batang':    ('batang.ttc', 0), '바탕':   ('batang.ttc', 0),
+            'BatangChe': ('batang.ttc', 1), '바탕체': ('batang.ttc', 1),
+            'Gulim':     ('gulim.ttc',  0), '굴림':   ('gulim.ttc',  0),
+            'GulimChe':  ('gulim.ttc',  1), '굴림체': ('gulim.ttc',  1),
+            'Malgun Gothic': ('malgun.ttf', 0), '맑은 고딕': ('malgun.ttf', 0),
+        }
+        fname, fidx = _FONT_MAP.get(font_name, ('batang.ttc', 0))
+        fpath = os.path.join(r'C:\Windows\Fonts', fname)
+        pil_font = None
+        if os.path.exists(fpath):
+            sz_px = max(1, round(font_size_pt * 96 / 72))
+            try:
+                pil_font = ImageFont.truetype(fpath, sz_px, index=fidx)
+            except Exception:
+                pass
+        _PILLOW_FONT_CACHE[cache_key] = pil_font
+
+    return _PILLOW_FONT_CACHE.get(cache_key), box_px
+
+
+def _count_slide_lines_rendered(slide) -> int:
+    """Pillow 실제 폰트 메트릭으로 줄 수 계산.
+    Pillow 또는 폰트 파일 미존재 시 _count_slide_lines()로 폴백."""
+    pil_font, box_px = _get_slide_render_params(slide)
+    if pil_font is None:
+        return _count_slide_lines(slide)
+
+    shape = _find_content_shape(slide)
+    if shape is None:
+        return 0
+
+    total = 0
+    for para in shape.text_frame.paragraphs:
+        text = para.text
+        if not text.strip():
+            continue
+        total += _rendered_wrap_count(text, pil_font, box_px)
+    return total
+
+
+def _split_para_at_lines(p_elem, keep_lines: int, pil_font, box_px: float):
+    """단락 XML 요소를 word-wrap 기준 keep_lines 줄에서 분리.
+
+    p_elem을 keep_lines 줄에 맞게 수정하고, 나머지 텍스트를 담은
+    새 a:p 요소를 반환. 분리 불필요하거나 불가하면 None 반환."""
+    from copy import deepcopy
+    from lxml import etree
+    A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+
+    runs = p_elem.findall(f'{{{A}}}r')
+    if not runs:
+        return None
+    full_text = ''.join(
+        (r.find(f'{{{A}}}t').text or '') if r.find(f'{{{A}}}t') is not None else ''
+        for r in runs
+    )
+    if not full_text.strip():
+        return None
+
+    # word-wrap 시뮬레이션 → 줄별 단어 목록
+    words = full_text.split(' ')
+    line_buckets = []
+    cur_words: list = []
+    cur_w = 0.0
+    for word in words:
+        ww = pil_font.getlength(word)
+        if cur_words:
+            sw = pil_font.getlength(' ')
+            if cur_w + sw + ww > box_px:
+                line_buckets.append(cur_words)
+                cur_words = [word]
+                cur_w = ww
+            else:
+                cur_words.append(word)
+                cur_w += sw + ww
+        else:
+            cur_words = [word]
+            cur_w = ww
+    if cur_words:
+        line_buckets.append(cur_words)
+
+    if len(line_buckets) <= keep_lines:
+        return None  # 분리 불필요
+
+    first_text = ' '.join(w for bucket in line_buckets[:keep_lines] for w in bucket)
+    rest_text  = ' '.join(w for bucket in line_buckets[keep_lines:]  for w in bucket)
+    if not rest_text:
+        return None
+
+    # 수정 전에 먼저 deepcopy → rest_p는 원본 그대로 유지
+    rest_p = deepcopy(p_elem)
+
+    # 원래 단락(p_elem): 오렌지 runs[0](절 번호) 보존, 흰색 runs[1](본문)에 body만 기록
+    run0_t = runs[0].find(f'{{{A}}}t')
+    run0_text = (run0_t.text or '') if run0_t is not None else ''
+    if len(runs) >= 2 and run0_text and first_text.startswith(run0_text):
+        body_first = first_text[len(run0_text):]
+        if body_first:
+            t1 = runs[1].find(f'{{{A}}}t')
+            if t1 is not None:
+                t1.text = body_first
+            for r in runs[2:]:
+                p_elem.remove(r)
+        else:
+            for r in runs[1:]:
+                p_elem.remove(r)
+    else:
+        # 단일 런 또는 절 번호 없음 — 기존 방식
+        t0 = runs[0].find(f'{{{A}}}t')
+        if t0 is not None:
+            t0.text = first_text
+        for r in runs[1:]:
+            p_elem.remove(r)
+
+    # rest_p: 마지막 런(흰색 본문)만 남기고 앞쪽(오렌지 포함) 모두 제거
+    rest_runs = rest_p.findall(f'{{{A}}}r')
+    if rest_runs:
+        body_run = rest_runs[-1]
+        rest_t = body_run.find(f'{{{A}}}t')
+        if rest_t is not None:
+            rest_t.text = rest_text
+        for rr in rest_runs[:-1]:
+            rest_p.remove(rr)
+
+    return rest_p
+
+
+def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int, label: str) -> int:
     """독서/복음 본문 슬라이드 기록 후 실제 줄 수 검증 및 재조정.
 
     비마지막 슬라이드가 LINES_PER_SLIDE 미만(7·8줄) 또는 초과(10줄 이상)이면
     인접 슬라이드와 단락을 이동하여 LINES_PER_SLIDE에 맞춤.
     마지막 슬라이드는 건드리지 않음.
+    반환: overflow로 새로 삽입한 슬라이드 수
     """
     if n_content < 2:
-        return
+        return 0
+    n_inserted = 0
 
     def _content_paras(slide):
         shape = _find_content_shape(slide)
@@ -3207,44 +3460,154 @@ def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int
         shape = _find_content_shape(slide)
         return shape.text_frame._txBody if shape else None
 
+    # 렌더링 파라미터 (단락 분리 시 사용) — 같은 섹션 내 슬라이드는 동일 shape
+    _pil_font, _box_px = _get_slide_render_params(prs.slides[content_start])
+
     changed = True
     while changed:
         changed = False
         for i in range(n_content - 1):  # 마지막 슬라이드 제외
             cur_slide = prs.slides[content_start + i]
             nxt_slide = prs.slides[content_start + i + 1]
-            lines = _count_slide_lines(cur_slide)
+            lines = _count_slide_lines_rendered(cur_slide)
 
             if lines == LINES_PER_SLIDE:
                 continue
 
             if lines > LINES_PER_SLIDE:
-                # 마지막 단락을 다음 슬라이드 앞으로 이동
+                excess = lines - LINES_PER_SLIDE
                 cur_paras = _content_paras(cur_slide)
-                if len(cur_paras) <= 1:
-                    print(f'  [{label}] 경고 슬라이드 {i+1}: {lines}줄 (단락 1개, 분리 불가)')
-                    continue
-                p_elem = cur_paras[-1]._p
                 cur_txBody = _get_txBody(cur_slide)
                 nxt_txBody = _get_txBody(nxt_slide)
+
+                if len(cur_paras) <= 1:
+                    # 단락 1개 → 단락 분리로만 해결 가능
+                    if _pil_font is not None:
+                        last_p = cur_paras[0]._p
+                        last_p_lines = _rendered_wrap_count(cur_paras[0].text, _pil_font, _box_px)
+                        keep = last_p_lines - excess
+                        if keep > 0:
+                            rest_p = _split_para_at_lines(last_p, keep, _pil_font, _box_px)
+                            if rest_p is not None:
+                                first_nxt_p = nxt_txBody.find(qn('a:p'))
+                                if first_nxt_p is not None:
+                                    first_nxt_p.addprevious(rest_p)
+                                else:
+                                    nxt_txBody.append(rest_p)
+                                new_lines = _count_slide_lines_rendered(cur_slide)
+                                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (단락 분리: {keep}줄 유지)')
+                                changed = True
+                                continue
+                    print(f'  [{label}] 경고 슬라이드 {i+1}: {lines}줄 (단락 1개, 분리 불가)')
+                    continue
+
+                # 마지막 단락을 다음 슬라이드 앞으로 이동 시도
+                p_elem = cur_paras[-1]._p
                 cur_txBody.remove(p_elem)
                 first_nxt_p = nxt_txBody.find(qn('a:p'))
                 if first_nxt_p is not None:
                     first_nxt_p.addprevious(p_elem)
                 else:
                     nxt_txBody.append(p_elem)
-                new_lines = _count_slide_lines(cur_slide)
-                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (마지막 단락 → 다음 슬라이드)')
+                new_lines = _count_slide_lines_rendered(cur_slide)
+                nxt_new_lines = _count_slide_lines_rendered(nxt_slide)
+
+                # 다음 슬라이드가 마지막이 아닌데도 overflow → 롤백 후 단락 분리 시도
+                if nxt_new_lines > LINES_PER_SLIDE and i < n_content - 2:
+                    nxt_txBody.remove(p_elem)
+                    cur_all_rb = cur_txBody.findall(qn('a:p'))
+                    if cur_all_rb:
+                        cur_all_rb[-1].addnext(p_elem)
+                    else:
+                        cur_txBody.append(p_elem)
+
+                    # 단락 분리: 현재 슬라이드에 LINES_PER_SLIDE줄까지 채우고 나머지를 다음으로
+                    if _pil_font is not None:
+                        last_p = cur_paras[-1]._p
+                        last_p_lines = _rendered_wrap_count(cur_paras[-1].text, _pil_font, _box_px)
+                        keep = last_p_lines - excess
+                        if keep > 0:
+                            rest_p = _split_para_at_lines(last_p, keep, _pil_font, _box_px)
+                            if rest_p is not None:
+                                first_nxt_p2 = nxt_txBody.find(qn('a:p'))
+                                if first_nxt_p2 is not None:
+                                    first_nxt_p2.addprevious(rest_p)
+                                else:
+                                    nxt_txBody.append(rest_p)
+                                new_lines = _count_slide_lines_rendered(cur_slide)
+                                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (단락 분리: {keep}줄 유지, 나머지 → 다음)')
+                                changed = True
+                                continue
+
+                    # 인접 슬라이드로 이동/분리 모두 불가 (누적 초과분이 이웃 슬라이드로
+                    # 흡수되지 않는 경우) → 현재 위치 뒤에 새 슬라이드를 삽입해 초과분을 옮긴다.
+                    insert_slide_copy(prs, content_start + i + 1, content_start + i)
+                    new_slide = prs.slides[content_start + i + 1]
+                    new_txBody = _get_txBody(new_slide)
+                    if new_txBody is not None:
+                        for _p in list(new_txBody.findall(qn('a:p'))):
+                            new_txBody.remove(_p)
+                        moved = 0
+                        while _count_slide_lines_rendered(cur_slide) > LINES_PER_SLIDE:
+                            cur_paras_ins = _content_paras(cur_slide)
+                            if len(cur_paras_ins) <= 1:
+                                break
+                            p_elem2 = cur_paras_ins[-1]._p
+                            cur_txBody.remove(p_elem2)
+                            first_p = new_txBody.find(qn('a:p'))
+                            if first_p is not None:
+                                first_p.addprevious(p_elem2)
+                            else:
+                                new_txBody.append(p_elem2)
+                            moved += 1
+                        new_lines = _count_slide_lines_rendered(cur_slide)
+                        added_lines = _count_slide_lines_rendered(new_slide)
+                        print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (새 슬라이드 삽입: {added_lines}줄, {moved}단락 이동)')
+                        n_content += 1
+                        n_inserted += 1
+                        changed = True
+                    # 슬라이드 인덱스가 밀렸으므로 이번 pass는 중단하고 처음부터 재스캔
+                    break
+
+                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (마지막 단락 → 다음={nxt_new_lines}줄)')
                 changed = True
 
             else:  # lines < LINES_PER_SLIDE
-                # 다음 슬라이드의 첫 단락을 이 슬라이드로 흡수
+                needed = LINES_PER_SLIDE - lines
+                # 다음 슬라이드의 첫 단락을 이동해본 뒤 렌더링 줄 수로 판단 (초과 시 롤백)
                 nxt_paras = _content_paras(nxt_slide)
-                if len(nxt_paras) <= 1:
-                    continue  # 다음 슬라이드가 빈 슬라이드가 됨 → 건드리지 않음
-                first_para_text = nxt_paras[0].text
-                if lines + _visual_lines(first_para_text) > LINES_PER_SLIDE:
-                    continue  # 흡수 시 9줄 초과
+                if len(nxt_paras) == 0:
+                    continue  # 다음 슬라이드에 가져올 내용 자체가 없음
+                if len(nxt_paras) == 1:
+                    # 다음 슬라이드(종료 텍스트 병합 슬라이드 등)에 단락이 하나뿐이어도,
+                    # 현재 슬라이드가 마지막이 아니라면 9줄을 채워야 하므로 단락을 분리해
+                    # 앞부분만 가져오고 나머지는 다음 슬라이드에 남긴다.
+                    if _pil_font is None:
+                        continue
+                    p_elem = nxt_paras[0]._p
+                    first_p_lines = _rendered_wrap_count(nxt_paras[0].text, _pil_font, _box_px)
+                    if first_p_lines <= needed:
+                        continue  # 통째로 가져가면 다음 슬라이드가 완전히 비게 됨 → 건드리지 않음
+                    rest_p = _split_para_at_lines(p_elem, needed, _pil_font, _box_px)
+                    if rest_p is None:
+                        continue
+                    nxt_txBody = _get_txBody(nxt_slide)
+                    cur_txBody = _get_txBody(cur_slide)
+                    nxt_txBody.remove(p_elem)
+                    cur_all_p = cur_txBody.findall(qn('a:p'))
+                    if cur_all_p:
+                        cur_all_p[-1].addnext(p_elem)
+                    else:
+                        cur_txBody.append(p_elem)
+                    first_nxt_p = nxt_txBody.find(qn('a:p'))
+                    if first_nxt_p is not None:
+                        first_nxt_p.addprevious(rest_p)
+                    else:
+                        nxt_txBody.append(rest_p)
+                    new_lines = _count_slide_lines_rendered(cur_slide)
+                    print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (다음 슬라이드 단일 단락 분리 흡수)')
+                    changed = True
+                    continue
                 p_elem = nxt_paras[0]._p
                 nxt_txBody = _get_txBody(nxt_slide)
                 cur_txBody = _get_txBody(cur_slide)
@@ -3254,9 +3617,206 @@ def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int
                     cur_all_p[-1].addnext(p_elem)
                 else:
                     cur_txBody.append(p_elem)
-                new_lines = _count_slide_lines(cur_slide)
+                new_lines = _count_slide_lines_rendered(cur_slide)
+                if new_lines > LINES_PER_SLIDE:
+                    # 흡수 시 초과 → 원위치 후 단락 분리 시도
+                    cur_txBody.remove(p_elem)
+                    first_nxt_p = nxt_txBody.find(qn('a:p'))
+                    if first_nxt_p is not None:
+                        first_nxt_p.addprevious(p_elem)
+                    else:
+                        nxt_txBody.append(p_elem)
+                    # 단락 분리: 다음 슬라이드 첫 단락에서 needed줄만 가져옴
+                    if _pil_font is not None:
+                        first_p_lines = _rendered_wrap_count(nxt_paras[0].text, _pil_font, _box_px)
+                        if first_p_lines > needed:
+                            rest_p = _split_para_at_lines(p_elem, needed, _pil_font, _box_px)
+                            if rest_p is not None:
+                                nxt_txBody.remove(p_elem)
+                                cur_all_p2 = cur_txBody.findall(qn('a:p'))
+                                if cur_all_p2:
+                                    cur_all_p2[-1].addnext(p_elem)
+                                else:
+                                    cur_txBody.append(p_elem)
+                                first_nxt_p2 = nxt_txBody.find(qn('a:p'))
+                                if first_nxt_p2 is not None:
+                                    first_nxt_p2.addprevious(rest_p)
+                                else:
+                                    nxt_txBody.append(rest_p)
+                                new_lines = _count_slide_lines_rendered(cur_slide)
+                                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (다음 단락 {needed}줄 분리 흡수)')
+                                changed = True
+                                continue
+                    continue
                 print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (다음 슬라이드 첫 단락 흡수)')
                 changed = True
+
+    # 마지막 콘텐츠 슬라이드가 LINES_PER_SLIDE 초과인 경우 새 슬라이드 삽입
+    last_idx = content_start + n_content - 1
+    last_lines = _count_slide_lines_rendered(prs.slides[last_idx])
+    if last_lines > LINES_PER_SLIDE:
+        last_paras_check = _content_paras(prs.slides[last_idx])
+        if len(last_paras_check) > 1:
+            # 과분리 방지: 마지막 단락 이동 후 남는 줄이 LINES_PER_SLIDE//2 이하이면
+            # 이동분이 남은 분보다 많은 불균형 분리 → 새 슬라이드 삽입 건너뜀
+            _skip_split = False
+            if _pil_font is not None:
+                _last_para_lines = _rendered_wrap_count(
+                    last_paras_check[-1].text, _pil_font, _box_px
+                )
+                _remaining_est = last_lines - _last_para_lines
+                if _remaining_est <= LINES_PER_SLIDE // 2:
+                    print(f'  [{label}] 마지막 슬라이드 {n_content}: {last_lines}줄 초과이나 단락 이동 시 {_remaining_est}줄만 남아 불균형 분리 → 유지')
+                    _skip_split = True
+            if not _skip_split:
+                insert_slide_copy(prs, last_idx + 1, last_idx)
+                n_inserted += 1
+                new_slide = prs.slides[last_idx + 1]
+                # new_txBody를 한 번만 조회하여 재사용 (루프 내 재조회 시 빈 shape 인식 실패 방지)
+                new_txBody = _get_txBody(new_slide)
+                if new_txBody is not None:
+                    for _p in list(new_txBody.findall(qn('a:p'))):
+                        new_txBody.remove(_p)
+                last_txBody = _get_txBody(prs.slides[last_idx])
+                moved = 0
+                while _count_slide_lines_rendered(prs.slides[last_idx]) > LINES_PER_SLIDE:
+                    cur_paras2 = _content_paras(prs.slides[last_idx])
+                    if len(cur_paras2) <= 1:
+                        break
+                    if new_txBody is None:
+                        break
+                    p_elem = cur_paras2[-1]._p
+                    last_txBody.remove(p_elem)
+                    first_p = new_txBody.find(qn('a:p'))
+                    if first_p is not None:
+                        first_p.addprevious(p_elem)
+                    else:
+                        new_txBody.append(p_elem)
+                    moved += 1
+                new_last_lines = _count_slide_lines_rendered(prs.slides[last_idx])
+                added_lines = _count_slide_lines_rendered(prs.slides[last_idx + 1]) if new_txBody is not None else 0
+                print(f'  [{label}] 마지막 슬라이드 {n_content}: {last_lines}줄 → {new_last_lines}줄 (새 슬라이드 삽입: {added_lines}줄, {moved}단락 이동)')
+
+    # ── 연속 단편 병합: 문장 미완성 단락 + 절 번호 없는 다음 단락 → 하나로 합치기 ──
+    # _split_para_at_lines 분리 후 rebalance 이동으로 같은 슬라이드에 놓인
+    # 연속 단편("하고" / "불렀다." 등)을 단락 간격 없이 한 줄로 이어 붙인다.
+    _A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+
+    def _run_is_orange(r):
+        rPr = r.find(f'{{{_A}}}rPr')
+        if rPr is None:
+            return False
+        sf = rPr.find(f'{{{_A}}}solidFill')
+        if sf is None:
+            return False
+        cl = sf.find(f'{{{_A}}}srgbClr')
+        return cl is not None and cl.get('val', '').upper() == 'FFC000'
+
+    def _has_verse_run(p):
+        rr = p.findall(f'{{{_A}}}r')
+        return bool(rr) and _run_is_orange(rr[0])
+
+    def _p_text(p):
+        return ''.join(
+            (r.find(f'{{{_A}}}t').text or '')
+            for r in p.findall(f'{{{_A}}}r')
+            if r.find(f'{{{_A}}}t') is not None
+        )
+
+    def _ends_sentence(p):
+        t = _p_text(p).rstrip()
+        return bool(t) and t[-1] in '.!?'
+
+    for si in range(n_content):
+        slide_m = prs.slides[content_start + si]
+        txBody_m = _get_txBody(slide_m)
+        if txBody_m is None:
+            continue
+        merged_any = True
+        while merged_any:
+            merged_any = False
+            m_paras = _content_paras(slide_m)
+            for j in range(len(m_paras) - 1):
+                p_c = m_paras[j]._p
+                p_n = m_paras[j + 1]._p
+                if not _ends_sentence(p_c) and not _has_verse_run(p_n):
+                    # 공백 런 추가 후 p_n의 런을 p_c로 이동, p_n 제거
+                    c_runs = p_c.findall(f'{{{_A}}}r')
+                    if c_runs:
+                        space_r = copy.deepcopy(c_runs[-1])
+                        space_t = space_r.find(f'{{{_A}}}t')
+                        if space_t is not None:
+                            space_t.text = ' '
+                        _para_append_run(p_c, space_r)
+                    for nr in list(p_n.findall(f'{{{_A}}}r')):
+                        p_n.remove(nr)
+                        _para_append_run(p_c, nr)
+                    txBody_m.remove(p_n)
+                    print(f'  [{label}] 슬라이드 {si+1}: 연속 단편 병합 (단락 {j+1}+{j+2})')
+                    merged_any = True
+                    break  # m_paras 변경됐으므로 재시작
+
+    # ── 병합 후 재검증: 단락 병합으로 텍스트가 재배치(reflow)되어
+    #    LINES_PER_SLIDE 아래로 떨어진 슬라이드를 다음 슬라이드에서 다시 흡수해 보충 ──
+    changed = True
+    while changed:
+        changed = False
+        for i in range(n_content - 1):  # 마지막 슬라이드 제외
+            cur_slide = prs.slides[content_start + i]
+            nxt_slide = prs.slides[content_start + i + 1]
+            lines = _count_slide_lines_rendered(cur_slide)
+            if lines >= LINES_PER_SLIDE:
+                continue
+
+            needed_lines = LINES_PER_SLIDE - lines
+            nxt_paras = _content_paras(nxt_slide)
+            if len(nxt_paras) <= 1:
+                continue
+
+            p_elem = nxt_paras[0]._p
+            nxt_txBody = _get_txBody(nxt_slide)
+            cur_txBody = _get_txBody(cur_slide)
+            nxt_txBody.remove(p_elem)
+            cur_all_p = cur_txBody.findall(qn('a:p'))
+            if cur_all_p:
+                cur_all_p[-1].addnext(p_elem)
+            else:
+                cur_txBody.append(p_elem)
+            new_lines = _count_slide_lines_rendered(cur_slide)
+
+            if new_lines > LINES_PER_SLIDE:
+                # 흡수 시 초과 → 원위치 후 단락 분리 시도
+                cur_txBody.remove(p_elem)
+                first_nxt_p = nxt_txBody.find(qn('a:p'))
+                if first_nxt_p is not None:
+                    first_nxt_p.addprevious(p_elem)
+                else:
+                    nxt_txBody.append(p_elem)
+                if _pil_font is not None:
+                    first_p_lines = _rendered_wrap_count(nxt_paras[0].text, _pil_font, _box_px)
+                    if first_p_lines > needed_lines:
+                        rest_p = _split_para_at_lines(p_elem, needed_lines, _pil_font, _box_px)
+                        if rest_p is not None:
+                            nxt_txBody.remove(p_elem)
+                            cur_all_p2 = cur_txBody.findall(qn('a:p'))
+                            if cur_all_p2:
+                                cur_all_p2[-1].addnext(p_elem)
+                            else:
+                                cur_txBody.append(p_elem)
+                            first_nxt_p2 = nxt_txBody.find(qn('a:p'))
+                            if first_nxt_p2 is not None:
+                                first_nxt_p2.addprevious(rest_p)
+                            else:
+                                nxt_txBody.append(rest_p)
+                            new_lines = _count_slide_lines_rendered(cur_slide)
+                            print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (병합 후 보충: 다음 단락 분리 흡수)')
+                            changed = True
+                continue
+
+            print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (병합 후 보충: 다음 슬라이드 첫 단락 흡수)')
+            changed = True
+
+    return n_inserted
 
 
 
@@ -3347,12 +3907,15 @@ def replace_reading_slides(prs, content_start: int, content_end: int,
 
 
     # 기록 후 실제 줄 수 검증 및 재조정 (비마지막 슬라이드 7·8·10줄 → 9줄)
+    n_rebalance_inserted = 0
     if needed > 1:
-        _rebalance_reading_slides_post_write(prs, content_start, needed, label)
+        n_rebalance_inserted = _rebalance_reading_slides_post_write(prs, content_start, needed, label)
 
     # 종료 슬라이드의 본문 텍스트박스 비우기 (참조 PPT 잔여 내용 제거)
+    # n_rebalance_inserted: overflow로 삽입된 슬라이드 수만큼 ending 슬라이드 위치가 밀림
 
-    for i in range(content_start + needed, content_start + needed + n_ending):
+    for i in range(content_start + needed + n_rebalance_inserted,
+                   content_start + needed + n_rebalance_inserted + n_ending):
 
         shape = _find_content_shape(prs.slides[i])
 
@@ -3362,21 +3925,25 @@ def replace_reading_slides(prs, content_start: int, content_end: int,
 
 
 
-    total_new = needed + n_ending
+    total_new = needed + n_rebalance_inserted + n_ending
 
     # 마지막 본문 슬라이드의 줄 수가 merge_threshold 이하이면 ending shape를 본문 슬라이드로 통합
+    # (post-write 재조정으로 슬라이드가 추가/재배치될 수 있으므로 units_pages[-1]이 아닌
+    #  실제 마지막 본문 슬라이드의 렌더링된 줄 수를 확인해야 한다)
     if n_ending > 0 and units_pages and needed > 0:
-        last_page_lines = _page_visual_lines(units_pages[-1])
+        last_content_idx = content_start + needed + n_rebalance_inserted - 1
+        last_page_lines = _count_slide_lines(prs.slides[last_content_idx])
         if last_page_lines <= merge_threshold:
             ENDING_KW = ('주님의 말씀입니다', '◎ 하느님', '◎ 그리스도님')
-            ending_slide_idx = content_start + needed
+            ending_slide_idx = content_start + needed + n_rebalance_inserted
             ending_slide = prs.slides[ending_slide_idx]
-            last_slide = prs.slides[content_start + needed - 1]
+            last_slide = prs.slides[content_start + needed + n_rebalance_inserted - 1]
             spTree = last_slide.shapes._spTree
             for shape in ending_slide.shapes:
                 if shape.has_text_frame and any(kw in shape.text_frame.text for kw in ENDING_KW):
                     spTree.append(copy.deepcopy(shape._element))
-            for i in range(content_start + needed + n_ending - 1, content_start + needed - 1, -1):
+            for i in range(content_start + needed + n_rebalance_inserted + n_ending - 1,
+                           content_start + needed + n_rebalance_inserted - 1, -1):
                 delete_slide(prs, i)
             total_new -= n_ending
 
@@ -3434,6 +4001,10 @@ def _align_ending_slides_to_제2독서(prs, sections: dict):
 
     for shape in ref_slide.shapes:
 
+        if shape.name == 'BlackBg':
+
+            continue
+
         if not shape.has_text_frame:
 
             continue
@@ -3471,6 +4042,10 @@ def _align_ending_slides_to_제2독서(prs, sections: dict):
             slide = prs.slides[i]
 
             for shape in slide.shapes:
+
+                if shape.name == 'BlackBg':
+
+                    continue
 
                 if not shape.has_text_frame:
 
@@ -3649,6 +4224,8 @@ def update_입당송(prs, json_data: dict, sections: dict):
 
             _set_single_para_text(shape.text_frame, content)
 
+            _adjust_fit_if_needed(slide, shape, prs)
+
             break
 
 
@@ -3663,17 +4240,13 @@ def update_입당송(prs, json_data: dict, sections: dict):
 
 
 
-def update_reading_title_slide(prs, title_idx: int, label_kw: str, json_title: str):
+def update_reading_title_slide(prs, title_idx: int, label_kw: str, reading_title: str):
+
+    """독서/복음 제목 슬라이드에서 성서 제목 교체.
+
+    reading_title: JSON의 title 값 (예: "에제키엘 예언서의 말씀입니다.", "루카가 전한 거룩한 복음입니다.")
 
     """
-
-    독서 제목 슬라이드에서 성서 이름만 교체 (절 번호 제외).
-
-    json_title 예: '열왕기 하권 4,8-11.14-16ㄴ' → '열왕기 하권의 말씀입니다.'
-
-    """
-
-    book_name = _extract_book_name(json_title)
 
     slide = prs.slides[title_idx]
 
@@ -3697,17 +4270,13 @@ def update_reading_title_slide(prs, title_idx: int, label_kw: str, json_title: s
 
                 if brs:
 
-                    # <a:br/> 이후 성서 이름만 교체
-
-                    if _update_book_name_after_br(para, book_name):
+                    if _update_book_name_after_br(para, reading_title):
 
                         return
 
                 elif para.text.strip() and label_kw.replace(' ', '') not in para.text.replace(' ', ''):
 
-                    # br 없이 별도 단락인 경우
-
-                    _replace_para_text_clone(para, book_name + '의 말씀입니다.')
+                    _replace_para_text_clone(para, reading_title)
 
                     return
 
@@ -3715,21 +4284,13 @@ def update_reading_title_slide(prs, title_idx: int, label_kw: str, json_title: s
 
 
 
-def update_복음_title_slide(prs, title_idx: int, json_title: str):
+def update_복음_title_slide(prs, title_idx: int, gospel_title: str):
 
-    """복음 제목 슬라이드에서 복음사가 이름+조사만 교체.
+    """복음 제목 슬라이드에서 복음 제목 교체.
 
-    json_title 예: '마태오 10,37-42' → '마태오가 전한 거룩한 복음입니다.'
+    gospel_title: JSON의 title 값 (예: "루카가 전한 거룩한 복음입니다.")
 
     """
-
-    evangelist = _extract_book_name(json_title)
-
-    particle = _josa(evangelist)
-
-    new_name_with_particle = evangelist + particle
-
-
 
     slide = prs.slides[title_idx]
 
@@ -3743,13 +4304,7 @@ def update_복음_title_slide(prs, title_idx: int, json_title: str):
 
             t = para.text.strip()
 
-            m = re.match(r'^(.+?)(가|이)(\s*전한\s*거룩한\s*복음입니다.*)', t)
-
-            if m:
-
-                rest = m.group(3)  # " 전한 거룩한 복음입니다."
-
-                new_text = new_name_with_particle + rest
+            if '전한 거룩한 복음입니다' in t:
 
                 p = para._p
 
@@ -3765,7 +4320,7 @@ def update_복음_title_slide(prs, title_idx: int, json_title: str):
 
                     if t_el is not None:
 
-                        t_el.text = new_text
+                        t_el.text = gospel_title
 
                     for r in runs:
 
@@ -3841,11 +4396,29 @@ def update_화답송(prs, json_data: dict, sections: dict, 화답송_pptx_path, 
 
     if not is_sunday:
 
-        # 평일미사: 텍스트 슬라이드만, 후렴(◎) 포함 모든 절 표시
+        # 평일미사 포맷: 슬라이드마다 ◎ 후렴 + ○ 절 (2단락)
 
         segments = [s.strip() for s in content.split('\n') if s.strip()]
 
-        needed = max(1, len(segments))
+        if not segments:
+
+            return
+
+        refrain_raw = segments[0]   # ◎ 후렴
+
+        verses = segments[1:]       # ○ 절들
+
+        # 후렴 텍스트 정규화 (탭 정렬)
+
+        if refrain_raw.startswith('◎ '):
+
+            refrain_text = '◎\t' + refrain_raw[2:]
+
+        else:
+
+            refrain_text = refrain_raw
+
+        needed = len(verses)    # 슬라이드 수 = 절 수
 
         # 기존 범위 뒤에 텍스트 템플릿 복제본 needed개 삽입
 
@@ -3867,15 +4440,23 @@ def update_화답송(prs, json_data: dict, sections: dict, 화답송_pptx_path, 
 
             _update_화답송_title_in_slide(prs.slides[idx], title)
 
-            seg_text = segments[i]
+            _set_slide_bg_black(prs.slides[idx], prs)
 
-            if seg_text.startswith('○ '):
+            verse = verses[i]
 
-                seg_text = '○\t' + seg_text[2:]
+            verse_clean = verse.strip()
 
-            elif seg_text.startswith('◎ '):
+            if verse_clean.startswith('○ '):
 
-                seg_text = '◎\t' + seg_text[2:]
+                verse_text = '○\t' + verse_clean[2:]
+
+            elif verse_clean.startswith('◎ '):
+
+                verse_text = '◎\t' + verse_clean[2:]
+
+            else:
+
+                verse_text = verse_clean
 
             for shape in prs.slides[idx].shapes:
 
@@ -3885,21 +4466,21 @@ def update_화답송(prs, json_data: dict, sections: dict, 화답송_pptx_path, 
 
                 t = shape.text_frame.text.strip()
 
-                if t and '화 답 송' not in t and '전례문' not in t and 'Responsorial' not in t:
+                if not t or '화 답 송' in t or '전례문' in t or 'Responsorial' in t:
 
-                    _set_single_para_text(shape.text_frame, seg_text)
+                    continue
 
-                    _adjust_fit_if_needed(prs.slides[idx], shape, prs)
+                _set_화답송_content_text(shape.text_frame, refrain_text, verse_text)
 
-                    break
+                _adjust_fit_if_needed(prs.slides[idx], shape, prs)
+
+                break
 
         return
 
 
 
     # 주일미사: 악보(n+1) + 텍스트(n) = 2n+1 슬라이드
-
-    # \n으로 분리; 첫 번째 항목(◎ 후렴)은 악보 슬라이드에 포함되므로 제외
 
     segments = [s.strip() for s in content.split('\n') if s.strip()]
 
@@ -3960,6 +4541,8 @@ def update_화답송(prs, json_data: dict, sections: dict, 화답송_pptx_path, 
         if i % 2 == 0:
 
             # 악보 슬라이드: 화답송 악보 PPT에서 복사
+            # copy_slide_from_prs()가 원본 배경/서식을 이미 그대로 복사하므로
+            # _set_slide_bg_black()로 덮어쓰지 않는다 (원본 서식 보존)
 
             if 악보_prs:
 
@@ -3971,21 +4554,27 @@ def update_화답송(prs, json_data: dict, sections: dict, 화답송_pptx_path, 
 
         else:
 
-            # 텍스트 슬라이드: 절 내용 업데이트
+            # 텍스트 슬라이드: ○ 절만 표시 (주일미사는 단일 단락)
 
             _update_화답송_title_in_slide(prs.slides[idx], title)
+
+            _set_slide_bg_black(prs.slides[idx], prs)
 
             verse_idx = i // 2
 
             if verse_idx < n:
 
-                verse_text = verses[verse_idx]
+                verse = verses[verse_idx]
 
-                # 참조 PPT 서식: ○ 다음 공백을 탭으로 교체하여 탭 스톱 정렬 적용
+                verse_clean = verse.strip()
 
-                if verse_text.startswith('○ '):
+                if verse_clean.startswith('○ '):
 
-                    verse_text = '○\t' + verse_text[2:]
+                    verse_text = '○\t' + verse_clean[2:]
+
+                else:
+
+                    verse_text = verse_clean
 
                 for shape in prs.slides[idx].shapes:
 
@@ -3994,8 +4583,6 @@ def update_화답송(prs, json_data: dict, sections: dict, 화답송_pptx_path, 
                         continue
 
                     t = shape.text_frame.text.strip()
-
-                    # '화 답 송' 타이틀 shape만 제외 ('화' 단독 필터는 '평화' 등 오탐)
 
                     if t and '화 답 송' not in t and '전례문' not in t and 'Responsorial' not in t:
 
@@ -4682,9 +5269,14 @@ def replace_시작기도문(prs, 시작기도_path: Path, sections: dict):
 
 
 
-def append_미사후기도(prs, path: Path) -> int:
+def replace_미사후기도(prs, path: Path, sections: dict) -> int:
 
-    """파견성가 이후에 미사 후 기도 PPT 슬라이드를 삽입한다 (평일미사 전용)."""
+    """파견 성가 이후 기존 미사 후 기도 슬라이드를 새 내용으로 교체 (평일미사 전용).
+
+    - path가 None이면 아무것도 하지 않음 (기존 미사 후 기도 보존)
+    - path가 있으면 기존 미사 후 기도 슬라이드를 삭제하고 새 내용으로 삽입
+    - 위치: 파견 성가(divider+content) → blank divide → 미사 후 기도 → blank → 파견
+    """
 
     if not path or not path.exists():
 
@@ -4698,15 +5290,81 @@ def append_미사후기도(prs, path: Path) -> int:
 
         return 0
 
-    insert_pos = len(prs.slides)
+    texts = all_slide_texts(prs)
+
+    n = len(prs.slides)
+
+    # 파견 성가 이후 blank divide 위치 파악
+    # 파견_content_end = 파견 콘텐츠 직후 인덱스 (blank이거나 콘텐츠 없는 경우 파견_content_start)
+
+    파견_end = sections.get('파견_content_end', -1)
+
+    if 파견_end < 0:
+
+        파견_div = sections.get('파견_divider', -1)
+
+        if 파견_div < 0:
+
+            print('  [경고] 파견 성가 위치를 찾을 수 없어 미사 후 기도를 삽입할 수 없습니다.')
+
+            return 0
+
+        파견_end = 파견_div + 1
+
+    # blank divide 슬라이드 위치 (파견_end)
+    # 미사 후 기도 시작: blank 바로 다음
+
+    미사후기도_start = 파견_end + 1 if 파견_end < n and not texts[파견_end].strip() else 파견_end
+
+    if 미사후기도_start >= n:
+
+        # 미사 후 기도 공간 없음: 파견 뒤에 직접 삽입
+
+        for i in range(n_src):
+
+            copy_slide_from_prs(prs, n + i, src_prs, i)
+
+        print(f'  미사 후 기도: {n_src}장 삽입 (파견 이후 끝에 추가)')
+
+        return n_src
+
+    # 기존 미사 후 기도 범위 탐색 (blank 또는 dismissal slide까지)
+
+    DISMISSAL_KW = ['미사가 끝났으니', '파견하나이다', 'DISMISSAL', 'Dismissal', '미사가 끝']
+
+    미사후기도_end = 미사후기도_start
+
+    for i in range(미사후기도_start, n):
+
+        t = texts[i]
+
+        if not t.strip():
+
+            break
+
+        if any(kw in t for kw in DISMISSAL_KW):
+
+            break
+
+        미사후기도_end = i + 1
+
+    # 기존 미사 후 기도 슬라이드 삭제 (역순)
+
+    n_deleted = 미사후기도_end - 미사후기도_start
+
+    for i in range(미사후기도_end - 1, 미사후기도_start - 1, -1):
+
+        delete_slide(prs, i)
+
+    # 새 미사 후 기도 삽입
 
     for i in range(n_src):
 
-        copy_slide_from_prs(prs, insert_pos + i, src_prs, i)
+        copy_slide_from_prs(prs, 미사후기도_start + i, src_prs, i)
 
-    print(f'  미사 후 기도: {n_src}장 삽입')
+    print(f'  미사 후 기도: 기존 {n_deleted}장 제거 → 새 {n_src}장 삽입 (슬라이드 {미사후기도_start + 1}부터)')
 
-    return n_src
+    return n_src - n_deleted
 
 
 
@@ -4953,6 +5611,57 @@ def replace_성가(prs, 성가_map: dict, hymn_numbers: dict, copy_scores: bool 
 
 
 
+def validate_pptx_structure(pptx_path: str) -> list:
+    """PPTX 내부 XML 구조 검증 — 깨진 이미지 참조와 잘못된 XML 문자를 탐지한다.
+
+    PowerPoint가 '슬라이드에 일부 텍스트, 이미지, 개체 등이 손상되어 표시할 수 없습니다'
+    오류를 띄우는 두 가지 원인을 미리 포착한다:
+      1. XML 1.0에서 허용되지 않는 제어 문자 (0x00-0x08, 0x0B, 0x0C, 0x0E-0x1F, 0x7F)
+      2. 슬라이드 XML이 참조하는 rId가 .rels 파일에 정의되지 않은 경우 (깨진 이미지 링크)
+    """
+    import zipfile as _zip
+
+    _INVALID_XML = re.compile(rb'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
+
+    issues = []
+
+    with _zip.ZipFile(str(pptx_path), 'r') as z:
+        names = set(z.namelist())
+
+        for name in sorted(names):
+            if not re.match(r'ppt/slides/slide\d+\.xml$', name):
+                continue
+
+            content = z.read(name)
+            slide_num = re.search(r'slide(\d+)\.xml$', name).group(1)
+
+            # 1. 잘못된 XML 문자 검사
+            m = _INVALID_XML.search(content)
+            if m:
+                bad_byte = m.group(0)[0]
+                issues.append(f'슬라이드 {slide_num}: 잘못된 XML 문자 (0x{bad_byte:02X})')
+
+            # 2. rId 참조 vs .rels 정의 대조
+            used_rids = set(re.findall(rb'r:[a-zA-Z]+=[\'"](rId\d+)[\'"]', content))
+            if not used_rids:
+                continue
+
+            rels_name = f'ppt/slides/_rels/slide{slide_num}.xml.rels'
+            if rels_name not in names:
+                issues.append(f'슬라이드 {slide_num}: .rels 파일 없음 ({len(used_rids)}개 참조 미검증)')
+                continue
+
+            rels_content = z.read(rels_name)
+            defined_rids = set(re.findall(rb'Id="(rId\d+)"', rels_content))
+            broken = used_rids - defined_rids
+            if broken:
+                broken_str = ', '.join(sorted(b.decode() for b in broken))
+                issues.append(f'슬라이드 {slide_num}: 끊어진 이미지 참조 ({broken_str})')
+
+    return issues
+
+
+
 def validate(prs, json_data: dict, is_sunday: bool = True) -> bool:
 
     texts = all_slide_texts(prs)
@@ -4971,7 +5680,11 @@ def validate(prs, json_data: dict, is_sunday: bool = True) -> bool:
 
 
 
-    for kw in ['입당송', '화답송', '영성체송']:
+    check_kws = ['입당송', '영성체송']
+    if is_sunday:
+        check_kws.append('화답송')
+
+    for kw in check_kws:
 
         if not any(kw in t for t in texts):
 
@@ -5096,6 +5809,14 @@ def _strip_slide_xml(content: bytes) -> bytes:
         content,
 
     )
+
+    # 비디오 제거 후 남는 고아 미디어 타이밍 제거
+    # videoFile / hlinkClick 제거 후 <p:timing> 안의 <p:video> 블록과
+    # presetClass="mediacall" 애니메이션이 남으면 PowerPoint가 깨진 개체로 인식함
+
+    if b'<p:video>' in content or b'presetClass="mediacall"' in content:
+
+        content = re.sub(rb'<p:timing>.*?</p:timing>\s*', b'', content, flags=re.DOTALL)
 
     return content
 
@@ -5561,6 +6282,11 @@ def main():
 
                 delete_slide(prs, i)
 
+            # 제2독서 앞의 blank divider(s-1)도 삭제 — 연속 blank 방지
+            if s > 0 and not _slide_text(prs.slides[s - 1]).strip():
+
+                delete_slide(prs, s - 1)
+
 
 
     # 섹션 재탐색
@@ -5661,11 +6387,13 @@ def main():
 
     if not is_sunday and files.get('미사후기도'):
 
-        _report_progress(92, '미사 후 기도 삽입 중...')
+        _report_progress(92, '미사 후 기도 교체 중...')
 
         print('\n[6.5] 미사 후 기도...')
 
-        append_미사후기도(prs, files['미사후기도'])
+        sec = find_sections(prs)
+
+        replace_미사후기도(prs, files['미사후기도'], sec)
 
 
 
@@ -5685,7 +6413,33 @@ def main():
 
 
 
+    # 7.5. PPT 2007 비호환 요소 정리 (깨진 이미지 참조 제거 등)
+
+    _report_progress(96, 'PPT 호환성 정리 중...')
+    print('\n[7.5] PPT 호환성 정리...')
+    strip_ppt2007_incompatible(str(output_path))
+
+
+
     # 8. 검증
+
+    _report_progress(98, 'PPTX 구조 검증 중...')
+
+    print('\n[8] 검증...')
+
+    xml_issues = validate_pptx_structure(str(output_path))
+
+    if xml_issues:
+
+        print('  [경고] PPTX 구조 문제 발견:')
+
+        for issue in xml_issues:
+
+            print(f'    - {issue}')
+
+    else:
+
+        print('  PPTX 구조 검증 통과!')
 
     prs2 = Presentation(str(output_path))
 
