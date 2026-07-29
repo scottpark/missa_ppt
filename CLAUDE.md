@@ -1,5 +1,23 @@
 # CLAUDE.md — missa_ppt 프로젝트
 
+## 프로젝트 구조
+
+매일미사 웹데이터로 미사 PPT를 자동 생성하는 도구.
+
+**파이프라인:** `missa_to_json.py`(missa.cbck.or.kr 크롤링 → `missa_YYYYMMDD.json`)
+→ `missa_to_ppt.py`(JSON + 성가번호로 참조/템플릿 PPT를 수정해 결과 PPT 생성).
+
+**핵심 파일:**
+- `missa_to_json.py` — 독서·복음·화답송·성가 등 섹션을 크롤링해 JSON 출력.
+- `missa_to_ppt.py` — 메인 생성기. 슬라이드 복사·독서 줄 나눔·절 번호 색상·`validate()` 등.
+- `test_missa_regression.py` — 주일/평일 통합 + 단위 회귀 테스트 (`pytest`로 실행).
+- `config.json` — `onedrive_hymn_folder`(악보 성가 PPT 경로).
+- `missa_to_ppt.spec` + `dist/` — PyInstaller 빌드(`missa_to_ppt.exe`, GUI 모드).
+- `docs/` — 요구사항·구현 계획 v1.3, `archive/`, `ai-readiness-check/`.
+
+**날짜 폴더(`YYYYMMDD/`):** 미사별 작업 디렉터리. JSON, 템플릿·결과 pptx,
+화답송 악보 pptx, `log/`를 포함. 커밋된 산출물 겸 회귀 테스트 입력.
+
 ## OOXML XML 조작 규칙 (필수 적용)
 
 ### 자식 요소 순서 엄수
