@@ -50,6 +50,8 @@ import sys
 
 from pathlib import Path
 
+from xml.sax.saxutils import escape as _xml_escape
+
 
 
 from pptx import Presentation
@@ -352,7 +354,7 @@ def parse_args():
 
                         help='미사 후 기도 PPT 경로 (평일미사 전용)')
 
-    parser.add_argument('--test', action='store_true', help='팝업 없이 폴더 파일로 번호 자동 추론')
+    parser.add_argument('--test', action='store_true', help='테스트 모드: 누락 성가 번호를 테스트 기본값으로 채움(검증 생략)')
 
     args = parser.parse_args()
 
@@ -374,9 +376,37 @@ def parse_args():
 
 
 
-    if any(v is None for v in numbers.values()):
+    if args.test:
+
+        # 테스트 모드: 누락 번호를 테스트 기본값으로 채움
 
         numbers = _infer_hymn_numbers(numbers)
+
+    else:
+
+        # 실사용: 미사 유형별 필수 성가 번호 검증 (누락 시 오류·중단)
+
+        # 주일미사 = 5종 전부, 평일미사 = 2차봉헌 제외 4종 필수 (2차봉헌은 없는 게 정상)
+
+        is_sunday = is_sunday_mass(args.date)
+
+        required = HYMN_TYPES if is_sunday else [t for t in HYMN_TYPES if t != '2차봉헌']
+
+        missing = [t for t in required if numbers.get(t) is None]
+
+        if missing:
+
+            mass_label = '주일미사' if is_sunday else '평일미사'
+
+            print(
+
+                f'오류: {mass_label}에 필요한 성가 번호가 누락되었습니다: {", ".join(missing)}',
+
+                file=sys.stderr,
+
+            )
+
+            sys.exit(1)
 
 
 
@@ -2230,7 +2260,7 @@ def _replace_para_text_clone(para, new_text: str):
 
     else:
 
-        _para_append_run(p, pptx_parse_xml(f'<a:r xmlns:a="{A_NS}"><a:t>{new_text}</a:t></a:r>'))
+        _para_append_run(p, pptx_parse_xml(f'<a:r xmlns:a="{A_NS}"><a:t>{_xml_escape(new_text)}</a:t></a:r>'))
 
 
 
@@ -2425,7 +2455,7 @@ def _set_single_para_text(tf, text: str):
 
         else:
 
-            _para_append_run(p, pptx_parse_xml(f'<a:r xmlns:a="{A_NS}"><a:t>{text}</a:t></a:r>'))
+            _para_append_run(p, pptx_parse_xml(f'<a:r xmlns:a="{A_NS}"><a:t>{_xml_escape(text)}</a:t></a:r>'))
 
 
 
@@ -3133,7 +3163,7 @@ def _set_reading_text(tf, units: list, line_spacing: float = None):
             if tmpl_r is not None:
                 r = _white_run(text, tmpl_r)
             else:
-                r = pptx_parse_xml(f'<a:r xmlns:a="{A_NS}"><a:t>{text}</a:t></a:r>')
+                r = pptx_parse_xml(f'<a:r xmlns:a="{A_NS}"><a:t>{_xml_escape(text)}</a:t></a:r>')
             _para_append_run(p, r)
 
             return
@@ -4693,7 +4723,7 @@ def update_복음환호송(prs, json_data: dict, sections: dict):
 
                         new_p = pptx_parse_xml(f'<a:p xmlns:a="{A_NS}"/>')
 
-                        _para_append_run(new_p, pptx_parse_xml(f'<a:r xmlns:a="{A_NS}"><a:t>{line}</a:t></a:r>'))
+                        _para_append_run(new_p, pptx_parse_xml(f'<a:r xmlns:a="{A_NS}"><a:t>{_xml_escape(line)}</a:t></a:r>'))
 
                         txBody.append(new_p)
 
@@ -4753,7 +4783,7 @@ def update_복음환호송(prs, json_data: dict, sections: dict):
 
                         text = '○ \t' + line[2:] if line.startswith('○ ') else line
 
-                        _para_append_run(new_p, pptx_parse_xml(f'<a:r xmlns:a="{A_NS}"><a:t>{text}</a:t></a:r>'))
+                        _para_append_run(new_p, pptx_parse_xml(f'<a:r xmlns:a="{A_NS}"><a:t>{_xml_escape(text)}</a:t></a:r>'))
 
                         txBody.append(new_p)
 
