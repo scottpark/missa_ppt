@@ -34,6 +34,8 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 import argparse
 
+import atexit
+
 import copy
 
 import io
@@ -47,6 +49,10 @@ import re
 import subprocess
 
 import sys
+
+import tempfile
+
+import uuid
 
 from pathlib import Path
 
@@ -310,6 +316,22 @@ _TEST_HYMN_DEFAULTS = {'입당': 55, '봉헌': 216, '성체': 163, '2차봉헌':
 
 
 
+
+
+_COM_VERIFY_ENABLED_CACHE = [None]
+
+
+def _com_verification_enabled() -> bool:
+    """config.json의 com_verification_enabled 값(기본 True)을 memoize해서 반환한다.
+    PowerPoint COM 실측이 실패하는 모든 경로는 이미 자동으로 Pillow 전용 폴백하므로
+    기본값은 켜둬도 안전하다 — 이 플래그는 COM을 아예 쓰고 싶지 않은 머신을 위한
+    명시적 opt-out이다."""
+    if _COM_VERIFY_ENABLED_CACHE[0] is None:
+        enabled = bool(_load_config().get('com_verification_enabled', True))
+        _COM_VERIFY_ENABLED_CACHE[0] = enabled
+        if not enabled:
+            print('  [설정] config.json: com_verification_enabled=false → PowerPoint COM 검증 비활성화(Pillow 추정치만 사용)')
+    return _COM_VERIFY_ENABLED_CACHE[0]
 
 
 def _infer_hymn_numbers(numbers: dict) -> dict:
@@ -1076,11 +1098,13 @@ def _run_with_progress_window(main_func):
 
 
 
-    log_io = io.StringIO()
+    log_out = io.StringIO()
+
+    log_err = io.StringIO()
 
     orig_out, orig_err = sys.stdout, sys.stderr
 
-    sys.stdout = sys.stderr = log_io
+    sys.stdout, sys.stderr = log_out, log_err
 
 
 
@@ -1092,37 +1116,45 @@ def _run_with_progress_window(main_func):
 
             main_func()
 
-            txt = log_io.getvalue()
+            full_txt = log_out.getvalue() + log_err.getvalue()
 
             sys.stdout, sys.stderr = orig_out, orig_err
 
-            pq.put(('__done__', txt, None))
+            pq.put(('__done__', full_txt, None))
 
         except SystemExit as _e:
 
-            txt = log_io.getvalue()
+            full_txt = log_out.getvalue() + log_err.getvalue()
+
+            err_txt = log_err.getvalue().strip()
 
             sys.stdout, sys.stderr = orig_out, orig_err
 
             if _e.code and _e.code != 0:
 
-                pq.put(('__done__', txt, f'종료 코드: {_e.code}'))
+                # stderr에 찍힌 구체적 에러 메시지(예: "오류: ...")만 팝업에 보여준다.
+
+                # 진행 로그 전체는 full_txt로 별도 보관해 로그 파일에는 남긴다.
+
+                pq.put(('__done__', full_txt, err_txt or f'종료 코드: {_e.code}'))
 
             else:
 
-                pq.put(('__done__', txt, None))
+                pq.put(('__done__', full_txt, None))
 
-        except Exception:
+        except Exception as _e2:
 
             import traceback as _tb
 
             tb_str = _tb.format_exc()
 
-            txt = log_io.getvalue()
+            full_txt = log_out.getvalue() + log_err.getvalue() + '\n' + tb_str
 
             sys.stdout, sys.stderr = orig_out, orig_err
 
-            pq.put(('__done__', txt, tb_str))
+            # 팝업에는 예외 메시지만 간결하게, 트레이스백은 로그 파일(full_txt)에만 남긴다.
+
+            pq.put(('__done__', full_txt, f'{type(_e2).__name__}: {_e2}'))
 
 
 
@@ -1784,6 +1816,34 @@ def copy_slide_from_prs(target_prs, position: int, source_prs, source_idx: int):
 
 
 
+    # 소스와 타겟의 슬라이드 크기가 다르면 도형이 절대 EMU 좌표 그대로 복사되어
+
+    # 확대/축소되어 보인다 (예: 12192000x6858000 소스를 9144000x5143500 타겟에
+
+    # 복사하면 그림이 타겟 슬라이드 폭의 127%로 넘침). 비율만큼 위치/크기를 보정한다.
+
+    scale_x = target_prs.slide_width / source_prs.slide_width
+
+    scale_y = target_prs.slide_height / source_prs.slide_height
+
+    if scale_x != 1 or scale_y != 1:
+
+        for shape in new_slide.shapes:
+
+            if None in (shape.left, shape.top, shape.width, shape.height):
+
+                continue
+
+            shape.left = int(shape.left * scale_x)
+
+            shape.top = int(shape.top * scale_y)
+
+            shape.width = int(shape.width * scale_x)
+
+            shape.height = int(shape.height * scale_y)
+
+
+
     # 배경 복사: 슬라이드 자체 p:bg가 없으면 레이아웃/마스터에서 상속된 배경을 명시적으로 삽입
 
     # p:bg는 p:cSld 내부에 위치하므로 cSld를 통해 접근/삽입
@@ -1829,6 +1889,50 @@ def copy_slide_from_prs(target_prs, position: int, source_prs, source_idx: int):
     move_slide(target_prs, new_idx, position)
 
 
+_COM_PROBE_PATH = [None]
+
+
+def _com_probe_path() -> Path:
+    """PowerPoint COM 실측용 임시 단일 슬라이드 pptx 경로.
+    프로세스당 1개 경로를 재사용(호출마다 덮어쓰기)한다 — 매번 새 파일을 만들면
+    COM 검증이 반복 호출되는 재조정 루프에서 임시 파일이 누적된다."""
+    if _COM_PROBE_PATH[0] is None:
+        token = f'{os.getpid()}_{uuid.uuid4().hex[:8]}'
+        _COM_PROBE_PATH[0] = Path(tempfile.gettempdir()) / f'missa_com_probe_{token}.pptx'
+
+        def _cleanup_probe_file(_path=_COM_PROBE_PATH[0]):
+            try:
+                _path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        atexit.register(_cleanup_probe_file)
+    return _COM_PROBE_PATH[0]
+
+
+def _build_com_probe_pptx(prs, slide) -> tuple:
+    """prs 안의 한 슬라이드를, 크기가 동일한 임시 단일 슬라이드 Presentation으로
+    복사해 디스크에 저장한다. PowerPoint COM으로 실제 줄 수를 실측하기 위한
+    probe 파일 — <날짜>/log/ 폴더(커밋되는 회귀 테스트 산출물)는 쓰지 않는다.
+
+    반환: (probe_pptx_path, content_shape의 1-based COM Shapes() 인덱스)
+    """
+    slide_idx = list(prs.slides).index(slide)
+
+    probe = Presentation()
+    probe.slide_width = prs.slide_width
+    probe.slide_height = prs.slide_height
+    while len(probe.slides) > 0:
+        delete_slide(probe, 0)
+
+    copy_slide_from_prs(probe, 0, prs, slide_idx)
+
+    content_shape = _find_content_shape(probe.slides[0])
+    shape_index_1based = list(probe.slides[0].shapes).index(content_shape) + 1
+
+    path = _com_probe_path()
+    probe.save(str(path))
+    return path, shape_index_1based
 
 
 
@@ -3381,6 +3485,81 @@ def _count_slide_lines_rendered(slide) -> int:
     return total
 
 
+_COM_DISABLED = [False]
+_COM_MISMATCH_COUNT: dict = {}
+_COM_ATEXIT_REGISTERED = [False]
+
+
+def _count_slide_lines_verified(prs, slide) -> int:
+    """_count_slide_lines_rendered()의 Pillow 추정치가 경계값(LINES_PER_SLIDE)일
+    때만 PowerPoint COM 실측으로 재확인한다. COM 불가/실패 시 Pillow 값을 그대로
+    반환(영구 폴백) — 어떤 실패 경로도 예외를 밖으로 내보내지 않는다.
+
+    2026-08-04 발견 버그: 예전에는 슬라이드별 불일치 횟수가 일정 캡을 넘으면 이
+    함수 자체가 그 슬라이드에 한해 COM을 다시 묻지 않고 Pillow 값을 영구히
+    반환했다. 문제는 이 캡이 "한 번의 수정 시도"가 아니라 섹션 전체 처리 동안
+    누적되는 전역 카운터였다는 것 — 한 슬라이드가 앞선 무관한 작업에서 이미
+    3번 불일치를 겪었다면, 그 뒤 실제로는 성공하지 못한 수정 시도조차 COM을
+    건너뛰고 Pillow의 (틀린) 값을 "실측값"인 것처럼 반환해 거짓 성공을
+    보고했다(제1독서 슬라이드 19가 실제로는 10줄인데 9줄로 "성공" 처리된
+    사례로 실측 확인). 이제는 조건을 만족하는 한 매번 실제로 COM에 묻는다 —
+    무한 재시도 방지는 개별 수정 시도 쪽(`_split_and_adjust_via_com`의
+    max_adjust, `_rebalance_reading_slides_post_write`의 스윕 횟수 상한)에서
+    책임진다."""
+    pil_lines = _count_slide_lines_rendered(slide)
+    if pil_lines != LINES_PER_SLIDE or _COM_DISABLED[0]:
+        return pil_lines
+    if not _com_verification_enabled():
+        return pil_lines
+
+    try:
+        import ppt_com_verify as com
+    except ImportError:
+        _COM_DISABLED[0] = True
+        print('  [경고] pywin32(PowerPoint COM) 미설치 — 이후 Pillow 추정치만으로 줄 수를 계산합니다.')
+        return pil_lines
+
+    # probe 생성(_build_com_probe_pptx)은 python-pptx만 쓰는 순수 파이썬 코드라
+    # ComVerificationUnavailable이 아닌 예외(예: 복사된 슬라이드에 content shape가
+    # 없어 ValueError, 디스크 오류로 OSError 등)를 낼 수 있다. 이는 COM 자체의
+    # 문제가 아니라 이 슬라이드 하나에 국한된 문제이므로, COM을 전역적으로
+    # 비활성화하지 않고 이번 호출만 Pillow로 폴백한다.
+    try:
+        probe_path, shape_idx = _build_com_probe_pptx(prs, slide)
+    except Exception as e:
+        print(f'  [경고] COM 검증용 probe 생성 실패({e}) — 이 슬라이드는 Pillow 추정치를 사용합니다.')
+        return pil_lines
+
+    com_failed = False
+    try:
+        real_lines = com.count_slide_lines(str(probe_path), shape_idx)
+    except com.ComVerificationUnavailable as e:
+        _COM_DISABLED[0] = True
+        print(f'  [경고] PowerPoint COM 실측 실패({e}) — 이후 Pillow 추정치만으로 줄 수를 계산합니다.')
+        com_failed = True
+    # probe pptx는 프로세스당 1개 경로를 재사용(_com_probe_path)하므로 매 호출 후
+    # 삭제하지 않는다 — 정리는 atexit(_cleanup_probe_file)이 프로세스 종료 시 처리한다.
+
+    if not _COM_ATEXIT_REGISTERED[0]:
+        # PowerPoint Application 인스턴스는 프로세스 종료 시 반드시 Quit()되어야 한다.
+        # atexit는 등록 역순(LIFO)으로 실행되므로, 위 _build_com_probe_pptx()가 이미
+        # 등록한 임시 파일 정리(_cleanup_probe_file)보다 반드시 "뒤에" 등록해야
+        # PowerPoint가 먼저 종료되고(파일 잠금 해제) 그 다음에 파일이 삭제된다.
+        # 반대 순서로 등록하면 Quit() 전에 삭제를 시도해 파일이 잠긴 채로 남을 수 있다.
+        atexit.register(com.shutdown)
+        _COM_ATEXIT_REGISTERED[0] = True
+
+    if com_failed:
+        return pil_lines
+
+    if real_lines != pil_lines:
+        sid = slide.slide_id
+        _COM_MISMATCH_COUNT[sid] = _COM_MISMATCH_COUNT.get(sid, 0) + 1
+        print(f'  [경고] 줄 수 불일치 감지: Pillow={pil_lines}줄, COM 실측={real_lines}줄 '
+              f'→ COM 값 채택 (해당 슬라이드 누적 {_COM_MISMATCH_COUNT[sid]}회)')
+    return real_lines
+
+
 def _split_para_at_lines(p_elem, keep_lines: int, pil_font, box_px: float):
     """단락 XML 요소를 word-wrap 기준 keep_lines 줄에서 분리.
 
@@ -3473,6 +3652,78 @@ def _split_para_at_lines(p_elem, keep_lines: int, pil_font, box_px: float):
     return rest_p
 
 
+def _restore_para_from_backup(p_elem, backup):
+    """_split_para_at_lines()로 분리(mutate)된 p_elem을, 분리 전 deepcopy해 둔
+    backup 상태로 되돌린다. 자식 요소(run 등)를 전부 backup의 복사본으로
+    교체한다 — backup은 이미 올바른 스키마 순서였으므로 순서도 그대로 보존된다."""
+    for child in list(p_elem):
+        p_elem.remove(child)
+    for child in backup:
+        p_elem.append(copy.deepcopy(child))
+
+
+def _split_and_adjust_via_com(prs, cur_slide, p_elem, keep: int, pil_font, box_px: float,
+                                place_rest, remove_rest, max_adjust: int = 2):
+    """p_elem을 keep 줄에서 분리해 place_rest(rest_p)로 배치한 뒤, cur_slide의
+    실제 줄 수를 COM으로 재확인한다.
+
+    _split_para_at_lines()는 "어디서 자를지"를 여전히 Pillow 워드랩으로
+    계산하므로, COM 실측이 목표(LINES_PER_SLIDE)와 다르면 분리 지점 자체가
+    편향된 것이다. keep을 늘리면(p_elem에 더 많이 남기면) cur_slide에 남는
+    줄 수가 늘고, 줄이면 준다 — 이 관계는 p_elem이 cur_slide에 남는 경우
+    (초과분 분리)와 다음 슬라이드에서 넘어와 cur_slide에 합쳐지는 경우
+    (부족분 흡수) 모두 동일하다. 불일치가 남으면 배치를 되돌리고 keep을
+    ±1 조정해 재분리하기를 최대 max_adjust회 반복한다.
+
+    max_adjust회를 다 써도 여전히 LINES_PER_SLIDE를 초과하면(즉 오버플로가
+    남으면), 이 시도 전체를 되돌리고 (None, 원래 줄 수)를 반환한다 — 이
+    함수가 존재하는 목적 자체가 "9줄로 맞추다가 실수로 넘치는 것"을 막는
+    것이므로, 못 맞출 바에는 아무것도 안 하느니만 못하다. 반대로 미달(9줄
+    미만)로 끝나는 것은 넘침이 아니므로 그대로 받아들인다 — 안 채워진 줄은
+    미관상 아쉬울 뿐 내용이 잘리는 문제가 아니다.
+
+    반환: (최종 rest_p 또는 None, cur_slide의 최종 실제 줄 수)
+    """
+    # 실패(포기) 시 반환하는 줄 수는 호출부 어디에서도 쓰이지 않는다(모든 호출부는
+    # rest_p is None이면 자체적으로 롤백/스킵 처리하지 실제 값을 참조하지 않는다) —
+    # 그래서 되돌린 뒤 값을 다시 측정하는 불필요한 COM 호출을 하지 않고 마지막으로
+    # 알고 있던 값을 그대로 반환한다.
+    original_backup = copy.deepcopy(p_elem)
+
+    def _give_up(last_actual):
+        if rest_p is not None:
+            remove_rest(rest_p)
+        _restore_para_from_backup(p_elem, original_backup)
+        return None, last_actual
+
+    rest_p = _split_para_at_lines(p_elem, keep, pil_font, box_px)
+    if rest_p is None:
+        return None, None
+    place_rest(rest_p)
+
+    actual = _count_slide_lines_verified(prs, cur_slide)
+    for _ in range(max_adjust):
+        if actual == LINES_PER_SLIDE:
+            break
+        keep += 1 if actual < LINES_PER_SLIDE else -1
+        if keep <= 0:
+            return _give_up(actual)
+        remove_rest(rest_p)
+        _restore_para_from_backup(p_elem, original_backup)
+        new_rest = _split_para_at_lines(p_elem, keep, pil_font, box_px)
+        if new_rest is None:
+            rest_p = None
+            return _give_up(actual)
+        rest_p = new_rest
+        place_rest(rest_p)
+        actual = _count_slide_lines_verified(prs, cur_slide)
+
+    if actual > LINES_PER_SLIDE:
+        return _give_up(actual)
+
+    return rest_p, actual
+
+
 def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int, label: str) -> int:
     """독서/복음 본문 슬라이드 기록 후 실제 줄 수 검증 및 재조정.
 
@@ -3484,6 +3735,7 @@ def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int
     if n_content < 2:
         return 0
     n_inserted = 0
+    _COM_MISMATCH_COUNT.clear()  # 섹션(제1독서/제2독서/복음)마다 통계용 카운트를 새로 시작
 
     def _content_paras(slide):
         shape = _find_content_shape(slide)
@@ -3499,12 +3751,18 @@ def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int
     _pil_font, _box_px = _get_slide_render_params(prs.slides[content_start])
 
     changed = True
+    _sweep_guard = 0
+    _MAX_SWEEPS = 50  # 무한 루프 방지용 안전장치(정상 케이스는 훨씬 적은 스윕으로 수렴)
     while changed:
+        _sweep_guard += 1
+        if _sweep_guard > _MAX_SWEEPS:
+            print(f'  [경고] [{label}] 재조정이 {_MAX_SWEEPS}회 스윕 내에 수렴하지 않아 중단합니다.')
+            break
         changed = False
         for i in range(n_content - 1):  # 마지막 슬라이드 제외
             cur_slide = prs.slides[content_start + i]
             nxt_slide = prs.slides[content_start + i + 1]
-            lines = _count_slide_lines_rendered(cur_slide)
+            lines = _count_slide_lines_verified(prs, cur_slide)
 
             if lines == LINES_PER_SLIDE:
                 continue
@@ -3522,15 +3780,22 @@ def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int
                         last_p_lines = _rendered_wrap_count(cur_paras[0].text, _pil_font, _box_px)
                         keep = last_p_lines - excess
                         if keep > 0:
-                            rest_p = _split_para_at_lines(last_p, keep, _pil_font, _box_px)
-                            if rest_p is not None:
+                            def _place_rest1(rp):
                                 first_nxt_p = nxt_txBody.find(qn('a:p'))
                                 if first_nxt_p is not None:
-                                    first_nxt_p.addprevious(rest_p)
+                                    first_nxt_p.addprevious(rp)
                                 else:
-                                    nxt_txBody.append(rest_p)
-                                new_lines = _count_slide_lines_rendered(cur_slide)
-                                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (단락 분리: {keep}줄 유지)')
+                                    nxt_txBody.append(rp)
+
+                            def _remove_rest1(rp):
+                                nxt_txBody.remove(rp)
+
+                            rest_p, new_lines = _split_and_adjust_via_com(
+                                prs, cur_slide, last_p, keep, _pil_font, _box_px,
+                                _place_rest1, _remove_rest1,
+                            )
+                            if rest_p is not None:
+                                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (단락 분리 후 COM 조정)')
                                 changed = True
                                 continue
                     print(f'  [{label}] 경고 슬라이드 {i+1}: {lines}줄 (단락 1개, 분리 불가)')
@@ -3544,8 +3809,8 @@ def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int
                     first_nxt_p.addprevious(p_elem)
                 else:
                     nxt_txBody.append(p_elem)
-                new_lines = _count_slide_lines_rendered(cur_slide)
-                nxt_new_lines = _count_slide_lines_rendered(nxt_slide)
+                new_lines = _count_slide_lines_verified(prs, cur_slide)
+                nxt_new_lines = _count_slide_lines_verified(prs, nxt_slide)
 
                 # 다음 슬라이드가 마지막이 아닌데도 overflow → 롤백 후 단락 분리 시도
                 if nxt_new_lines > LINES_PER_SLIDE and i < n_content - 2:
@@ -3562,15 +3827,22 @@ def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int
                         last_p_lines = _rendered_wrap_count(cur_paras[-1].text, _pil_font, _box_px)
                         keep = last_p_lines - excess
                         if keep > 0:
-                            rest_p = _split_para_at_lines(last_p, keep, _pil_font, _box_px)
-                            if rest_p is not None:
+                            def _place_rest2(rp):
                                 first_nxt_p2 = nxt_txBody.find(qn('a:p'))
                                 if first_nxt_p2 is not None:
-                                    first_nxt_p2.addprevious(rest_p)
+                                    first_nxt_p2.addprevious(rp)
                                 else:
-                                    nxt_txBody.append(rest_p)
-                                new_lines = _count_slide_lines_rendered(cur_slide)
-                                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (단락 분리: {keep}줄 유지, 나머지 → 다음)')
+                                    nxt_txBody.append(rp)
+
+                            def _remove_rest2(rp):
+                                nxt_txBody.remove(rp)
+
+                            rest_p, new_lines = _split_and_adjust_via_com(
+                                prs, cur_slide, last_p, keep, _pil_font, _box_px,
+                                _place_rest2, _remove_rest2,
+                            )
+                            if rest_p is not None:
+                                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (단락 분리 후 COM 조정, 나머지 → 다음)')
                                 changed = True
                                 continue
 
@@ -3583,7 +3855,7 @@ def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int
                         for _p in list(new_txBody.findall(qn('a:p'))):
                             new_txBody.remove(_p)
                         moved = 0
-                        while _count_slide_lines_rendered(cur_slide) > LINES_PER_SLIDE:
+                        while _count_slide_lines_verified(prs, cur_slide) > LINES_PER_SLIDE:
                             cur_paras_ins = _content_paras(cur_slide)
                             if len(cur_paras_ins) <= 1:
                                 break
@@ -3595,8 +3867,8 @@ def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int
                             else:
                                 new_txBody.append(p_elem2)
                             moved += 1
-                        new_lines = _count_slide_lines_rendered(cur_slide)
-                        added_lines = _count_slide_lines_rendered(new_slide)
+                        new_lines = _count_slide_lines_verified(prs, cur_slide)
+                        added_lines = _count_slide_lines_verified(prs, new_slide)
                         print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (새 슬라이드 삽입: {added_lines}줄, {moved}단락 이동)')
                         n_content += 1
                         n_inserted += 1
@@ -3623,9 +3895,6 @@ def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int
                     first_p_lines = _rendered_wrap_count(nxt_paras[0].text, _pil_font, _box_px)
                     if first_p_lines <= needed:
                         continue  # 통째로 가져가면 다음 슬라이드가 완전히 비게 됨 → 건드리지 않음
-                    rest_p = _split_para_at_lines(p_elem, needed, _pil_font, _box_px)
-                    if rest_p is None:
-                        continue
                     nxt_txBody = _get_txBody(nxt_slide)
                     cur_txBody = _get_txBody(cur_slide)
                     nxt_txBody.remove(p_elem)
@@ -3634,12 +3903,26 @@ def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int
                         cur_all_p[-1].addnext(p_elem)
                     else:
                         cur_txBody.append(p_elem)
-                    first_nxt_p = nxt_txBody.find(qn('a:p'))
-                    if first_nxt_p is not None:
-                        first_nxt_p.addprevious(rest_p)
-                    else:
-                        nxt_txBody.append(rest_p)
-                    new_lines = _count_slide_lines_rendered(cur_slide)
+
+                    def _place_rest3(rp):
+                        first_nxt_p = nxt_txBody.find(qn('a:p'))
+                        if first_nxt_p is not None:
+                            first_nxt_p.addprevious(rp)
+                        else:
+                            nxt_txBody.append(rp)
+
+                    def _remove_rest3(rp):
+                        nxt_txBody.remove(rp)
+
+                    rest_p, new_lines = _split_and_adjust_via_com(
+                        prs, cur_slide, p_elem, needed, _pil_font, _box_px,
+                        _place_rest3, _remove_rest3,
+                    )
+                    if rest_p is None:
+                        # 분리 불가 → p_elem을 원위치(다음 슬라이드)로 되돌린다
+                        cur_txBody.remove(p_elem)
+                        nxt_txBody.append(p_elem)
+                        continue
                     print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (다음 슬라이드 단일 단락 분리 흡수)')
                     changed = True
                     continue
@@ -3652,7 +3935,7 @@ def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int
                     cur_all_p[-1].addnext(p_elem)
                 else:
                     cur_txBody.append(p_elem)
-                new_lines = _count_slide_lines_rendered(cur_slide)
+                new_lines = _count_slide_lines_verified(prs, cur_slide)
                 if new_lines > LINES_PER_SLIDE:
                     # 흡수 시 초과 → 원위치 후 단락 분리 시도
                     cur_txBody.remove(p_elem)
@@ -3665,30 +3948,47 @@ def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int
                     if _pil_font is not None:
                         first_p_lines = _rendered_wrap_count(nxt_paras[0].text, _pil_font, _box_px)
                         if first_p_lines > needed:
-                            rest_p = _split_para_at_lines(p_elem, needed, _pil_font, _box_px)
-                            if rest_p is not None:
-                                nxt_txBody.remove(p_elem)
-                                cur_all_p2 = cur_txBody.findall(qn('a:p'))
-                                if cur_all_p2:
-                                    cur_all_p2[-1].addnext(p_elem)
-                                else:
-                                    cur_txBody.append(p_elem)
+                            nxt_txBody.remove(p_elem)
+                            cur_all_p2 = cur_txBody.findall(qn('a:p'))
+                            if cur_all_p2:
+                                cur_all_p2[-1].addnext(p_elem)
+                            else:
+                                cur_txBody.append(p_elem)
+
+                            def _place_rest4(rp):
                                 first_nxt_p2 = nxt_txBody.find(qn('a:p'))
                                 if first_nxt_p2 is not None:
-                                    first_nxt_p2.addprevious(rest_p)
+                                    first_nxt_p2.addprevious(rp)
                                 else:
-                                    nxt_txBody.append(rest_p)
-                                new_lines = _count_slide_lines_rendered(cur_slide)
-                                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (다음 단락 {needed}줄 분리 흡수)')
+                                    nxt_txBody.append(rp)
+
+                            def _remove_rest4(rp):
+                                nxt_txBody.remove(rp)
+
+                            rest_p, new_lines = _split_and_adjust_via_com(
+                                prs, cur_slide, p_elem, needed, _pil_font, _box_px,
+                                _place_rest4, _remove_rest4,
+                            )
+                            if rest_p is not None:
+                                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (다음 단락 분리 흡수 후 COM 조정)')
                                 changed = True
                                 continue
+                            # 분리 불가 → p_elem을 원위치(다음 슬라이드)로 되돌린다.
+                            # nxt_txBody에는 이미 nxt_paras[1:]가 남아 있으므로 append하면
+                            # 순서가 뒤바뀐다 — 반드시 맨 앞에 다시 삽입해야 한다.
+                            cur_txBody.remove(p_elem)
+                            first_nxt_p3 = nxt_txBody.find(qn('a:p'))
+                            if first_nxt_p3 is not None:
+                                first_nxt_p3.addprevious(p_elem)
+                            else:
+                                nxt_txBody.append(p_elem)
                     continue
                 print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (다음 슬라이드 첫 단락 흡수)')
                 changed = True
 
     # 마지막 콘텐츠 슬라이드가 LINES_PER_SLIDE 초과인 경우 새 슬라이드 삽입
     last_idx = content_start + n_content - 1
-    last_lines = _count_slide_lines_rendered(prs.slides[last_idx])
+    last_lines = _count_slide_lines_verified(prs, prs.slides[last_idx])
     if last_lines > LINES_PER_SLIDE:
         last_paras_check = _content_paras(prs.slides[last_idx])
         if len(last_paras_check) > 1:
@@ -3714,7 +4014,7 @@ def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int
                         new_txBody.remove(_p)
                 last_txBody = _get_txBody(prs.slides[last_idx])
                 moved = 0
-                while _count_slide_lines_rendered(prs.slides[last_idx]) > LINES_PER_SLIDE:
+                while _count_slide_lines_verified(prs, prs.slides[last_idx]) > LINES_PER_SLIDE:
                     cur_paras2 = _content_paras(prs.slides[last_idx])
                     if len(cur_paras2) <= 1:
                         break
@@ -3728,8 +4028,8 @@ def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int
                     else:
                         new_txBody.append(p_elem)
                     moved += 1
-                new_last_lines = _count_slide_lines_rendered(prs.slides[last_idx])
-                added_lines = _count_slide_lines_rendered(prs.slides[last_idx + 1]) if new_txBody is not None else 0
+                new_last_lines = _count_slide_lines_verified(prs, prs.slides[last_idx])
+                added_lines = _count_slide_lines_verified(prs, prs.slides[last_idx + 1]) if new_txBody is not None else 0
                 print(f'  [{label}] 마지막 슬라이드 {n_content}: {last_lines}줄 → {new_last_lines}줄 (새 슬라이드 삽입: {added_lines}줄, {moved}단락 이동)')
 
     # ── 연속 단편 병합: 문장 미완성 단락 + 절 번호 없는 다음 단락 → 하나로 합치기 ──
@@ -3794,12 +4094,18 @@ def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int
     # ── 병합 후 재검증: 단락 병합으로 텍스트가 재배치(reflow)되어
     #    LINES_PER_SLIDE 아래로 떨어진 슬라이드를 다음 슬라이드에서 다시 흡수해 보충 ──
     changed = True
+    _sweep_guard = 0
+    _MAX_SWEEPS = 50  # 무한 루프 방지용 안전장치(정상 케이스는 훨씬 적은 스윕으로 수렴)
     while changed:
+        _sweep_guard += 1
+        if _sweep_guard > _MAX_SWEEPS:
+            print(f'  [경고] [{label}] 재조정이 {_MAX_SWEEPS}회 스윕 내에 수렴하지 않아 중단합니다.')
+            break
         changed = False
         for i in range(n_content - 1):  # 마지막 슬라이드 제외
             cur_slide = prs.slides[content_start + i]
             nxt_slide = prs.slides[content_start + i + 1]
-            lines = _count_slide_lines_rendered(cur_slide)
+            lines = _count_slide_lines_verified(prs, cur_slide)
             if lines >= LINES_PER_SLIDE:
                 continue
 
@@ -3817,7 +4123,7 @@ def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int
                 cur_all_p[-1].addnext(p_elem)
             else:
                 cur_txBody.append(p_elem)
-            new_lines = _count_slide_lines_rendered(cur_slide)
+            new_lines = _count_slide_lines_verified(prs, cur_slide)
 
             if new_lines > LINES_PER_SLIDE:
                 # 흡수 시 초과 → 원위치 후 단락 분리 시도
@@ -3830,22 +4136,40 @@ def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int
                 if _pil_font is not None:
                     first_p_lines = _rendered_wrap_count(nxt_paras[0].text, _pil_font, _box_px)
                     if first_p_lines > needed_lines:
-                        rest_p = _split_para_at_lines(p_elem, needed_lines, _pil_font, _box_px)
-                        if rest_p is not None:
-                            nxt_txBody.remove(p_elem)
-                            cur_all_p2 = cur_txBody.findall(qn('a:p'))
-                            if cur_all_p2:
-                                cur_all_p2[-1].addnext(p_elem)
-                            else:
-                                cur_txBody.append(p_elem)
+                        nxt_txBody.remove(p_elem)
+                        cur_all_p2 = cur_txBody.findall(qn('a:p'))
+                        if cur_all_p2:
+                            cur_all_p2[-1].addnext(p_elem)
+                        else:
+                            cur_txBody.append(p_elem)
+
+                        def _place_rest5(rp):
                             first_nxt_p2 = nxt_txBody.find(qn('a:p'))
                             if first_nxt_p2 is not None:
-                                first_nxt_p2.addprevious(rest_p)
+                                first_nxt_p2.addprevious(rp)
                             else:
-                                nxt_txBody.append(rest_p)
-                            new_lines = _count_slide_lines_rendered(cur_slide)
-                            print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (병합 후 보충: 다음 단락 분리 흡수)')
+                                nxt_txBody.append(rp)
+
+                        def _remove_rest5(rp):
+                            nxt_txBody.remove(rp)
+
+                        rest_p, new_lines = _split_and_adjust_via_com(
+                            prs, cur_slide, p_elem, needed_lines, _pil_font, _box_px,
+                            _place_rest5, _remove_rest5,
+                        )
+                        if rest_p is not None:
+                            print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (병합 후 보충: 다음 단락 분리 흡수 후 COM 조정)')
                             changed = True
+                        else:
+                            # 분리 불가 → p_elem을 원위치(다음 슬라이드)로 되돌린다.
+                            # nxt_txBody에는 이미 nxt_paras[1:]가 남아 있으므로 append하면
+                            # 순서가 뒤바뀐다 — 반드시 맨 앞에 다시 삽입해야 한다.
+                            cur_txBody.remove(p_elem)
+                            first_nxt_p3 = nxt_txBody.find(qn('a:p'))
+                            if first_nxt_p3 is not None:
+                                first_nxt_p3.addprevious(p_elem)
+                            else:
+                                nxt_txBody.append(p_elem)
                 continue
 
             print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (병합 후 보충: 다음 슬라이드 첫 단락 흡수)')
@@ -6196,6 +6520,25 @@ def main():
 
         print(f'  성가({k}): {v.name}')
 
+    # 주일 5종(입당/봉헌/성체/2차봉헌/파견), 평일 4종(2차봉헌 제외) 중
+
+    # 악보 파일을 (OneDrive/날짜 폴더 어디에서도) 찾지 못한 성가가 있으면 중단한다.
+
+    required_hymn_types = HYMN_TYPES if is_sunday else [t for t in HYMN_TYPES if t != '2차봉헌']
+
+    missing_scores = [
+        f'{htype}({hymn_numbers.get(htype)})' for htype in required_hymn_types
+        if not files['성가'].get(htype)
+    ]
+
+    if missing_scores:
+
+        mass_label = '주일미사' if is_sunday else '평일미사'
+
+        print(f'오류: {mass_label} 성가 악보 파일을 찾을 수 없습니다: {", ".join(missing_scores)}', file=sys.stderr)
+
+        sys.exit(1)
+
 
 
     # 2. JSON 생성
@@ -6279,7 +6622,6 @@ def main():
         print(f'    {len(pages)}개 슬라이드 (변화: {shift:+d})')
 
 
-
     # 섹션 재탐색
 
     sec = find_sections(prs)
@@ -6295,7 +6637,6 @@ def main():
         print('  화답송...')
 
         update_화답송(prs, json_data, sec, files.get('화답송_pptx'), is_sunday=is_sunday)
-
 
 
     # 섹션 재탐색
@@ -6348,7 +6689,6 @@ def main():
                 delete_slide(prs, s - 1)
 
 
-
     # 섹션 재탐색
 
     sec = find_sections(prs)
@@ -6360,6 +6700,7 @@ def main():
     print('  복음환호송...')
 
     update_복음환호송(prs, json_data, sec)
+
 
 
 
@@ -6390,7 +6731,6 @@ def main():
         print(f'    {len(pages)}개 슬라이드 (변화: {shift:+d})')
 
 
-
     # 종료 슬라이드 텍스트박스 위치 정렬 (제1독서·복음 → 제2독서 기준)
 
     sec = find_sections(prs)
@@ -6399,11 +6739,13 @@ def main():
 
     _align_ending_slides_to_제2독서(prs, sec)
 
+
     # 본문+종료 통합 슬라이드의 ending shape 동적 위치 재조정 (겹침 방지)
 
     sec = find_sections(prs)
 
     _reposition_merged_ending_shapes(prs, sec)
+
 
 
 
@@ -6469,6 +6811,7 @@ def main():
 
     print(f'\n[7] 저장: {output_path}')
 
+
     prs.save(str(output_path))
 
 
@@ -6515,7 +6858,7 @@ def main():
 
 
 
-def _show_result_window(title: str, text: str, is_error: bool = False) -> None:
+def _show_result_window(title: str, text: str, is_error: bool = False, log_text: str = None) -> None:
 
     import tkinter as tk
 
@@ -6527,13 +6870,15 @@ def _show_result_window(title: str, text: str, is_error: bool = False) -> None:
 
 
 
-    # 로그 저장
+    # 로그 저장 (성공/실패 여부와 무관하게 항상 저장 — 팝업에는 간결한 text만,
+
+    # 파일에는 log_text로 넘어온 전체 로그를 남긴다. log_text가 없으면 text를 그대로 저장)
 
     date_str = _last_date_str[0]
 
     output_path = _last_output_path[0]
 
-    if date_str and not is_error:
+    if date_str:
 
         log_dir = Path(date_str) / 'log'
 
@@ -6545,7 +6890,9 @@ def _show_result_window(title: str, text: str, is_error: bool = False) -> None:
 
             log_file = log_dir / f'{date_str}_{ts}.txt'
 
-            log_file.write_text(text.strip(), encoding='utf-8')
+            saved_text = log_text if log_text is not None else text
+
+            log_file.write_text(saved_text.strip(), encoding='utf-8')
 
         except Exception:
 
@@ -6711,7 +7058,11 @@ if __name__ == '__main__':
 
         if _err_text:
 
-            _show_result_window('오류 발생', (_out_text or '') + '\n\n' + _err_text, is_error=True)
+            # 팝업에는 구체적 에러 메시지(_err_text)만 보여준다. 전체 진행 로그(_out_text)는
+
+            # log_text로 넘겨 로그 파일에만 남긴다.
+
+            _show_result_window('오류 발생', _err_text, is_error=True, log_text=_out_text)
 
         else:
 

@@ -1,0 +1,7 @@
+python-pptx
+beautifulsoup4
+lxml
+Pillow
+pywin32
+pytest
+requests
