@@ -446,9 +446,11 @@ def is_sunday_mass(date_str: str) -> bool:
 
 
 
-def _ask_numbers_popup(defaults: dict) -> dict:
+def _ask_numbers_popup(defaults: dict, is_sunday: bool = True) -> dict:
 
     import tkinter as tk
+
+    from tkinter import messagebox
 
 
 
@@ -471,6 +473,8 @@ def _ask_numbers_popup(defaults: dict) -> dict:
 
 
     labels = ['입당', '봉헌', '성체', '2차봉헌', '파견']
+
+    required_labels = labels if is_sunday else [l for l in labels if l != '2차봉헌']
 
     entries = {}
 
@@ -498,17 +502,43 @@ def _ask_numbers_popup(defaults: dict) -> dict:
 
     def on_ok():
 
+        raw = {label: entries[label].get().strip() for label in labels}
+
+        missing = [label for label in required_labels if not raw[label]]
+
+        if missing:
+
+            messagebox.showerror(
+
+                '입력 오류',
+
+                f'다음 성가 번호가 입력되지 않았습니다: {", ".join(missing)}',
+
+                parent=root,
+
+            )
+
+            return
+
+        non_numeric = [label for label in labels if raw[label] and not raw[label].isdigit()]
+
+        if non_numeric:
+
+            messagebox.showerror(
+
+                '입력 오류',
+
+                f'성가 번호는 숫자로만 입력해 주세요: {", ".join(non_numeric)}',
+
+                parent=root,
+
+            )
+
+            return
+
         for label in labels:
 
-            val = entries[label].get().strip()
-
-            try:
-
-                result[label] = int(val)
-
-            except ValueError:
-
-                result[label] = None
+            result[label] = int(raw[label]) if raw[label] else None
 
         root.destroy()
 
@@ -1263,7 +1293,7 @@ def _run_with_progress_window(main_func):
 
 
 
-def find_files(date_str: str, hymn_numbers: dict) -> dict:
+def find_files(date_str: str, hymn_numbers: dict, is_sunday: bool = None) -> dict:
 
     folder = Path(date_str)
 
@@ -1287,47 +1317,55 @@ def find_files(date_str: str, hymn_numbers: dict) -> dict:
 
 
 
-    # 성가 PPT: OneDrive 폴더에서 우선 검색, 없으면 날짜 폴더 fallback
+    if is_sunday is None:
 
-    onedrive_folder = get_onedrive_hymn_folder()
+        is_sunday = is_sunday_mass(date_str)
 
-    onedrive_pptxs = [
 
-        f for f in onedrive_folder.rglob('*.pptx')
 
-        if not f.name.startswith('~$')
+    # 성가 PPT: OneDrive 폴더에서 우선 검색, 없으면 날짜 폴더 fallback (평일미사는 악보 자체가 불필요하므로 조회하지 않는다)
 
-    ]
+    if is_sunday:
 
-    for htype, num in hymn_numbers.items():
+        onedrive_folder = get_onedrive_hymn_folder()
 
-        if num is None:
+        onedrive_pptxs = [
 
-            continue
+            f for f in onedrive_folder.rglob('*.pptx')
 
-        found = None
+            if not f.name.startswith('~$')
 
-        for f in onedrive_pptxs:
+        ]
 
-            if re.search(rf'성가 {num}(?!\d)', f.name):
+        for htype, num in hymn_numbers.items():
 
-                found = f
+            if num is None:
 
-                break
+                continue
 
-        if not found:
+            found = None
 
-            for f in folder.iterdir():
+            for f in onedrive_pptxs:
 
-                if f.suffix.lower() == '.pptx' and re.search(rf'성가 {num}(?!\d)', f.name):
+                if re.search(rf'성가 {num}(?!\d)', f.name):
 
                     found = f
 
                     break
 
-        if found:
+            if not found:
 
-            files['성가'][htype] = found
+                for f in folder.iterdir():
+
+                    if f.suffix.lower() == '.pptx' and re.search(rf'성가 {num}(?!\d)', f.name):
+
+                        found = f
+
+                        break
+
+            if found:
+
+                files['성가'][htype] = found
 
 
 
@@ -5870,9 +5908,21 @@ def replace_성가(prs, 성가_map: dict, hymn_numbers: dict, copy_scores: bool 
 
     for htype in HYMN_TYPES:
 
-        if htype not in 성가_map:
+        num = hymn_numbers.get(htype)
+
+        # copy_scores=True(주일미사)일 때만 실제 악보 PPT가 필요하다. 평일미사(copy_scores=False)는
+
+        # 악보를 복사하지 않고 번호만 갱신하므로 성가_map에 파일이 없어도 건너뛰지 않는다.
+
+        if copy_scores and htype not in 성가_map:
 
             print(f'  [{htype}] 성가 PPT 없음, 건너뜀')
+
+            continue
+
+        if not copy_scores and num is None:
+
+            print(f'  [{htype}] 성가 번호 없음, 건너뜀')
 
             continue
 
@@ -5884,9 +5934,7 @@ def replace_성가(prs, 성가_map: dict, hymn_numbers: dict, copy_scores: bool 
 
 
 
-        num = hymn_numbers.get(htype)
-
-        pptx_path = 성가_map[htype]
+        pptx_path = 성가_map.get(htype)
 
 
 
@@ -6410,25 +6458,29 @@ def main():
 
             hymn_numbers = _inp['hymn_numbers']
 
-            _report_progress(3, 'OneDrive 성가 폴더 검색 중...')
+            if is_sunday_mass(date_str):
 
-            onedrive_folder = get_onedrive_hymn_folder()
+                # 주일미사만 OneDrive 악보 폴더를 조회한다 (평일미사는 악보 자체가 불필요)
 
-            onedrive_pptxs = [f for f in onedrive_folder.rglob('*.pptx') if not f.name.startswith('~$')]
+                _report_progress(3, 'OneDrive 성가 폴더 검색 중...')
 
-            for htype, num in hymn_numbers.items():
+                onedrive_folder = get_onedrive_hymn_folder()
 
-                if num is None:
+                onedrive_pptxs = [f for f in onedrive_folder.rglob('*.pptx') if not f.name.startswith('~$')]
 
-                    continue
+                for htype, num in hymn_numbers.items():
 
-                for f in onedrive_pptxs:
+                    if num is None:
 
-                    if re.search(rf'성가 {num}(?!\d)', f.name):
+                        continue
 
-                        files['성가'][htype] = f
+                    for f in onedrive_pptxs:
 
-                        break
+                        if re.search(rf'성가 {num}(?!\d)', f.name):
+
+                            files['성가'][htype] = f
+
+                            break
 
             Path(date_str).mkdir(exist_ok=True)
 
@@ -6440,25 +6492,29 @@ def main():
 
             files = _ask_input_files_popup()
 
-            hymn_numbers = _ask_numbers_popup({})
+            hymn_numbers = _ask_numbers_popup({}, is_sunday_mass(date_str))
 
-            onedrive_folder = get_onedrive_hymn_folder()
+            if is_sunday_mass(date_str):
 
-            onedrive_pptxs = [f for f in onedrive_folder.rglob('*.pptx') if not f.name.startswith('~$')]
+                # 주일미사만 OneDrive 악보 폴더를 조회한다 (평일미사는 악보 자체가 불필요)
 
-            for htype, num in hymn_numbers.items():
+                onedrive_folder = get_onedrive_hymn_folder()
 
-                if num is None:
+                onedrive_pptxs = [f for f in onedrive_folder.rglob('*.pptx') if not f.name.startswith('~$')]
 
-                    continue
+                for htype, num in hymn_numbers.items():
 
-                for f in onedrive_pptxs:
+                    if num is None:
 
-                    if re.search(rf'성가 {num}(?!\d)', f.name):
+                        continue
 
-                        files['성가'][htype] = f
+                    for f in onedrive_pptxs:
 
-                        break
+                        if re.search(rf'성가 {num}(?!\d)', f.name):
+
+                            files['성가'][htype] = f
+
+                            break
 
             Path(date_str).mkdir(exist_ok=True)
 
@@ -6466,7 +6522,7 @@ def main():
 
         date_str, hymn_numbers, 화답송_override, 미사후기도_override = parse_args()
 
-        files = find_files(date_str, hymn_numbers)
+        files = find_files(date_str, hymn_numbers, is_sunday_mass(date_str))
 
         if 화답송_override:
 
@@ -6520,24 +6576,22 @@ def main():
 
         print(f'  성가({k}): {v.name}')
 
-    # 주일 5종(입당/봉헌/성체/2차봉헌/파견), 평일 4종(2차봉헌 제외) 중
+    # 주일미사 5종(입당/봉헌/성체/2차봉헌/파견) 악보 파일을 (OneDrive/날짜 폴더 어디에서도)
 
-    # 악보 파일을 (OneDrive/날짜 폴더 어디에서도) 찾지 못한 성가가 있으면 중단한다.
+    # 찾지 못한 성가가 있으면 중단한다. 평일미사는 악보를 쓰지 않으므로 검사하지 않는다.
 
-    required_hymn_types = HYMN_TYPES if is_sunday else [t for t in HYMN_TYPES if t != '2차봉헌']
+    if is_sunday:
 
-    missing_scores = [
-        f'{htype}({hymn_numbers.get(htype)})' for htype in required_hymn_types
-        if not files['성가'].get(htype)
-    ]
+        missing_scores = [
+            f'{htype}({hymn_numbers.get(htype)})' for htype in HYMN_TYPES
+            if not files['성가'].get(htype)
+        ]
 
-    if missing_scores:
+        if missing_scores:
 
-        mass_label = '주일미사' if is_sunday else '평일미사'
+            print(f'오류: 주일미사 성가 악보 파일을 찾을 수 없습니다: {", ".join(missing_scores)}', file=sys.stderr)
 
-        print(f'오류: {mass_label} 성가 악보 파일을 찾을 수 없습니다: {", ".join(missing_scores)}', file=sys.stderr)
-
-        sys.exit(1)
+            sys.exit(1)
 
 
 
@@ -6864,6 +6918,8 @@ def _show_result_window(title: str, text: str, is_error: bool = False, log_text:
 
     from tkinter import scrolledtext as _st_mod
 
+    from tkinter import messagebox
+
     import subprocess as _sp
 
     from datetime import datetime as _dt
@@ -6900,6 +6956,24 @@ def _show_result_window(title: str, text: str, is_error: bool = False, log_text:
 
 
 
+    if is_error:
+
+        # 전체 로그는 위에서 이미 파일로 저장했으므로, 화면에는 Windows 표준 오류 팝업만 띄운다.
+
+        root = tk.Tk()
+
+        root.withdraw()
+
+        _set_window_icon(root)
+
+        messagebox.showerror(title, text.strip() if text.strip() else '알 수 없는 오류가 발생했습니다.')
+
+        root.destroy()
+
+        return
+
+
+
     root = tk.Tk()
 
     root.withdraw()
@@ -6922,11 +6996,9 @@ def _show_result_window(title: str, text: str, is_error: bool = False, log_text:
 
 
 
-    bg_color = '#fff0f0' if is_error else '#f9f9f9'
-
     text_widget = _st_mod.ScrolledText(
 
-        frame, wrap=tk.WORD, font=('Consolas', 11), bg=bg_color, fg=_UI['fg']
+        frame, wrap=tk.WORD, font=('Consolas', 11), bg='#f9f9f9', fg=_UI['fg']
 
     )
 
@@ -6944,7 +7016,7 @@ def _show_result_window(title: str, text: str, is_error: bool = False, log_text:
 
 
 
-    if output_path and not is_error:
+    if output_path:
 
         def open_file():
 
@@ -6988,13 +7060,11 @@ def _show_result_window(title: str, text: str, is_error: bool = False, log_text:
 
 
 
-    btn_color = '#c0392b' if is_error else _UI['primary']
-
     tk.Button(
 
         btn_frame, text='닫기', command=root.destroy,
 
-        bg=btn_color, fg=_UI['fg_light'],
+        bg=_UI['primary'], fg=_UI['fg_light'],
 
         font=(_UI['font'], _UI['font_sz'], 'bold'), width=14, relief='flat', cursor='hand2'
 
@@ -7032,7 +7102,7 @@ if __name__ == '__main__':
 
         try:
 
-            _hymn_numbers = _ask_numbers_popup({})
+            _hymn_numbers = _ask_numbers_popup({}, is_sunday_mass(_date_str))
 
         except RuntimeError:
 
