@@ -1882,6 +1882,38 @@ def copy_slide_from_prs(target_prs, position: int, source_prs, source_idx: int):
 
 
 
+        # 도형 위치/크기만 스케일하고 글자 크기를 그대로 두면, 상자는 작아졌는데
+
+        # 글자는 원본 크기 그대로라 텍스트가 넘치거나 화면 밖으로 잘려 보인다
+
+        # (예: "화답송 시편 138(137)"이 "화답송 시편"으로 잘림). sz(폰트 크기)와
+
+        # pPr의 EMU 단위 속성(marL/marR/indent/defTabSz)도 같은 비율로 축소한다.
+
+        text_scale = min(scale_x, scale_y)
+
+        for el in new_slide.shapes._spTree.iter():
+
+            if el.tag in (qn('a:rPr'), qn('a:defRPr'), qn('a:endParaRPr')):
+
+                sz = el.get('sz')
+
+                if sz is not None:
+
+                    el.set('sz', str(max(100, round(int(sz) * text_scale))))
+
+            elif el.tag == qn('a:pPr'):
+
+                for attr in ('marL', 'marR', 'indent', 'defTabSz'):
+
+                    v = el.get(attr)
+
+                    if v is not None:
+
+                        el.set(attr, str(round(int(v) * text_scale)))
+
+
+
     # 배경 복사: 슬라이드 자체 p:bg가 없으면 레이아웃/마스터에서 상속된 배경을 명시적으로 삽입
 
     # p:bg는 p:cSld 내부에 위치하므로 cSld를 통해 접근/삽입
@@ -5860,11 +5892,23 @@ def _update_prefix_in_runs(para, old_prefix: str, new_prefix: str):
 
 
 
-def _update_성가_header(slide, expected_type: str, new_number: int):
+def _update_성가_header(slide, expected_type: str, new_number: int, slide_no: int = None, n_slides: int = None):
 
-    """성가 헤더 타입/번호 업데이트. run 서식(색상 등) 보존."""
+    """성가 헤더 타입/번호 업데이트. run 서식(색상 등) 보존.
 
-    MATCH_PAT = r'^(\s*)(입당|봉헌|성체|2차봉헌|파견)(\s+)(\d+)'
+    원본 악보 파일 첫 줄의 구분 표기가 이번 주 실제 용도와 다를 수 있다
+    (예: 성가 62가 '2차 봉헌'으로 인쇄돼 있지만 이번 주는 입당 성가로 쓰임).
+    번호뿐 아니라 구분 라벨도 이번 주 용도(expected_type)에 맞게 고친다."""
+
+    CANONICAL_LABEL = {
+        '입당': '입당',
+        '봉헌': '봉헌',
+        '성체': '성체',
+        '2차봉헌': '2차 봉헌',
+        '파견': '파견',
+    }
+
+    MATCH_PAT = r'^(\s*)(2차\s*봉헌|입당|봉헌|성체|파견)(\s+)(\d+)'
 
     for shape in slide.shapes:
 
@@ -5884,13 +5928,19 @@ def _update_성가_header(slide, expected_type: str, new_number: int):
 
             old_prefix = m.group(0)
 
-            new_prefix = m.group(1) + expected_type + m.group(3) + str(new_number)
+            correct_label = CANONICAL_LABEL.get(expected_type, expected_type)
+
+            new_prefix = m.group(1) + correct_label + m.group(3) + str(new_number)
 
             if old_prefix != new_prefix:
 
                 _update_prefix_in_runs(para, old_prefix, new_prefix)
 
             return
+
+    where = f' (슬라이드 {slide_no}/{n_slides})' if slide_no else ''
+
+    print(f'  [경고] 성가 {new_number}: 첫 줄에서 구분 라벨을 찾지 못함{where}')
 
 
 
@@ -5998,7 +6048,7 @@ def replace_성가(prs, 성가_map: dict, hymn_numbers: dict, copy_scores: bool 
 
                 for i in range(n_src):
 
-                    _update_성가_header(prs.slides[cs + i], htype, num)
+                    _update_성가_header(prs.slides[cs + i], htype, num, slide_no=i + 1, n_slides=n_src)
 
             print(f'  [{htype}] 성가 {num}: {n_existing}장 → {n_src}장')
 
