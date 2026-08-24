@@ -8,7 +8,12 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=['missa_to_json', 'bs4', 'lxml'],
+    hiddenimports=[
+        'missa_to_json', 'bs4', 'lxml',
+        'ppt_com_verify',
+        'win32com.client', 'win32com.gen_py',
+        'win32timezone', 'pythoncom', 'pywintypes', 'win32api',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
