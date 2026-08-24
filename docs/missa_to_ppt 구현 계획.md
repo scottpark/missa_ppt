@@ -1,11 +1,13 @@
-# missa_to_ppt.py 구현 계획 v1.4
+# missa_to_ppt.py 구현 계획
 
 - 대상 파일: `missa_to_ppt.py` (~6,900줄), `missa_to_json.py`, `ppt_com_verify.py`,
   `test_missa_regression.py`, `test_ppt_com_verify.py`
-- 최종 수정일: 2026-08-04
-- 이 문서는 현재 구현 전체를 처음부터 끝까지 담은 완결 문서다. 과거 버전(`docs/archive/`)을
-  함께 읽을 필요가 없다. 버전별로 무엇이 언제 추가됐는지는 맨 끝 "부록 A: 버전별 변경 이력"만
-  참고하면 된다. OOXML 조작 시 지켜야 할 함정·규칙은 `CLAUDE.md`에 별도로 정리되어 있다.
+- 최종 수정일: 2026-08-25
+- 이 문서는 버전 번호 없이 항상 현재 구현 전체를 처음부터 끝까지 담은 최신 완결 문서로
+  유지한다(수정할 때마다 새 버전 파일을 만들지 않고 이 파일 자체를 갱신). 무엇이 언제
+  바뀌었는지는 맨 끝 "부록 A: 변경 이력"에 날짜순으로 추가한다. v1.0~v1.4의 과거 버전 원문은
+  `docs/archive/`에 그대로 보존되어 있으나, 그 이후로는 별도 버전 번호를 매기지 않는다. OOXML
+  조작 시 지켜야 할 함정·규칙은 `CLAUDE.md`에 별도로 정리되어 있다.
 
 ---
 
@@ -75,8 +77,10 @@ def is_sunday_mass(date_str: str) -> bool:
 - 화답송 악보: 파일명에 "화답송 악보" 포함
 - 시작기도: 파일명에 "시작기도" 포함
 - 미사후기도: 파일명에 "미사후기도" 포함
-- 성가: OneDrive 폴더에서 `re.search(rf'성가 {num}(?!\d)', f.name)`로 우선 탐색, 못 찾으면 날짜
-  폴더 fallback
+- 성가: `find_files(date_str, hymn_numbers, is_sunday)`의 `is_sunday`에 따라 분기한다. 주일미사는
+  OneDrive 폴더에서 `re.search(rf'성가 {num}(?!\d)', f.name)`로 우선 탐색, 못 찾으면 날짜 폴더
+  fallback. 평일미사는 악보 슬라이드 자체를 쓰지 않으므로 **OneDrive 폴더를 아예 조회하지
+  않고** 날짜 폴더만 탐색한다
 - 참조 PPT: 위 항목에 해당하지 않고, 파일명에 오늘 날짜(`date_str`)가 **포함되지 않은** `.pptx`
   중 선택. `^\d{8}_` 패턴(YYYYMMDD_로 시작)이 있으면 그것을 우선 사용, 없으면 후보 중 첫 번째
 
@@ -103,7 +107,9 @@ stderr에 출력 후 종료한다. 이는 성가 **번호** 누락 검증(§3.4)
 - `_ask_input_files_popup()` / `_ask_combined_input_popup()`: 참조 PPT(필수) → 화답송 악보
   PPT(선택, 주일에 비어 있으면 경고) → 시작기도 PPT(선택) → 미사후기도 PPT(선택) 순서의 파일
   선택 화면
-- `_ask_numbers_popup(defaults) -> dict`: 성가 5종 번호 입력
+- `_ask_numbers_popup(defaults, is_sunday=True) -> dict`: 성가 5종 번호 입력. 주일은 5종 전부,
+  평일은 2차봉헌을 제외한 4종을 필수로 검증하고 숫자 형식도 확인한다 — 누락/형식 오류 시
+  `messagebox.showerror`로 안내하고 다시 입력받는다
 - 진행창: `_run_with_progress_window(main_func)`가 `main_func`를 워커 스레드에서 실행하며
   `_report_progress()` 콜백으로 진행바를 갱신한다. stdout/stderr을 `log_out`/`log_err`로 각각
   캡처해, 오류 시 팝업에는 오류 메시지만, 로그 파일에는 전체 내용을 남긴다
@@ -353,7 +359,11 @@ Pillow 전용으로 폴백하며, `[경고]`/`[설정]` 로그를 남긴다. 실
 `find_sections()`를 다시 호출해 인덱스를 갱신한다.
 
 - 공통(주일·평일 동일): divider 번호 갱신(`_update_성가_divider_number`), 헤더 타입/번호 수정
-  (`_update_성가_header`, run 서식 보존)
+  (`_update_성가_header(slide, expected_type, new_number, slide_no=None, n_slides=None)`, run 서식
+  보존). 원본 악보 첫 줄의 구분 라벨(예: "2차 봉헌")이 이번 주 실제 용도와 다를 수 있어
+  (예: 성가 62가 원본은 "2차 봉헌"으로 인쇄돼 있지만 이번 주는 입당 성가로 쓰임),
+  `CANONICAL_LABEL` 매핑으로 번호뿐 아니라 라벨도 `expected_type`에 맞게 함께 교정한다. 라벨을
+  못 찾으면 `[경고] 성가 N: 첫 줄에서 구분 라벨을 찾지 못함 (슬라이드 i/n)`을 남기고 계속 진행
 - `copy_scores=True`(주일): 기존 content 슬라이드 삭제 후 성가 PPT 슬라이드를
   `copy_slide_from_prs()`로 삽입(악보 포함, 크기 차이 자동 보정)
 - `copy_scores=False`(평일): 삽입을 생략하고 삭제만 수행 — 참조 PPT에 남아 있던 기존 악보
@@ -379,8 +389,11 @@ Pillow 전용으로 폴백하며, `[경고]`/`[설정]` 로그를 남긴다. 실
   복사되어 확대/축소되어 보인다(예: 12192000×6858000 소스를 9144000×5143500 타겟에 복사하면
   도형이 타겟 슬라이드 폭의 127%로 넘침) — `scale_x`/`scale_y` 비율을 계산해 복사된 모든 도형의
   `left`/`top`/`width`/`height`를 그 비율만큼 보정한다(도형의 네 값 중 하나라도 `None`이면
-  스킵). 이 보정은 `_build_com_probe_pptx()`가 크기를 원본과 동일하게 맞춰 호출하므로 COM
-  실측 경로에서는 항상 스킵된다(scale=1)
+  스킵). 도형 크기만 줄이고 텍스트는 그대로 두면 글자가 상자 밖으로 잘려 보이므로(예: "화답송
+  시편 138(137)"이 "화답송 시편"으로 잘리던 버그), `text_scale = min(scale_x, scale_y)`만큼
+  런의 폰트 크기(`sz`, `rPr`/`defRPr`/`endParaRPr`)와 단락 여백/들여쓰기(`pPr`의
+  `marL`/`marR`/`indent`/`defTabSz`)도 함께 축소한다. 이 보정은 `_build_com_probe_pptx()`가
+  크기를 원본과 동일하게 맞춰 호출하므로 COM 실측 경로에서는 항상 스킵된다(scale=1)
 - `_copy_spTree` / `_copy_image_rels`(image·hdphoto 타입 모두 복사) / `_update_rId_in_spTree` /
   `_effective_bg` / `_copy_bg_image_rels`
 
@@ -485,6 +498,7 @@ monkeypatch로, 그리고 실제 PowerPoint가 있는 머신에서는 실제 COM
 
 **팝업 UI**: `_ask_date_popup` `_ask_input_files_popup` `_ask_combined_input_popup`
 `_ask_numbers_popup` `_report_progress` `_run_with_progress_window` `_show_result_window`
+`_set_window_icon` `_apply_theme` `_center_window`
 
 **파일/인수**: `parse_args` `_infer_hymn_numbers` `find_files` `get_json_data`
 
@@ -494,6 +508,10 @@ monkeypatch로, 그리고 실제 PowerPoint가 있는 머신에서는 실제 COM
 `insert_slide_copy` `copy_slide_from_prs` `_copy_spTree` `_copy_image_rels`
 `_update_rId_in_spTree` `_effective_bg` `_copy_bg_image_rels` `_set_slide_bg_black`
 `_com_probe_path` `_build_com_probe_pptx`
+
+**python-pptx 몽키패치**: `_safe_next_slide_partname` — `PresentationPart._next_slide_partname`을
+교체해 슬라이드 삽입/삭제를 반복해도 partname이 항상 안전하게 채번되도록 한다(모듈 임포트 시
+1회 적용, 직접 호출하는 함수가 아님)
 
 **섹션 탐색**: `find_sections` `find_content_range` `find_복음_content_range`
 `find_slide_with_text` `find_shape_exact_text` `_is_hymn_divider` `_slide_text` `all_slide_texts`
@@ -549,15 +567,19 @@ monkeypatch로, 그리고 실제 PowerPoint가 있는 머신에서는 실제 COM
 
 ---
 
-## 부록 A: 버전별 변경 이력
+## 부록 A: 변경 이력
 
-| 버전 | 주요 변경 | 원문 |
+v1.4까지는 버전 번호로 관리했다(원문은 `docs/archive/`). 그 이후로는 버전 번호를 매기지 않고
+이 문서 자체를 계속 갱신하며, 무엇이 바뀌었는지만 날짜순으로 아래에 추가한다.
+
+| 시점 | 주요 변경 | 원문 |
 |---|---|---|
 | v1.0 | 최초 구현. 주일미사 전용 CLI. 독서/복음 파싱·배분, 슬라이드 복사 유틸, 서식 보존 함수, PPT2007 호환성 처리의 기본 골격 확립 | `docs/archive/missa_to_ppt 구현 계획 v1.0.md` |
 | v1.1 | 대화형 팝업 모드, `config.json` 기반 OneDrive 성가 폴더 관리, 종료 슬라이드 통합(`merge_threshold`)과 `_reposition_merged_ending_shapes()` 동적 위치 재조정 추가 | `docs/archive/missa_to_ppt 구현 계획 v1.1.md` |
 | v1.2 | 평일미사 지원 추가 — `is_sunday_mass()` 날짜 기반 자동 판단, UI 재배열, 화답송/성가/미사 후 기도를 주일·평일로 분기하는 `is_sunday`/`copy_scores` 파라미터화 | `docs/archive/missa_to_ppt 구현 계획 v1.2 (평일미사 추가).md` |
 | v1.3 | v1.2까지 정의됐던 동작(9줄 제한, 화답송 서식 보존, 배경 전체 커버)이 실제로는 지켜지지 않던 버그 6건 수정, 회귀 테스트 스위트(`test_missa_regression.py`) 신설. 이 버전부터 구현계획 문서를 "diff" 대신 "현재 전체 구현"을 담은 완결 문서로 관리 | `docs/archive/missa_to_ppt 구현 계획 v1.3.md` |
-| v1.4 | (1) `_split_para_at_lines()`의 run=2개 가정 제거로 절 번호 서식 유실 버그 수정, `_missing_orange_verse_numbers()` 검증 추가(§5.5, §14). (2) 성가 악보 파일 필수 검증(주일 5종/평일 4종) 및 오류 팝업 간소화(전체 로그는 항상 파일로 저장)(§2, §3.3). (3) `copy_slide_from_prs()`에 슬라이드 크기 차이 스케일 보정 추가(§11). (4) PowerPoint COM 실측 검증 하이브리드 신설 — `ppt_com_verify.py`, `_build_com_probe_pptx`, `_count_slide_lines_verified`, `_split_and_adjust_via_com`(분리 지점까지 재검증), config 플래그, 자동 폴백(§5.5-COM). 이 과정에서 발견한 "슬라이드별 캡이 거짓 성공을 보고하는 버그"와 "give-up 롤백 시 단락 순서가 뒤바뀌는 버그"를 함께 수정 | (이 문서) |
+| v1.4 (2026-08-04) | (1) `_split_para_at_lines()`의 run=2개 가정 제거로 절 번호 서식 유실 버그 수정, `_missing_orange_verse_numbers()` 검증 추가(§5.5, §14). (2) 성가 악보 파일 필수 검증(주일 5종/평일 4종) 및 오류 팝업 간소화(전체 로그는 항상 파일로 저장)(§2, §3.3). (3) `copy_slide_from_prs()`에 슬라이드 크기 차이 스케일 보정 추가(§11). (4) PowerPoint COM 실측 검증 하이브리드 신설 — `ppt_com_verify.py`, `_build_com_probe_pptx`, `_count_slide_lines_verified`, `_split_and_adjust_via_com`(분리 지점까지 재검증), config 플래그, 자동 폴백(§5.5-COM). 이 과정에서 발견한 "슬라이드별 캡이 거짓 성공을 보고하는 버그"와 "give-up 롤백 시 단락 순서가 뒤바뀌는 버그"를 함께 수정 | (내용이 이 문서에 병합됨, 별도 archive 없음) |
+| 2026-08-25 | (문서 버전 번호 매기기 중단, 이 문서를 항상 최신 상태로 유지하는 방식으로 전환) `_ask_numbers_popup()`에 성가번호 필수/형식 검증 추가(§3.5). `find_files()`가 평일미사에서는 OneDrive 성가 폴더를 아예 조회하지 않도록 변경(§3.3). `copy_slide_from_prs()`가 도형 크기뿐 아니라 폰트 크기·단락 여백도 함께 스케일 보정해 텍스트 잘림 방지(§11). `_update_성가_header()`가 원본 악보의 구분 라벨을 이번 주 실제 용도에 맞게 교정(§9). §16 함수 목록에 누락돼 있던 `_safe_next_slide_partname`(몽키패치)·`_set_window_icon`·`_apply_theme`·`_center_window` 보완 | (이 문서) |
 
 ## 부록 B: 재발 방지 규칙
 

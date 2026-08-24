@@ -13,10 +13,13 @@
 - `test_missa_regression.py` — 주일/평일 통합 + 단위 회귀 테스트 (`pytest`로 실행).
 - `config.json` — `onedrive_hymn_folder`(악보 성가 PPT 경로).
 - `missa_to_ppt.spec` + `dist/` — PyInstaller 빌드(`missa_to_ppt.exe`, GUI 모드).
-- `docs/` — 요구사항·구현 계획 v1.3, `archive/`, `ai-readiness-check/`.
+- `docs/` — 요구사항·구현 계획(버전 번호 없이 항상 최신 상태 유지, 변경 이력은 문서 맨 끝
+  부록 참고), `archive/`(v1.0~v1.3 과거 버전 원문), `ai-readiness-check/`.
 
 **날짜 폴더(`YYYYMMDD/`):** 미사별 작업 디렉터리. JSON, 템플릿·결과 pptx,
-화답송 악보 pptx, `log/`를 포함. 커밋된 산출물 겸 회귀 테스트 입력.
+화답송 악보 pptx, `log/`를 포함. 입력/출력 산출물이라 매번 커밋하지 않으며, 회귀 테스트
+픽스처로 쓰이는 3개(`20260624` 평일·`20260705` 성수축복·`20260712` 주일)만 git으로 추적한다
+(`.gitignore` 참고). 그 외 날짜 폴더는 로컬에만 남기고 커밋·푸시하지 않는다.
 
 ## OOXML XML 조작 규칙 (필수 적용)
 
