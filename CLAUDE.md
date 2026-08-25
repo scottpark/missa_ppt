@@ -131,3 +131,25 @@ run만 남기고 나머지 삭제" 같은 방식은 텍스트는 보존해도 �
 테스트가 있다. 독서·복음 줄 수 계산, 화답송/성가 처리 분기, 배경색, 절 번호 오렌지색처럼 이
 문서에 기록된 버그와 직결된 항목을 검증하므로, 관련 로직을 수정하면
 `pytest test_missa_regression.py -v`를 실행해 회귀 여부를 확인한다.
+
+## 하네스: missa_ppt 개발
+
+**목표:** 성인미사 전용으로 짜인 `missa_to_ppt.py`를 청년미사·어린이미사 등 새 미사 유형과
+새 성당/본당으로 안전하게 확장한다. 확장 과정에서 이 문서에 기록된 OOXML 함정이 재발하지
+않도록 설계·TDD 구현·독립 리뷰·검증을 분리된 전문 에이전트가 담당한다. 새 기능은 구현 전에
+실패하는 프로그레션 테스트(`test_missa_progression.py`)로 먼저 명세하고, 안정화되면
+회귀 테스트(`test_missa_regression.py`)로 승격한다.
+
+**트리거:** 새 미사 유형/성당 지원 추가, PPT 템플릿 구조 확장, `missa_to_ppt.py`/
+`missa_to_json.py`의 섹션 처리·OOXML 로직 구현 또는 버그 수정 요청 시 `mass-ppt-dev` 스킬을
+사용하라. 단순 질문(코드 설명, 문서 조회)은 직접 응답 가능.
+
+**구성:** `.claude/agents/`(mass-template-architect·ppt-ooxml-specialist·ooxml-code-reviewer·
+regression-qa), `.claude/skills/`(mass-ppt-dev 오케스트레이터 + mass-template-analysis·
+tdd-progression-testing·ooxml-pitfalls·boundary-verification·docs-sync).
+
+**변경 이력:**
+| 날짜 | 변경 내용 | 대상 | 사유 |
+|------|----------|------|------|
+| 2026-08-25 | 초기 구성 (에이전트 3명 + 오케스트레이터 1개 + 스킬 4개) | 전체 | 청년미사·어린이미사·타 성당 확장을 앞두고 설계/구현/검증 역할 분리 필요 |
+| 2026-08-25 | TDD 도입(`tdd-progression-testing` 스킬 신설, `test_missa_progression.py`↔`test_missa_regression.py` 분리, regression-qa에 승격 절차 추가) + 독립 코드 리뷰 단계 추가(`ooxml-code-reviewer` 에이전트 신설, specialist→reviewer→qa 파이프라인으로 확장) | 에이전트 4명, 스킬 5개 | 프로그레션(신규 동작 명세)과 회귀(기존 동작 보호) 테스트의 목적이 다름을 명확히 분리하고, 구현자 본인이 못 보는 사각지대를 잡을 독립 리뷰 단계 필요 |

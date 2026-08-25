@@ -11,3 +11,7 @@ missa_to_ppt.exe
 !/20260624/
 !/20260705/
 !/20260712/
+
+# 하네스(mass-ppt-dev) 팀 작업 중간 산출물 — 감사 추적용 로컬 파일, 커밋 대상 아님
+_workspace/
+_workspace_*/
