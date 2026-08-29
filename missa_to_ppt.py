@@ -687,6 +687,24 @@ def _ask_input_files_popup() -> dict:
 
     PPTX_TYPES = [('PowerPoint 파일', '*.pptx'), ('모든 파일', '*.*')]
 
+    # 화답송 악보 행 전용 filetypes (공유 상수 PPTX_TYPES는 다른 행 회귀 방지를 위해 건드리지
+
+    # 않는다 — 설계서 §4.2). 원본 사진(PNG/JPG) 입력을 지원한다.
+
+    HWADAPSONG_TYPES = [
+
+        ('악보 파일', '*.pptx *.png *.jpg *.jpeg'),
+
+        ('PowerPoint', '*.pptx'),
+
+        ('이미지', '*.png *.jpg *.jpeg'),
+
+        ('모든 파일', '*.*'),
+
+    ]
+
+    _IMG_EXTS = ('.png', '.jpg', '.jpeg')
+
 
 
     frame = tk.Frame(root, padx=20, pady=16)
@@ -699,7 +717,7 @@ def _ask_input_files_popup() -> dict:
 
         ('ref_pptx',    '참조 미사 PPT  *',  True),
 
-        ('화답송_pptx', '화답송 악보 PPT',   False),
+        ('화답송_pptx', '화답송 악보 PPT/사진', False),
 
         ('시작기도',    '시작기도 PPT',      False),
 
@@ -729,11 +747,13 @@ def _ask_input_files_popup() -> dict:
 
         )
 
-        def _browse(v=var):
+        row_types = HWADAPSONG_TYPES if key == '화답송_pptx' else PPTX_TYPES
+
+        def _browse(v=var, types=row_types):
 
             path = filedialog.askopenfilename(
 
-                parent=root, filetypes=PPTX_TYPES
+                parent=root, filetypes=types
 
             )
 
@@ -765,6 +785,24 @@ def _ask_input_files_popup() -> dict:
 
         화답송 = vars_['화답송_pptx'].get()
 
+        # 확장자로 PPT/이미지 분기 (설계서 §4.2)
+
+        화답송_pptx_val = None
+
+        화답송_img_val = None
+
+        if 화답송:
+
+            _p = Path(화답송)
+
+            if _p.suffix.lower() in _IMG_EXTS:
+
+                화답송_img_val = _p
+
+            else:
+
+                화답송_pptx_val = _p
+
         시작기도 = vars_['시작기도'].get()
 
         미사후기도 = vars_['미사후기도'].get()
@@ -773,7 +811,9 @@ def _ask_input_files_popup() -> dict:
 
             'ref_pptx':    Path(ref),
 
-            '화답송_pptx': Path(화답송) if 화답송 else None,
+            '화답송_pptx': 화답송_pptx_val,
+
+            '화답송_img':  화답송_img_val,
 
             '시작기도':    Path(시작기도) if 시작기도 else None,
 
@@ -828,6 +868,24 @@ def _ask_combined_input_popup() -> tuple:
 
     PPTX_TYPES = [('PowerPoint 파일', '*.pptx'), ('모든 파일', '*.*')]
 
+    # 화답송 악보 행 전용 filetypes (공유 상수 PPTX_TYPES는 다른 행 회귀 방지를 위해 건드리지
+
+    # 않는다 — 설계서 §4.2). 원본 사진(PNG/JPG) 입력을 지원한다.
+
+    HWADAPSONG_TYPES = [
+
+        ('악보 파일', '*.pptx *.png *.jpg *.jpeg'),
+
+        ('PowerPoint', '*.pptx'),
+
+        ('이미지', '*.png *.jpg *.jpeg'),
+
+        ('모든 파일', '*.*'),
+
+    ]
+
+    _IMG_EXTS = ('.png', '.jpg', '.jpeg')
+
 
 
     root = tk.Tk()
@@ -870,7 +928,7 @@ def _ask_combined_input_popup() -> tuple:
 
         ('ref_pptx',    '참조 미사 PPT  *',  True),
 
-        ('화답송_pptx', '화답송 악보 PPT',   False),
+        ('화답송_pptx', '화답송 악보 PPT/사진', False),
 
         ('시작기도',    '시작기도 PPT',      False),
 
@@ -900,11 +958,13 @@ def _ask_combined_input_popup() -> tuple:
 
         )
 
-        def _browse(v=var):
+        row_types = HWADAPSONG_TYPES if key == '화답송_pptx' else PPTX_TYPES
+
+        def _browse(v=var, types=row_types):
 
             root.focus_set()
 
-            path = filedialog.askopenfilename(parent=root, filetypes=PPTX_TYPES)
+            path = filedialog.askopenfilename(parent=root, filetypes=types)
 
             if path:
 
@@ -960,6 +1020,24 @@ def _ask_combined_input_popup() -> tuple:
 
                 return
 
+        # 확장자로 PPT/이미지 분기 (설계서 §4.2)
+
+        화답송_pptx_val = None
+
+        화답송_img_val = None
+
+        if 화답송:
+
+            _p = Path(화답송)
+
+            if _p.suffix.lower() in _IMG_EXTS:
+
+                화답송_img_val = _p
+
+            else:
+
+                화답송_pptx_val = _p
+
         시작기도 = vars_['시작기도'].get()
 
         미사후기도 = vars_['미사후기도'].get()
@@ -972,7 +1050,9 @@ def _ask_combined_input_popup() -> tuple:
 
                 'ref_pptx':    Path(ref),
 
-                '화답송_pptx': Path(화답송) if 화답송 else None,
+                '화답송_pptx': 화답송_pptx_val,
+
+                '화답송_img':  화답송_img_val,
 
                 '시작기도':    Path(시작기도) if 시작기도 else None,
 
@@ -1303,7 +1383,7 @@ def find_files(date_str: str, hymn_numbers: dict, is_sunday: bool = None) -> dic
 
 
 
-    files = {'ref_pptx': None, '시작기도': None, '화답송_pptx': None, '미사후기도': None, '성가': {}}
+    files = {'ref_pptx': None, '시작기도': None, '화답송_pptx': None, '화답송_img': None, '미사후기도': None, '성가': {}}
 
 
 
@@ -1314,6 +1394,43 @@ def find_files(date_str: str, hymn_numbers: dict, is_sunday: bool = None) -> dic
         if f.suffix.lower() == '.pptx' and '화답송 악보' in f.name and not f.name.startswith('~$'):
 
             files['화답송_pptx'] = f
+
+
+
+    # 화답송 악보 이미지: 수작업 PPT가 있으면 그것을 우선하고(기존 동작 완전 보존) 없을 때만
+
+    # 탐색한다(설계서 §4.1). 촬영 앱이 붙인 타임스탬프 파일명("20260809_043842947.jpg")은
+
+    # 파일명에 '화답송'이 없으므로, 이름 매칭이 안 되면 "폴더 내 유일 이미지"로 폴백한다.
+
+    # 단, 날짜 폴더에 화답송과 무관한 이미지가 여러 개 섞여 있으면 어떤 것인지 모호하므로
+
+    # 폴백하지 않는다 — 잘못된 이미지를 화답송으로 오인해 처리하는 것보다 미검출이 안전하다.
+
+    if not files['화답송_pptx']:
+
+        _HWADAPSONG_IMG_EXTS = {'.png', '.jpg', '.jpeg'}
+
+        named_imgs = [
+            f for f in folder.iterdir()
+            if f.suffix.lower() in _HWADAPSONG_IMG_EXTS and '화답송' in f.name
+            and not f.name.startswith('~$')
+        ]
+
+        if named_imgs:
+
+            files['화답송_img'] = named_imgs[0]
+
+        else:
+
+            all_imgs = [
+                f for f in folder.iterdir()
+                if f.suffix.lower() in _HWADAPSONG_IMG_EXTS and not f.name.startswith('~$')
+            ]
+
+            if len(all_imgs) == 1:
+
+                files['화답송_img'] = all_imgs[0]
 
 
 
@@ -1422,6 +1539,21 @@ def find_files(date_str: str, hymn_numbers: dict, is_sunday: bool = None) -> dic
 
     return files
 
+
+def apply_화답송_override(files: dict, override_path_str: str) -> None:
+    """--화답송 CLI 오버라이드를 확장자에 따라 화답송_pptx/화답송_img 키로 분기해 반영한다.
+
+    오버라이드는 find_files()가 자동 탐색해 이미 채워둔 반대쪽 키를 명시적으로 비워야 한다 —
+    안 그러면 update_화답송()의 "PPT 우선" 규칙 때문에 자동 탐색된 파일이 사용자가 명시적으로
+    지정한 오버라이드를 조용히 무시해 버린다(설계서 §4.2).
+    """
+    override_path = Path(override_path_str)
+    if override_path.suffix.lower() in ('.png', '.jpg', '.jpeg'):
+        files['화답송_img'] = override_path
+        files['화답송_pptx'] = None
+    else:
+        files['화답송_pptx'] = override_path
+        files['화답송_img'] = None
 
 
 
@@ -4785,7 +4917,7 @@ def _update_화답송_title_in_slide(slide, new_title: str):
 
         t = shape.text_frame.text
 
-        if '화 답 송' in t or '화답송' in t:
+        if '화 답 송' in t:
 
             para = shape.text_frame.paragraphs[0]
 
@@ -4797,7 +4929,7 @@ def _update_화답송_title_in_slide(slide, new_title: str):
 
 
 
-def update_화답송(prs, json_data: dict, sections: dict, 화답송_pptx_path, is_sunday: bool = True):
+def update_화답송(prs, json_data: dict, sections: dict, 화답송_pptx_path, 화답송_img_path=None, is_sunday: bool = True):
 
     if '화답송_start' not in sections or not json_data.get('화답송'):
 
@@ -4943,7 +5075,13 @@ def update_화답송(prs, json_data: dict, sections: dict, 화답송_pptx_path, 
 
 
 
-    # 화답송 악보 PPT 로드
+    # 화답송 악보 로드: 수작업 PPT 우선(기존 동작 완전 보존), 없으면 원본 사진에서 자동
+
+    # 생성한다(2차 마일스톤 — missa_psalm_score_image.render_화답송_score_slide 재사용,
+
+    # 설계서 §4.3). title은 위에서 이미 json_data['화답송']['title']로 구해져 있으므로
+
+    # 그대로 넘기면 JSON 제목 자동 연결이 끝난다(추가 가공 불필요).
 
     악보_prs = None
 
@@ -4956,6 +5094,18 @@ def update_화답송(prs, json_data: dict, sections: dict, 화답송_pptx_path, 
         except Exception as e:
 
             print(f'  [경고] 화답송 악보 PPT 로드 실패: {e}')
+
+    elif 화답송_img_path and Path(화답송_img_path).exists():
+
+        try:
+
+            from missa_psalm_score_image import render_화답송_score_slide
+
+            악보_prs = render_화답송_score_slide(화답송_img_path, title)
+
+        except Exception as e:
+
+            print(f'  [경고] 화답송 악보 이미지 처리 실패: {e}')
 
 
 
@@ -6576,7 +6726,7 @@ def main():
 
         if 화답송_override:
 
-            files['화답송_pptx'] = Path(화답송_override)
+            apply_화답송_override(files, 화답송_override)
 
         if 미사후기도_override:
 
@@ -6612,11 +6762,13 @@ def main():
 
     print(f'  시작기도: {files["시작기도"].name if files["시작기도"] else "없음"}')
 
-    print(f'  화답송 악보: {files["화답송_pptx"].name if files["화답송_pptx"] else "없음"}')
+    화답송_source = files.get('화답송_pptx') or files.get('화답송_img')
 
-    if is_sunday and not files.get('화답송_pptx'):
+    print(f'  화답송 악보: {화답송_source.name if 화답송_source else "없음"}')
 
-        print('  [경고] 주일미사인데 화답송 악보 PPT가 없습니다.')
+    if is_sunday and not 화답송_source:
+
+        print('  [경고] 주일미사인데 화답송 악보 파일(PPT/이미지)이 없습니다.')
 
     if files.get('미사후기도'):
 
@@ -6740,7 +6892,7 @@ def main():
 
         print('  화답송...')
 
-        update_화답송(prs, json_data, sec, files.get('화답송_pptx'), is_sunday=is_sunday)
+        update_화답송(prs, json_data, sec, files.get('화답송_pptx'), files.get('화답송_img'), is_sunday=is_sunday)
 
 
     # 섹션 재탐색

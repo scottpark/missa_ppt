@@ -10,6 +10,13 @@
 **핵심 파일:**
 - `missa_to_json.py` — 독서·복음·화답송·성가 등 섹션을 크롤링해 JSON 출력.
 - `missa_to_ppt.py` — 메인 생성기. 슬라이드 복사·독서 줄 나눔·절 번호 색상·`validate()` 등.
+- `missa_psalm_score_image.py` — 화답송 악보 원본 이미지(PNG/JPG) → 슬라이드 변환(1차
+  마일스톤, 순수 함수 묶음, `missa_to_ppt.py`를 import하지 않는 단방향 의존). 진입점
+  `render_화답송_score_slide()`. 고정 템플릿 자산은 `assets/화답송_악보_template.pptx`
+  (`tools/build_화답송_template.py`로 생성). 아직 `missa_to_ppt.py`와 배선되지 않은 독립
+  모듈 — 통합(입력창/`find_files()`/`update_화답송()` 연결)은 2차 마일스톤.
+- `test_missa_progression.py` — 아직 안정화되지 않은 신규 동작을 먼저 명세하는 프로그레션
+  테스트(TDD red→green). 안정화되면 `test_missa_regression.py`로 승격.
 - `test_missa_regression.py` — 주일/평일 통합 + 단위 회귀 테스트 (`pytest`로 실행).
 - `config.json` — `onedrive_hymn_folder`(악보 성가 PPT 경로).
 - `missa_to_ppt.spec` + `dist/` — PyInstaller 빌드(`missa_to_ppt.exe`, GUI 모드).
@@ -51,6 +58,38 @@ pPr.insert(0, pptx_parse_xml('<a:lnSpc .../>'))
 `_set_reading_text`에서 `lnSpc`를 `append()`로 추가해 `spcAft` 뒤에 놓이게 됐다.
 특정 참조 PPT(`spcAft`를 포함한 단락 서식)에서만 오류가 재현되어 원인 파악에 오랜 시간이 걸렸다.
 
+### 이 원칙은 `<a:pPr>`뿐 아니라 순서 스키마를 가진 모든 요소에 적용된다
+
+`append()` 금지 원칙을 "pPr에 요소를 추가할 때"로만 기억하면, 순서가 강제되는 **다른** 요소를
+건드릴 때 같은 함정에 다시 걸린다. 예: `<a:p>` (CT_TextParagraph)의 자식 순서도
+`pPr? → (run|br)* → endParaRPr?`로 강제된다. 단락에서 기존 run/br만 지우고 `endParaRPr`는
+남긴 채 새 run을 `p.append(new_r)`로 추가하면, 실제 순서가 `pPr → endParaRPr → r`가 되어
+run이 endParaRPr **뒤에** 오는 스키마 위반이 된다.
+
+```python
+# ❌ 틀린 방법 — endParaRPr가 이미 남아있는 <a:p>에 append
+p.append(new_r)   # 결과: pPr, endParaRPr, r (스키마 위반)
+
+# ✅ 올바른 방법 — endParaRPr가 있으면 그 앞에 삽입
+eprp = p.find(qn('a:endParaRPr'))
+if eprp is not None:
+    eprp.addprevious(new_r)
+else:
+    p.append(new_r)  # endParaRPr가 없으면 맨 끝이 곧 올바른 위치
+```
+
+새로운 요소 타입을 다룰 때는 "pPr 자식 순서"라는 암기된 규칙을 그대로 대입하지 말고, 해당
+요소의 OOXML 스키마 시퀀스를 확인한 뒤 `append()`가 마지막 자식(시퀀스상 옵션인 꼬리 요소,
+예: `endParaRPr`, `extLst`) 뒤에 요소를 놓지는 않는지 점검한다.
+
+**발견 경위 (2026-08-29):** `missa_psalm_score_image.py`의 `_replace_title_paragraph`가
+제목 단락의 run/br만 지우고 `endParaRPr`는 남긴 뒤 새 run을 `append()`해, `pPr → endParaRPr →
+r` 순서로 렌더링됐다. `validate_pptx_structure()`(XML 제어문자·끊어진 rId만 검사)와 42개
+프로그레션 테스트 전부가 이 스키마 위반을 잡지 못했고, 독립 코드 리뷰(`ooxml-code-reviewer`)가
+실제 렌더링 XML을 직접 열어보고서야 발견했다. 구현자 본인은 "pPr을 직접 조작하지 않았으니
+안전하다"고 자평했으나, append 위험을 "pPr 자식 순서"라는 기억된 형태로만 점검해 같은 원리가
+`<a:p>` 자식 레벨(run vs endParaRPr)에도 적용됨을 일반화하지 못했다.
+
 ## 슬라이드 복사 시 배경/서식 재설정 금지
 
 `copy_slide_from_prs()`는 원본 슬라이드의 배경(레이아웃/마스터 상속분까지 해석한 실제 배경)을
@@ -73,6 +112,23 @@ else 'content'` 같은 패턴)에서 `if key == 'content' and txt:` 식으로 "�
 
 **발견 경위 (2026-07-16):** `_align_ending_slides_to_제2독서()`에서 `BlackBg`가 `content`로
 오분류되어 종료전용 템플릿의 작은 콘텐츠 자리표시자 크기로 잘못 리사이즈됐다.
+
+## 텍스트 키워드로 도형을 식별할 때 부분 문자열 충돌 주의
+
+`kw in shape.text_frame.text` 같은 부분 문자열 포함검사로 특정 도형(제목·라벨 등)을 찾을 때,
+그 키워드가 **다른** 도형의 텍스트에도 우연히 포함되어 있으면 도형 순회 순서에 의존하는
+암묵적 안전성만 남는다. 첫 매칭에서 `return`하는 코드는 의도한 도형이 항상 먼저 순회되는 동안만
+안전하고, 도형 순서가 바뀌거나(슬라이드 복사·재배치) 텍스트가 수정되면 조용히 엉뚱한 도형이
+매칭되어 그 내용을 덮어쓴다. 키워드는 "의도한 도형에만 나타나는" 형태(공백·구두점 포함 등
+더 구체적인 패턴)로 좁혀서, 순회 순서와 무관하게 안전하도록 만든다.
+
+**발견 경위 (2026-08-29):** `missa_psalm_score_image.py`의 `_update_title`이 제목 도형을
+`"화 답 송" in t or "화답송" in t`(공백 없는 형태 포함)로 찾았는데, 화답송 악보 템플릿의
+저작권 표기 도형에 "…박원주 <**화답송**과 시편의 노래>…"라는 문구가 있어 공백 없는 "화답송"
+키워드가 이 도형에도 매칭됐다. 제목 도형이 저작권 도형보다 먼저 순회되는 현재 도형 순서
+덕분에만 우연히 안전했고, 순서가 바뀌면 저작권 문구가 제목으로 조용히 덮어써질 수 있었다.
+독립 코드 리뷰(`ooxml-code-reviewer`)가 지적해 키워드를 공백이 있는 `"화 답 송"` 형태(제목
+도형에만 나타남)로 좁혀 해결했다.
 
 ## post-write 재조정 이후 값을 참조할 때는 최신 상태를 다시 측정
 
