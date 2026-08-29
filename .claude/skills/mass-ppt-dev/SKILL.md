@@ -120,10 +120,19 @@ TaskUpdate로 반영). 모든 항목이 green이 되면 ooxml-code-reviewer에�
 
 ### Phase 7: 문서 동기화
 
-1. `_workspace/03_qa_report.md`가 "통과"면 ppt-ooxml-specialist(경량 경로면 리더 본인)가
-   `docs-sync` 스킬로 `docs/missa_to_ppt 요구사항.md`/`docs/missa_to_ppt 구현 계획.md`/
-   (필요 시) `CLAUDE.md`를 갱신
+**Phase 6(regression-qa)의 실행 여부·범위와 무관하게 항상 수행한다.** 사용자가 "회귀는
+화답송 관련만", "regression-qa는 생략해도 된다"처럼 Phase 6을 축소·생략하라고 지시하는
+경우가 실제로 있다 — 이는 *검증 범위*에 대한 지시이지 *문서 동기화를 건너뛰라는 지시가
+아니다. 리더는 Phase 6을 축소/생략한 경우에도, 리뷰(Phase 5)가 통과하고 사용자가 기능을
+승인한 시점에 Phase 7을 별도로 트리거해야 한다 — "QA 리포트 통과"라는 조건에 자동으로
+걸려 넘어오는 부수효과로 취급하지 말고, 체크리스트 항목으로 명시적으로 확인한다.
+
+1. `ppt-ooxml-specialist`(경량 경로면 리더 본인)가 `docs-sync` 스킬로
+   `docs/missa_to_ppt 요구사항.md`/`docs/missa_to_ppt 구현 계획.md`/(필요 시) `CLAUDE.md`를
+   갱신
 2. 두 문서의 "부록: 변경 이력"에 오늘 날짜로 항목 추가됐는지 확인
+3. 사용자에게 최종 보고(Phase 8)하기 **직전에** "문서 동기화 완료"를 리더 스스로 체크리스트로
+   재확인한다 — 커밋 여부를 묻는 시점에 문서 갱신이 빠져 있으면 이미 늦은 것이다
 
 ### Phase 8: 정리 및 보고
 
@@ -172,6 +181,7 @@ TaskUpdate로 반영). 모든 항목이 green이 되면 ooxml-code-reviewer에�
 | qa 2회 재시도 후에도 실패 | 리더에게 에스컬레이션, 사용자에게 미해결 항목 명시하고 진행 여부 확인 |
 | PowerPoint COM 사용 불가 환경 | COM 전용 검증만 "미검증(환경 제약)"으로 리포트, 실패로 취급하지 않음 |
 | 팀원 유휴/중단 | 리더가 SendMessage로 상태 확인 후 재시작 또는 작업 재할당 |
+| 사용자가 Phase 6(회귀 검증)의 범위를 축소하거나 생략하라고 지시 | Phase 7(문서 동기화)까지 생략된 것으로 오해하지 않는다 — Phase 6과 Phase 7은 독립적인 체크리스트 항목. 리뷰 통과 + 사용자 기능 승인 시점에 Phase 7을 별도로 트리거 |
 
 ## 테스트 시나리오
 

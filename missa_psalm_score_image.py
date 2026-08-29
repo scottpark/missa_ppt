@@ -16,6 +16,7 @@ import 하지 않는다(단방향 의존 — 설계서 §1.4). Pillow/numpy/pyth
 import copy
 import io
 import logging
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -26,7 +27,11 @@ from pptx.oxml.ns import qn
 
 logger = logging.getLogger(__name__)
 
-_BASE = Path(__file__).resolve().parent
+# PyInstaller onefile 빌드에서는 datas로 묻은 파일이 실행 시점에 디스크로 추출되지 않는
+# 경우가 있어(바이너리/데이터 재분류 단계의 알 수 없는 부작용, 실측 확인) config.json과
+# 동일하게 "실행 파일 옆의 외부 자산 폴더"로 취급한다(missa_to_ppt.py의 _SCRIPT_DIR과 동일
+# 패턴). 소스에서 직접 실행할 때는 이 파일의 위치를 그대로 쓴다.
+_BASE = Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
 ASSET_TEMPLATE = _BASE / "assets" / "화답송_악보_template.pptx"
 
 # --- 이미지 분석 임계값 (설계서 §2, §3) ---

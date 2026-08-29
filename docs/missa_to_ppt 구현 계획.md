@@ -72,9 +72,15 @@ def is_sunday_mass(date_str: str) -> bool:
 ### 3.3 `find_files(date_str, hymn_numbers) -> dict` (CLI 모드 파일 탐색)
 
 `YYYYMMDD/` 폴더를 스캔해 다음을 채운 dict를 반환한다: `ref_pptx`, `시작기도`, `화답송_pptx`,
-`미사후기도`, `성가`(dict, 못 찾은 항목은 키 자체가 없음).
+`화답송_img`, `미사후기도`, `성가`(dict, 못 찾은 항목은 키 자체가 없음).
 
-- 화답송 악보: 파일명에 "화답송 악보" 포함
+- 화답송 악보 PPT: 파일명에 "화답송 악보" 포함
+- 화답송 악보 사진(`화답송_img`): `화답송_pptx`를 찾지 못했을 때만 탐색한다(PPT 우선, 기존
+  동작 완전 보존). `.png`/`.jpg`/`.jpeg` 중 파일명에 "화답송"이 포함된 파일을 먼저 찾고,
+  없으면 폴더 안의 이미지 파일이 정확히 1개일 때만 그것을 화답송 악보 사진으로 간주한다
+  (촬영 앱이 붙인 타임스탬프 파일명 대응). 이름 매칭이 안 되고 이미지가 2개 이상이면 어느
+  것이 화답송 악보인지 모호하므로 폴백하지 않고 `None`으로 둔다 — 오탐(잘못된 이미지를
+  화답송으로 처리)보다 미검출이 안전하다는 원칙
 - 시작기도: 파일명에 "시작기도" 포함
 - 미사후기도: 파일명에 "미사후기도" 포함
 - 성가: `find_files(date_str, hymn_numbers, is_sunday)`의 `is_sunday`에 따라 분기한다. 주일미사는
@@ -96,6 +102,12 @@ stderr에 출력 후 종료한다. 이는 성가 **번호** 누락 검증(§3.4)
 (경로 override), `--test`(팝업 없이 폴더 파일로 번호 자동 추론)를 받는다. 성가번호가 하나라도
 비어 있으면 `_infer_hymn_numbers()`로 테스트 기본값(`_TEST_HYMN_DEFAULTS`)을 채운다.
 
+`--화답송` 오버라이드는 `apply_화답송_override(files, override_path_str) -> None`이 처리한다.
+확장자가 `.png`/`.jpg`/`.jpeg`이면 `files['화답송_img']`에, 그 외(pptx)면 `files['화답송_pptx']`에
+넣고 **반대쪽 키를 명시적으로 `None`으로 비운다** — 비우지 않으면 `find_files()`가 자동
+탐색해 둔 파일이 `update_화답송()`의 "PPT 우선" 규칙 때문에 사용자가 명시한 오버라이드를
+조용히 무시해 버린다. 순수 로직이라 `main()`에서 분리해 단위 테스트 가능하게 만들었다.
+
 미사 유형별 필수 성가 **번호** 검증(주일=5종 전부, 평일=2차봉헌 제외 4종)을 거쳐, 누락 시
 오류 출력 후 종료한다. `--test`는 검증 전에 테스트 기본값으로 빈 번호를 채워 검증을 생략한다
 (과거에는 `--test` 여부와 무관하게 항상 테스트 기본값을 주입하던 버그가 있었음 — 2026-07-30
@@ -105,8 +117,11 @@ stderr에 출력 후 종료한다. 이는 성가 **번호** 누락 검증(§3.4)
 
 - `_ask_date_popup() -> str`: YYYYMMDD 형식 검증, Enter/확인으로 제출
 - `_ask_input_files_popup()` / `_ask_combined_input_popup()`: 참조 PPT(필수) → 화답송 악보
-  PPT(선택, 주일에 비어 있으면 경고) → 시작기도 PPT(선택) → 미사후기도 PPT(선택) 순서의 파일
-  선택 화면
+  PPT/사진(선택, 주일에 비어 있으면 경고) → 시작기도 PPT(선택) → 미사후기도 PPT(선택) 순서의
+  파일 선택 화면. 화답송 행만 filetypes를 `HWADAPSONG_TYPES`(pptx/png/jpg/jpeg)로 확장하고,
+  다른 행이 쓰는 공유 상수 `PPTX_TYPES`는 그대로 둔다(회귀 방지). `on_ok()`에서 선택된 파일의
+  확장자로 `화답송_pptx`/`화답송_img` 중 알맞은 키에 담는다. 두 팝업 함수(단일 입력창/날짜+파일
+  통합 입력창)에 동일한 패턴을 반복 적용했다
 - `_ask_numbers_popup(defaults, is_sunday=True) -> dict`: 성가 5종 번호 입력. 주일은 5종 전부,
   평일은 2차봉헌을 제외한 4종을 필수로 검증하고 숫자 형식도 확인한다 — 누락/형식 오류 시
   `messagebox.showerror`로 안내하고 다시 입력받는다
@@ -325,7 +340,7 @@ Pillow 전용으로 폴백하며, `[경고]`/`[설정]` 로그를 남긴다. 실
   통합된 슬라이드의 종료 텍스트박스를, 실제 본문 마지막 줄로부터 두 줄 공백 위치로 재조정한다.
   `_align_ending_slides_to_제2독서()` 실행 **이후**에 호출해야 한다
 
-## 6. 화답송 처리 — `update_화답송(prs, json_data, sections, 화답송_pptx_path, is_sunday=True)`
+## 6. 화답송 처리 — `update_화답송(prs, json_data, sections, 화답송_pptx_path, 화답송_img_path=None, is_sunday=True)`
 
 `content`를 `\n` 기준으로 분리(`segments`), 첫 항목이 후렴(◎), 나머지가 절(○)이다.
 
@@ -336,10 +351,73 @@ Pillow 전용으로 폴백하며, `[경고]`/`[설정]` 로그를 남긴다. 실
     호출해 덮어쓰면 안 된다**(텍스트 슬라이드 분기는 같은 프레젠테이션 내부 템플릿 복제이므로
     `_set_slide_bg_black()`을 걸어도 안전함). 화답송 악보 PPT와 참조 PPT의 슬라이드 크기가
     다르면 `copy_slide_from_prs()`가 도형 위치·크기를 비율만큼 자동 보정한다(§11 참고).
+  - **`화답송_pptx_path`가 없고 `화답송_img_path`만 있으면**, `missa_psalm_score_image.
+    render_화답송_score_slide(화답송_img_path, title)`를 함수 내부에서 지연 import해 호출한다
+    (모듈 최상단에서 import하지 않음 — `missa_to_ppt.py`가 `missa_psalm_score_image.py`에
+    상시 하드 의존할 필요는 없다는 판단). 반환된 in-memory `Presentation`을 `악보_prs`로 삼아
+    이후 `copy_slide_from_prs(prs, idx, 악보_prs, 0)` 경로는 PPT 입력 때와 완전히 동일하게
+    진행된다 — 통합 표면이 좁다. `title`은 이미 `json_data['화답송']['title']`로 구해져 있는
+    값을 그대로 넘기므로 JSON 제목 자동 연결에 추가 가공이 필요 없다. PPT가 있으면 이미지는
+    아예 확인하지 않는다(PPT 우선, 기존 동작 완전 보존).
 - **평일미사**: 텍스트 슬라이드만(`needed = len(verses)`), 참조 PPT의 화답송 텍스트 템플릿을
-  `insert_slide_copy()`로 복제. 후렴(◎)도 각 슬라이드에 함께 표시(`◎\t...` + `○\t...` 2단락)
+  `insert_slide_copy()`로 복제. 후렴(◎)도 각 슬라이드에 함께 표시(`◎\t...` + `○\t...` 2단락).
+  이 분기는 악보 그림 자체를 쓰지 않으므로 사진 입력과 무관하다.
 
 화답송 제목 갱신(`_update_화답송_title_in_slide`)은 주일·평일 공통.
+
+### 6.1 화답송 악보 사진 → 슬라이드 변환 — `missa_psalm_score_image.py`
+
+`missa_to_ppt.py`(OOXML 슬라이드 XML 조작 중심)와 관심사가 달라 별도 모듈로 분리했다.
+Pillow/numpy/python-pptx에만 의존하며 `missa_to_ppt.py`를 import하지 않는 단방향 의존이라,
+파일 자체만으로도 pytest 단위 테스트가 가능하다(`test_missa_progression.py`).
+
+- **`render_화답송_score_slide(image_path, title, template_path=ASSET_TEMPLATE) -> Presentation`**
+  (진입점): 슬라이드 1장짜리 in-memory `Presentation`을 반환한다. 부작용 없음(저장은 호출자
+  몫). 슬라이드 크기를 템플릿과 동일한 12192000×6858000으로 유지해 `copy_slide_from_prs()`의
+  스케일 보정이 1:1이 되게 한다.
+- **`detect_watermark_crop_x(gray) -> int`**: 사진 좌측 "화답송" 워터마크와 오선보 사이의
+  완전 공백 컬럼 띠(좌측 30% 안, 좌측 여백 자체는 제외)를 찾아 그 우측 끝+1을 크롭 시작
+  컬럼으로 반환한다. 못 찾으면 크롭 없이 0을 반환하고 경고 로그만 남긴다.
+- **`staff_band(gray) -> (top, bottom)`**: 가로 잉크가 폭의 50% 이상인 행들의 범위 = 오선 5선
+  밴드. 못 찾으면 이미지 높이의 30%/70%로 폴백.
+- **`detect_content_bounds(gray) -> (left, right, top, bottom)`**: 오선보 잉크 전체의
+  bounding box(트레일링 공백 제거).
+- **`detect_barlines(gray, band) -> list[int]`**: 오선 밴드 안에서 `col_fill > 0.85`인 컬럼을
+  마디선 후보로 그룹핑한 뒤, **노트헤드/스템/플래그 인접 배제 필터**
+  (`_is_fused_with_adjacent_note`)로 오검출을 걸러낸다. 온음표·8분음표 기둥+깃발처럼 오선
+  전체를 관통하는 획은 `col_fill>0.85` 기준만으로는 진짜 마디선과 구분되지 않는다 — 판별
+  원리는 "후보 바로 옆(스킵 구간, 오선 밴드 높이 비례)에 다른 음표가 있는 것은 정상이지만,
+  그 잉크가 스킵 구간을 지나서도 지속되면 후보 자체가 그 음표에 융합된 획"이라는 것. 실사용
+  중 8분음표 기둥+깃발이 마디선으로 오검출된 사례(사용자가 미리보기 육안 검수로 발견)를 계기로
+  추가됐다.
+- **`choose_split_x(barlines, left, right) -> int`**: 마디선 후보 중 이미지 중앙 30~70% 구간
+  (clef/조표/끝 겹세로줄 배제) 안에서 좌우 폭 차이를 최소화하는 지점을 분할점으로 선택한다.
+  후보가 없으면 기하 중앙으로 폴백. "진짜 마디선일 것"이 1순위 제약이고 "폭 균형"은 그 후보들
+  중 2순위 기준이므로, 오검출 필터(`detect_barlines`)만 정확하면 이 함수는 손댈 필요가 없다.
+- **`split_and_place(image, crop_box, split_x) -> (PIL, PIL)`**: 분할점에서 좌/우로 나눠 상/하
+  2장을 반환한다. 겹침·누락 없는 무손실 분할(상단폭+하단폭 == crop_right-crop_left).
+- **`build_slide(template_path, title, up_img, low_img) -> Presentation`**: 고정 템플릿을 로드해
+  제목을 교체하고 상/하 악보 2장을 배치한다.
+  - **가로 정렬**: 상단 줄은 왼쪽 정렬, 하단 줄은 오른쪽 정렬(사용자 지시).
+  - **공통 배율**: 상/하 두 이미지를 각자 독립적으로 자기 밴드에 맞춰 스케일링하지 않고, 두
+    이미지 각각의 필요 배율(`_required_scale` = 밴드 폭·높이 둘 다에 맞추는 데 필요한 축소율)
+    중 더 작은(더 제약이 큰) 값을 공통으로 적용한다(`_place_with_scale`). 마디 경계 제약으로
+    두 단의 폭이 크게 달라지는 악보에서도, 공통 배율 덕에 음표 크기가 두 줄에서 항상 동일하게
+    유지되고 폭이 좁은 쪽은 밴드를 다 채우지 않은 채 남는다(사용자 지시 — "두 단 폭이 다르면
+    높이가 더 작아지는" 결과).
+  - 제목 교체는 `missa_to_ppt._replace_para_text_clone`과 동일한 안전 패턴
+    (`_replace_title_paragraph`)을 이 모듈에 복제해 사용한다 — 단방향 의존 규칙상
+    `missa_to_ppt.py`를 import할 수 없기 때문. 새 run은 `<a:p>`의 `endParaRPr`보다 반드시
+    앞에 삽입한다(`_insert_run_before_end_para_rpr`) — `endParaRPr`를 남긴 채 run을 단순
+    `append()`하면 `pPr, endParaRPr, r` 순서가 되어 `CT_TextParagraph` 스키마(`pPr?,
+    (run|br)*, endParaRPr?`) 위반이 된다(리뷰에서 발견, CLAUDE.md "pPr append 금지" 함정이
+    `<a:p>` 자식 레벨에서 재발한 사례).
+  - 템플릿 배경은 이미 정답이므로 `_set_slide_bg_black()`류 재설정을 하지 않는다.
+
+고정 템플릿 자산 `assets/화답송_악보_template.pptx`는 예제 화답송 악보 PPT에서 악보 그림
+PICTURE 2개만(`shape_type==PICTURE and width>1_000_000 and height>1_000_000` 기준 — 텍스트가
+아니라 크기/타입으로 식별해 빈 텍스트 falsy 함정을 피함) 제거해 생성한다. 빌더 스크립트는
+`tools/build_화답송_template.py`(일회성, 런타임에는 호출되지 않고 산출물 `.pptx`만 로드).
 
 ## 7. 복음환호송 — `update_복음환호송(prs, json_data, sections)`
 
@@ -500,7 +578,8 @@ monkeypatch로, 그리고 실제 PowerPoint가 있는 머신에서는 실제 COM
 `_ask_numbers_popup` `_report_progress` `_run_with_progress_window` `_show_result_window`
 `_set_window_icon` `_apply_theme` `_center_window`
 
-**파일/인수**: `parse_args` `_infer_hymn_numbers` `find_files` `get_json_data`
+**파일/인수**: `parse_args` `_infer_hymn_numbers` `find_files` `apply_화답송_override`
+`get_json_data`
 
 **미사 유형**: `is_sunday_mass`
 
@@ -549,9 +628,17 @@ monkeypatch로, 그리고 실제 PowerPoint가 있는 머신에서는 실제 COM
 **PowerPoint COM 래퍼** (`ppt_com_verify.py`, 별도 모듈): `is_available` `count_slide_lines`
 `shutdown` `_ensure_app` `_discard_app` `_open_and_measure`
 
+**화답송 악보 사진 처리** (`missa_psalm_score_image.py`, 별도 모듈, §6.1 참고): 이미지 로드
+`load_flattened_image` `load_gray_array` / 워터마크·경계 `detect_watermark_crop_x` `staff_band`
+`detect_content_bounds` / 마디선 `_group_consecutive` `_is_fused_with_adjacent_note`
+`detect_barlines` `choose_split_x` `split_and_place` / 슬라이드 조립 `_required_scale`
+`_place_with_scale` `_insert_run_before_end_para_rpr` `_replace_title_paragraph` `_update_title`
+`_add_picture` `build_slide` / 진입점 `render_화답송_score_slide`
+
 ## 17. 의존성
 
-- python-pptx, lxml, Pillow(폰트 메트릭 측정)
+- python-pptx, lxml, Pillow(폰트 메트릭 측정 + 화답송 악보 사진 이미지 처리), numpy(화답송
+  악보 사진의 워터마크·마디선 탐지용 배열 연산)
 - **pywin32**(PowerPoint COM 실측 검증용 — `win32com.client`, `pythoncom`). 미설치 환경에서도
   나머지 기능은 정상 동작하며 Pillow 전용으로 자동 폴백한다
 - requests, beautifulsoup4 (missa_to_json.py의 크롤링)
@@ -560,10 +647,12 @@ monkeypatch로, 그리고 실제 PowerPoint가 있는 머신에서는 실제 COM
 - json, pathlib, re, copy, io, subprocess, zipfile, tempfile, uuid, atexit (표준 라이브러리)
 - `requirements.txt`에 위 서드파티 의존성이 명시되어 있다(`pip install -r requirements.txt`)
 
-**PyInstaller 빌드**: `missa_to_ppt.spec`의 `hiddenimports`에 `ppt_com_verify`와 pywin32 관련
+**PyInstaller 빌드**: `missa_to_ppt.spec`의 `hiddenimports`에 `ppt_com_verify`·pywin32 관련
 모듈(`win32com.client`, `win32com.gen_py`, `win32timezone`, `pythoncom`, `pywintypes`,
-`win32api`)이 추가되어 있다 — 둘 다 함수 내부 지연 import라 PyInstaller의 정적 스캐너가
-놓치기 쉽다.
+`win32api`)에 더해 `missa_psalm_score_image`·`numpy`·`PIL`이 추가되어 있다(전부 함수 내부
+지연 import라 PyInstaller의 정적 스캐너가 놓치기 쉽다). `datas`에는 고정 템플릿 자산
+`assets/화답송_악보_template.pptx`의 절대경로가 포함되어, 빌드된 실행 파일 안에서도
+`render_화답송_score_slide()`가 자산을 로드할 수 있다.
 
 ---
 
@@ -580,6 +669,8 @@ v1.4까지는 버전 번호로 관리했다(원문은 `docs/archive/`). 그 이�
 | v1.3 | v1.2까지 정의됐던 동작(9줄 제한, 화답송 서식 보존, 배경 전체 커버)이 실제로는 지켜지지 않던 버그 6건 수정, 회귀 테스트 스위트(`test_missa_regression.py`) 신설. 이 버전부터 구현계획 문서를 "diff" 대신 "현재 전체 구현"을 담은 완결 문서로 관리 | `docs/archive/missa_to_ppt 구현 계획 v1.3.md` |
 | v1.4 (2026-08-04) | (1) `_split_para_at_lines()`의 run=2개 가정 제거로 절 번호 서식 유실 버그 수정, `_missing_orange_verse_numbers()` 검증 추가(§5.5, §14). (2) 성가 악보 파일 필수 검증(주일 5종/평일 4종) 및 오류 팝업 간소화(전체 로그는 항상 파일로 저장)(§2, §3.3). (3) `copy_slide_from_prs()`에 슬라이드 크기 차이 스케일 보정 추가(§11). (4) PowerPoint COM 실측 검증 하이브리드 신설 — `ppt_com_verify.py`, `_build_com_probe_pptx`, `_count_slide_lines_verified`, `_split_and_adjust_via_com`(분리 지점까지 재검증), config 플래그, 자동 폴백(§5.5-COM). 이 과정에서 발견한 "슬라이드별 캡이 거짓 성공을 보고하는 버그"와 "give-up 롤백 시 단락 순서가 뒤바뀌는 버그"를 함께 수정 | (내용이 이 문서에 병합됨, 별도 archive 없음) |
 | 2026-08-25 | (문서 버전 번호 매기기 중단, 이 문서를 항상 최신 상태로 유지하는 방식으로 전환) `_ask_numbers_popup()`에 성가번호 필수/형식 검증 추가(§3.5). `find_files()`가 평일미사에서는 OneDrive 성가 폴더를 아예 조회하지 않도록 변경(§3.3). `copy_slide_from_prs()`가 도형 크기뿐 아니라 폰트 크기·단락 여백도 함께 스케일 보정해 텍스트 잘림 방지(§11). `_update_성가_header()`가 원본 악보의 구분 라벨을 이번 주 실제 용도에 맞게 교정(§9). §16 함수 목록에 누락돼 있던 `_safe_next_slide_partname`(몽키패치)·`_set_window_icon`·`_apply_theme`·`_center_window` 보완 | (이 문서) |
+| 2026-08-28 | 화답송 악보 이미지 입력 **1차 마일스톤** — 신규 모듈 `missa_psalm_score_image.py`(순수 함수 묶음, `missa_to_ppt.py`를 import하지 않는 단방향 의존). 함수: `load_flattened_image`/`load_gray_array`(RGBA 알파 평탄화), `detect_watermark_crop_x`(좌측 여백 zero-run 통째 제외 후 분리 공백 띠 우측을 크롭 시작으로; 미검출 시 미크롭+경고 폴백), `staff_band`, `detect_content_bounds`, `detect_barlines`(오선 밴드 col_fill>0.85 그룹핑), `choose_split_x`(중앙창 [0.30,0.70] 내 좌우 폭 최소차 바라인; 없으면 기하 중앙 폴백), `split_and_place`(무손실 좌/우 분할), `build_slide`/`render_화답송_score_slide`(고정 밴드 종횡비 유지·중앙정렬 배치, 제목 교체는 첫 run 서식 복제 방식). 자산 빌더 `tools/build_화답송_template.py`가 20260816 베이스에서 악보 PICTURE 2개만 크기/타입 기준으로 제거해 `assets/화답송_악보_template.pptx`(커밋 대상)를 생성. 프로그레션 테스트 16개(`test_missa_progression.py`, 3세트 실측 기대값). `update_화답송()` 배선은 2차 마일스톤 | (이 문서) |
+| 2026-08-29 | 화답송 악보 이미지 입력 **2차 마일스톤**(§3.3·§3.4·§3.5·§6·§6.1) 완료·사용자 최종 승인. `find_files()`에 `화답송_img` 키(PPT 우선 → 이름 매칭 → 폴더 내 유일 이미지 폴백 → 모호하면 미검출) 추가, `apply_화답송_override()` 신설(CLI `--화답송` 오버라이드 확장자 분기, 반대쪽 키 명시적 초기화), 입력창 2곳(`_ask_input_files_popup`/`_ask_combined_input_popup`)의 화답송 행 filetypes 확장(공유 상수 `PPTX_TYPES` 무변경), `update_화답송()`에 `화답송_img_path` 파라미터 추가(PPT 없으면 `render_화답송_score_slide()`로 폴백, `copy_slide_from_prs()` 경로는 그대로). 사용자 실사용 미리보기 육안 검수로 `detect_barlines()`의 오검출(온음표·8분음표 기둥+깃발이 마디선으로 잘못 잡힘)을 발견해 노트헤드/스템 인접 배제 필터(`_is_fused_with_adjacent_note`)를 추가하고, 상/하 두 줄 배치를 "왼쪽 정렬·오른쪽 정렬 + 공통 배율"로 변경(§6.1). PyInstaller 빌드(`missa_to_ppt.spec`)에 `missa_psalm_score_image`/`numpy`/`PIL`(hiddenimports)과 템플릿 자산(datas) 반영(§17) | (이 문서) |
 
 ## 부록 B: 재발 방지 규칙
 

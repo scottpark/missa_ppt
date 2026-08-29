@@ -10,11 +10,11 @@
 **핵심 파일:**
 - `missa_to_json.py` — 독서·복음·화답송·성가 등 섹션을 크롤링해 JSON 출력.
 - `missa_to_ppt.py` — 메인 생성기. 슬라이드 복사·독서 줄 나눔·절 번호 색상·`validate()` 등.
-- `missa_psalm_score_image.py` — 화답송 악보 원본 이미지(PNG/JPG) → 슬라이드 변환(1차
-  마일스톤, 순수 함수 묶음, `missa_to_ppt.py`를 import하지 않는 단방향 의존). 진입점
+- `missa_psalm_score_image.py` — 화답송 악보 원본 이미지(PNG/JPG) → 슬라이드 변환. 순수 함수
+  묶음, `missa_to_ppt.py`를 import하지 않는 단방향 의존. 진입점
   `render_화답송_score_slide()`. 고정 템플릿 자산은 `assets/화답송_악보_template.pptx`
-  (`tools/build_화답송_template.py`로 생성). 아직 `missa_to_ppt.py`와 배선되지 않은 독립
-  모듈 — 통합(입력창/`find_files()`/`update_화답송()` 연결)은 2차 마일스톤.
+  (`tools/build_화답송_template.py`로 생성). `missa_to_ppt.py`(`find_files()`/CLI `--화답송`
+  오버라이드/입력창/`update_화답송()`)에 배선 완료 — 수작업 PPT가 없을 때 자동 폴백된다.
 - `test_missa_progression.py` — 아직 안정화되지 않은 신규 동작을 먼저 명세하는 프로그레션
   테스트(TDD red→green). 안정화되면 `test_missa_regression.py`로 승격.
 - `test_missa_regression.py` — 주일/평일 통합 + 단위 회귀 테스트 (`pytest`로 실행).
