@@ -9,7 +9,23 @@
 
 **핵심 파일:**
 - `missa_to_json.py` — 독서·복음·화답송·성가 등 섹션을 크롤링해 JSON 출력.
-- `missa_to_ppt.py` — 메인 생성기. 슬라이드 복사·독서 줄 나눔·절 번호 색상·`validate()` 등.
+- `missa_to_ppt.py` — 진입점. CLI 인자 파싱(`parse_args`)·파일 탐색(`find_files`)·JSON 로드
+  (`get_json_data`)·`main()`/`__main__` 흐름만 담당. 실제 처리 로직은 아래 5개 모듈에 위치하며
+  `missa_to_ppt.py`는 이들을 조합해 호출한다(2026-09 모듈 분리 리팩토링, 순수 이동·동작 무변경).
+- `missa_ooxml_utils.py` — 슬라이드/도형 복사·rId 매핑·배경 상속·텍스트런 조작 등 OOXML 저수준
+  프리미티브. 프로젝트 내부 의존성이 없는 leaf 모듈. `HYMN_TYPES`도 여기 위치(entry↔content_updaters
+  순환 임포트 방지).
+- `missa_gui.py` — Tkinter 팝업 전부 + `is_sunday_mass`/config.json 로드·저장/
+  `get_onedrive_hymn_folder`. 이 함수들은 GUI 팝업과 진입점 양쪽에서 호출되어 entry에 그대로
+  두면 순환 임포트가 생기므로 gui 모듈에 흡수했다(entry→gui 단방향). `OUTPUT_ROOT`도 entry·gui
+  양쪽에서 쓰여 여기 위치.
+- `missa_reading_layout.py` — 독서/복음 절 파싱(`parse_into_verse_units`)부터 슬라이드 분배
+  (`layout_units_on_slides`), Pillow 추정 + PowerPoint COM 실측 줄 수 계산, 기록 후 재조정까지
+  독서/복음 처리 파이프라인 전체.
+- `missa_sections.py` — 섹션 탐색(`find_sections`)과 검증(`validate`,
+  `validate_pptx_structure`, `strip_ppt2007_incompatible`).
+- `missa_content_updaters.py` — 화답송·성가·입당송·복음환호송·영성체송·시작기도문·미사후기도 등
+  섹션별 콘텐츠 갱신(`update_*`/`replace_*` 함수들).
 - `missa_psalm_score_image.py` — 화답송 악보 원본 이미지(PNG/JPG) → 슬라이드 변환. 순수 함수
   묶음, `missa_to_ppt.py`를 import하지 않는 단방향 의존. 진입점
   `render_화답송_score_slide()`. 고정 템플릿 자산은 `assets/화답송_악보_template.pptx`
@@ -23,7 +39,7 @@
 - `docs/` — 요구사항·구현 계획(버전 번호 없이 항상 최신 상태 유지, 변경 이력은 문서 맨 끝
   부록 참고), `archive/`(v1.0~v1.3 과거 버전 원문), `ai-readiness-check/`.
 
-**날짜 폴더(`output/YYYYMMDD/`):** 미사별 작업 디렉터리. `OUTPUT_ROOT`(`missa_to_ppt.py`) 상수가
+**날짜 폴더(`output/YYYYMMDD/`):** 미사별 작업 디렉터리. `OUTPUT_ROOT`(`missa_gui.py`) 상수가
 가리키는 `output/` 폴더 밑에 날짜별로 위치한다. JSON, 템플릿·결과 pptx, 화답송 악보 pptx,
 `log/`를 포함. 입력/출력 산출물이라 매번 커밋하지 않으며, 회귀 테스트 픽스처로 쓰이는 3개
 (`20260624` 평일·`20260705` 성수축복·`20260712` 주일)만 git으로 추적한다(`.gitignore` 참고).
