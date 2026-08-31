@@ -464,7 +464,7 @@ class TestCountSlideLinesVerified:
 # ─────────────────────────────────────────────────────────────────
 
 def _find_output(date_str: str) -> Path:
-    folder = REPO_ROOT / date_str
+    folder = REPO_ROOT / "output" / date_str
     candidates = [
         f for f in folder.glob(f"{date_str}_*.pptx")
         if not f.name.startswith("~$")
@@ -475,7 +475,7 @@ def _find_output(date_str: str) -> Path:
 
 def _generate(case: dict) -> str:
     date_str = case["date"]
-    folder = REPO_ROOT / date_str
+    folder = REPO_ROOT / "output" / date_str
 
     locked = list(folder.glob("~$*.pptx"))
     if locked:

@@ -23,10 +23,11 @@
 - `docs/` — 요구사항·구현 계획(버전 번호 없이 항상 최신 상태 유지, 변경 이력은 문서 맨 끝
   부록 참고), `archive/`(v1.0~v1.3 과거 버전 원문), `ai-readiness-check/`.
 
-**날짜 폴더(`YYYYMMDD/`):** 미사별 작업 디렉터리. JSON, 템플릿·결과 pptx,
-화답송 악보 pptx, `log/`를 포함. 입력/출력 산출물이라 매번 커밋하지 않으며, 회귀 테스트
-픽스처로 쓰이는 3개(`20260624` 평일·`20260705` 성수축복·`20260712` 주일)만 git으로 추적한다
-(`.gitignore` 참고). 그 외 날짜 폴더는 로컬에만 남기고 커밋·푸시하지 않는다.
+**날짜 폴더(`output/YYYYMMDD/`):** 미사별 작업 디렉터리. `OUTPUT_ROOT`(`missa_to_ppt.py`) 상수가
+가리키는 `output/` 폴더 밑에 날짜별로 위치한다. JSON, 템플릿·결과 pptx, 화답송 악보 pptx,
+`log/`를 포함. 입력/출력 산출물이라 매번 커밋하지 않으며, 회귀 테스트 픽스처로 쓰이는 3개
+(`20260624` 평일·`20260705` 성수축복·`20260712` 주일)만 git으로 추적한다(`.gitignore` 참고).
+그 외 날짜 폴더는 로컬에만 남기고 커밋·푸시하지 않는다.
 
 ## OOXML XML 조작 규칙 (필수 적용)
 
@@ -209,3 +210,4 @@ tdd-progression-testing·ooxml-pitfalls·boundary-verification·docs-sync).
 |------|----------|------|------|
 | 2026-08-25 | 초기 구성 (에이전트 3명 + 오케스트레이터 1개 + 스킬 4개) | 전체 | 청년미사·어린이미사·타 성당 확장을 앞두고 설계/구현/검증 역할 분리 필요 |
 | 2026-08-25 | TDD 도입(`tdd-progression-testing` 스킬 신설, `test_missa_progression.py`↔`test_missa_regression.py` 분리, regression-qa에 승격 절차 추가) + 독립 코드 리뷰 단계 추가(`ooxml-code-reviewer` 에이전트 신설, specialist→reviewer→qa 파이프라인으로 확장) | 에이전트 4명, 스킬 5개 | 프로그레션(신규 동작 명세)과 회귀(기존 동작 보호) 테스트의 목적이 다름을 명확히 분리하고, 구현자 본인이 못 보는 사각지대를 잡을 독립 리뷰 단계 필요 |
+| 2026-08-30 | 하네스 첫 실제 기능(화답송 이미지 지원) 완료 후 harness Phase 6(with-skill vs without-skill 비교, `_workspace/04_phase6_validation_report.md`) 실시 → 결과 반영: (1) `ooxml-code-reviewer`에 "검증 우선순위 0"(스펙 자체가 원본 자료와 일치하는지 독립 재검증, 스펙에서 복사된 기대값 신뢰 금지) 추가, (2) `mass-template-architect`에 "실측 검증"의 정의를 통계적 타당성이 아니라 개별 판단 지점의 직접 확인으로 명시, (3) `ooxml-pitfalls`에 "완성 XML 통째 추가"가 append/순서 함정을 구조적으로 피하는 대안이라는 항목과 `validate_pptx_structure()`가 요소 순서를 검사하지 않는다는 주의사항 추가 | ooxml-code-reviewer.md, mass-template-architect.md, ooxml-pitfalls/SKILL.md | with-skill(독립 리뷰 4라운드)조차 1라운드에서 설계 스펙 자체의 오류(바라인 오검출)를 못 잡고 실사용자 육안 검수로 뒤늦게 발견됨 — "스펙과 일치하는가"만 보는 리뷰로는 부족하고 원본 자료 재검증이 필요함을 실측으로 확인. without-skill 베이스라인은 독립 검증 부재로 같은 종류의 결함(3세트 중 2세트가 실제로는 마디 경계 아님)을 "정확함"으로 자체 오판·보고 |

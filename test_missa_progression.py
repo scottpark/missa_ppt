@@ -438,7 +438,7 @@ def test_update_화답송_uses_image_when_no_pptx_end_to_end(tmp_path):
     from pptx.enum.shapes import MSO_SHAPE_TYPE
 
     prs = mtp.Presentation(
-        str(BASE / "20260712" / "Template_20260628_연중 제13주일 (교황주일).pptx")
+        str(BASE / "output" / "20260712" / "Template_20260628_연중 제13주일 (교황주일).pptx")
     )
     sections = mtp.find_sections(prs)
     json_data = _화답송_json("시편 99(98)")
@@ -467,7 +467,7 @@ def test_update_화답송_existing_pptx_path_unaffected(tmp_path):
     from pptx.enum.shapes import MSO_SHAPE_TYPE
 
     prs = mtp.Presentation(
-        str(BASE / "20260712" / "Template_20260628_연중 제13주일 (교황주일).pptx")
+        str(BASE / "output" / "20260712" / "Template_20260628_연중 제13주일 (교황주일).pptx")
     )
     sections = mtp.find_sections(prs)
     json_data = _화답송_json("시편 67(66)")
@@ -503,7 +503,7 @@ def test_update_화답송_prefers_pptx_over_image(monkeypatch):
     )
 
     prs = mtp.Presentation(
-        str(BASE / "20260712" / "Template_20260628_연중 제13주일 (교황주일).pptx")
+        str(BASE / "output" / "20260712" / "Template_20260628_연중 제13주일 (교황주일).pptx")
     )
     sections = mtp.find_sections(prs)
     json_data = _화답송_json("시편 1(1)")

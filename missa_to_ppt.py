@@ -125,6 +125,8 @@ ORANGE = RGBColor(255, 192, 0)
 
 HYMN_TYPES = ['입당', '봉헌', '성체', '2차봉헌', '파견']
 
+OUTPUT_ROOT = 'output'  # 날짜 폴더(YYYYMMDD/)를 모아두는 상위 폴더
+
 # ─── GUI 상태 변수 ───────────────────────────────────────────────────────────
 _progress_callback = [None]        # 진행률 콜백 (진행 창 표시 중에만 설정)
 _first_dialog_pos  = [None, None]  # 첫 번째 다이얼로그 위치 (x, y)
@@ -1375,7 +1377,7 @@ def _run_with_progress_window(main_func):
 
 def find_files(date_str: str, hymn_numbers: dict, is_sunday: bool = None) -> dict:
 
-    folder = Path(date_str)
+    folder = Path(OUTPUT_ROOT) / date_str
 
     if not folder.is_dir():
 
@@ -1568,7 +1570,7 @@ def apply_화답송_override(files: dict, override_path_str: str) -> None:
 
 def get_json_data(date_str: str) -> dict:
 
-    json_path = Path(date_str) / f'missa_{date_str}.json'
+    json_path = Path(OUTPUT_ROOT) / date_str / f'missa_{date_str}.json'
 
 
 
@@ -1578,7 +1580,7 @@ def get_json_data(date_str: str) -> dict:
 
         import missa_to_json as _m2j
 
-        _m2j.run(date_str, output_root='.')
+        _m2j.run(date_str, output_root=OUTPUT_ROOT)
 
 
 
@@ -6682,7 +6684,7 @@ def main():
 
                             break
 
-            Path(date_str).mkdir(exist_ok=True)
+            (Path(OUTPUT_ROOT) / date_str).mkdir(parents=True, exist_ok=True)
 
         else:
 
@@ -6716,7 +6718,7 @@ def main():
 
                             break
 
-            Path(date_str).mkdir(exist_ok=True)
+            (Path(OUTPUT_ROOT) / date_str).mkdir(parents=True, exist_ok=True)
 
     else:
 
@@ -7063,7 +7065,7 @@ def main():
 
     output_name = f"{date_str}_{liturgy_safe}.pptx"
 
-    output_path = Path(date_str) / output_name
+    output_path = Path(OUTPUT_ROOT) / date_str / output_name
 
     print(f'\n[7] 저장: {output_path}')
 
@@ -7138,7 +7140,7 @@ def _show_result_window(title: str, text: str, is_error: bool = False, log_text:
 
     if date_str:
 
-        log_dir = Path(date_str) / 'log'
+        log_dir = Path(OUTPUT_ROOT) / date_str / 'log'
 
         try:
 

@@ -24,7 +24,7 @@
 
 두 경로 모두 `main()` 안에서 합쳐져 이후 처리 흐름은 동일하다. GUI 모드에서 오류가 나면
 `_show_result_window()`가 전체 로그가 아니라 **오류 메시지만** 팝업에 표시하고, 전체 로그는
-`log_text` 인자로 받아 `YYYYMMDD/log/` 폴더에 항상 저장한다(`_run_with_progress_window()`가
+`log_text` 인자로 받아 `output/YYYYMMDD/log/` 폴더에 항상 저장한다(`_run_with_progress_window()`가
 stdout/stderr을 `log_out`/`log_err`로 분리 캡처).
 
 ## 2. 처리 파이프라인 (main 흐름)
@@ -41,7 +41,7 @@ stdout/stderr을 `log_out`/`log_err`로 분리 캡처).
 | [5] 시작기도문 교체 | 80% | `replace_시작기도문()` (파일 지정 시) |
 | [6] 성가 교체 | 88% | `replace_성가()` × 5종, `copy_scores=is_sunday` |
 | [6.5] 미사 후 기도 | 92% | `replace_미사후기도()` (평일 + 파일 지정 시) |
-| [7] 저장 | 95% | `prs.save(output_path)`, 파일명 `YYYYMMDD/{liturgy}.pptx` |
+| [7] 저장 | 95% | `prs.save(output_path)`, 파일명 `output/YYYYMMDD/{liturgy}.pptx` |
 | [7.5] PPT 호환성 정리 | 96% | `strip_ppt2007_incompatible()` |
 | [8] 검증 | 98% | `validate_pptx_structure()` → `validate()` |
 
@@ -59,6 +59,10 @@ def is_sunday_mass(date_str: str) -> bool:
 
 ### 3.2 config.json 기반 설정 관리
 
+`OUTPUT_ROOT = 'output'`: 날짜 폴더(`YYYYMMDD/`)를 모아두는 상위 폴더 이름(스크립트 실행 시
+현재 작업 디렉터리 기준 상대 경로). `find_files()`/`get_json_data()`/출력 저장/로그 저장이 모두
+`OUTPUT_ROOT / date_str` 하위에서 동작한다.
+
 `CONFIG_FILE = <script_dir>/config.json`. `_load_config() -> dict` / `_save_config(config)`:
 존재하지 않거나 파싱 실패 시 빈 dict.
 
@@ -71,7 +75,7 @@ def is_sunday_mass(date_str: str) -> bool:
 
 ### 3.3 `find_files(date_str, hymn_numbers) -> dict` (CLI 모드 파일 탐색)
 
-`YYYYMMDD/` 폴더를 스캔해 다음을 채운 dict를 반환한다: `ref_pptx`, `시작기도`, `화답송_pptx`,
+`output/YYYYMMDD/` 폴더를 스캔해 다음을 채운 dict를 반환한다: `ref_pptx`, `시작기도`, `화답송_pptx`,
 `화답송_img`, `미사후기도`, `성가`(dict, 못 찾은 항목은 키 자체가 없음).
 
 - 화답송 악보 PPT: 파일명에 "화답송 악보" 포함
