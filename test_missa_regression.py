@@ -36,6 +36,7 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 import missa_to_ppt as m
 import missa_gui as gui
+import missa_reading_layout as rl
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -213,7 +214,7 @@ class TestSplitAndAdjustViaCom:
             calls.append(val)
             return val
 
-        monkeypatch.setattr(m, "_count_slide_lines_verified", fake_verified)
+        monkeypatch.setattr(rl, "_count_slide_lines_verified", fake_verified)
         placed = []
 
         def place_rest(rp):
@@ -350,11 +351,11 @@ class TestCountSlideLinesVerified:
 
     @pytest.fixture(autouse=True)
     def _reset_state(self, monkeypatch):
-        monkeypatch.setattr(m, "_COM_DISABLED", [False], raising=False)
-        monkeypatch.setattr(m, "_COM_MISMATCH_COUNT", {}, raising=False)
+        monkeypatch.setattr(rl, "_COM_DISABLED", [False], raising=False)
+        monkeypatch.setattr(rl, "_COM_MISMATCH_COUNT", {}, raising=False)
         monkeypatch.setattr(gui, "_COM_VERIFY_ENABLED_CACHE", [True], raising=False)
-        monkeypatch.setattr(m, "_build_com_probe_pptx", lambda prs, slide: (Path("dummy.pptx"), 1), raising=False)
-        monkeypatch.setattr(m, "_COM_ATEXIT_REGISTERED", [False], raising=False)
+        monkeypatch.setattr(rl, "_build_com_probe_pptx", lambda prs, slide: (Path("dummy.pptx"), 1), raising=False)
+        monkeypatch.setattr(rl, "_COM_ATEXIT_REGISTERED", [False], raising=False)
 
     @staticmethod
     def _install_fake_com(monkeypatch, real_lines=None, raises=False):
@@ -378,14 +379,14 @@ class TestCountSlideLinesVerified:
         return calls
 
     def test_com_not_called_when_pillow_estimate_is_not_boundary(self, monkeypatch):
-        monkeypatch.setattr(m, "_count_slide_lines_rendered", lambda slide: 8)
+        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: 8)
         calls = self._install_fake_com(monkeypatch, real_lines=10)
         result = m._count_slide_lines_verified(object(), self._FakeSlide(1))
         assert result == 8
         assert calls == []
 
     def test_com_confirms_boundary_estimate(self, monkeypatch, capsys):
-        monkeypatch.setattr(m, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
+        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
         calls = self._install_fake_com(monkeypatch, real_lines=m.LINES_PER_SLIDE)
         result = m._count_slide_lines_verified(object(), self._FakeSlide(2))
         assert result == m.LINES_PER_SLIDE
@@ -393,12 +394,12 @@ class TestCountSlideLinesVerified:
         assert "불일치" not in capsys.readouterr().out
 
     def test_com_mismatch_is_adopted_and_logged(self, monkeypatch, capsys):
-        monkeypatch.setattr(m, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
+        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
         self._install_fake_com(monkeypatch, real_lines=m.LINES_PER_SLIDE + 1)
         result = m._count_slide_lines_verified(object(), self._FakeSlide(3))
         assert result == m.LINES_PER_SLIDE + 1
         assert "불일치" in capsys.readouterr().out
-        assert m._COM_MISMATCH_COUNT[3] == 1
+        assert rl._COM_MISMATCH_COUNT[3] == 1
 
     def test_com_is_always_consulted_even_after_repeated_mismatches(self, monkeypatch):
         """2026-08-04 발견 버그의 회귀 방지: 예전에는 같은 슬라이드에 대해 불일치가
@@ -407,7 +408,7 @@ class TestCountSlideLinesVerified:
         "성공"으로 잘못 보고된 사례(제1독서 슬라이드 19, 실제 10줄인데 9줄로 보고)가
         실측으로 확인됐다. 이제는 슬라이드별 이력과 무관하게 경계값(9)일 때마다
         매번 실제로 COM에 묻어야 한다."""
-        monkeypatch.setattr(m, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
+        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
         calls = self._install_fake_com(monkeypatch, real_lines=m.LINES_PER_SLIDE + 1)
         slide = self._FakeSlide(4)
         for _ in range(5):
@@ -416,11 +417,11 @@ class TestCountSlideLinesVerified:
         assert len(calls) == 5  # 호출 이력과 무관하게 COM이 매번 실제로 호출됨
 
     def test_com_failure_permanently_disables_for_rest_of_run(self, monkeypatch, capsys):
-        monkeypatch.setattr(m, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
+        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
         calls = self._install_fake_com(monkeypatch, raises=True)
         result_1 = m._count_slide_lines_verified(object(), self._FakeSlide(5))
         assert result_1 == m.LINES_PER_SLIDE
-        assert m._COM_DISABLED[0] is True
+        assert rl._COM_DISABLED[0] is True
         assert "[경고]" in capsys.readouterr().out
 
         # 이후 같은 프로세스 내에서는(경계값이어도) COM을 다시 시도하지 않는다
@@ -429,7 +430,7 @@ class TestCountSlideLinesVerified:
         assert len(calls) == 1
 
     def test_config_disabled_skips_com_entirely(self, monkeypatch):
-        monkeypatch.setattr(m, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
+        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
         monkeypatch.setattr(gui, "_COM_VERIFY_ENABLED_CACHE", [False])
         calls = self._install_fake_com(monkeypatch, real_lines=m.LINES_PER_SLIDE + 1)
         result = m._count_slide_lines_verified(object(), self._FakeSlide(7))
@@ -444,19 +445,19 @@ class TestCountSlideLinesVerified:
         않는다"는 문서화된 계약을 어겼다. 이제는 이 슬라이드만 Pillow로
         폴백하고, COM 자체는 다른 슬라이드에 대해 계속 사용 가능해야 한다
         (probe 생성 실패는 COM 전체의 문제가 아니라 그 슬라이드만의 문제)."""
-        monkeypatch.setattr(m, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
+        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
 
         def _raise_probe_build(prs, slide):
             raise ValueError("simulated: content shape 없음")
 
-        monkeypatch.setattr(m, "_build_com_probe_pptx", _raise_probe_build)
+        monkeypatch.setattr(rl, "_build_com_probe_pptx", _raise_probe_build)
         calls = self._install_fake_com(monkeypatch, real_lines=m.LINES_PER_SLIDE)
 
         result = m._count_slide_lines_verified(object(), self._FakeSlide(8))
 
         assert result == m.LINES_PER_SLIDE  # 예외 없이 Pillow 값으로 폴백
         assert calls == []  # COM 자체는 호출되지도 않음(probe 생성 단계에서 실패)
-        assert m._COM_DISABLED[0] is False  # COM을 전역적으로 비활성화하지 않음
+        assert rl._COM_DISABLED[0] is False  # COM을 전역적으로 비활성화하지 않음
         assert "[경고]" in capsys.readouterr().out
 
 
