@@ -2574,74 +2574,6 @@ def _replace_para_text_clone(para, new_text: str):
 
 
 
-def _set_두_줄_text(tf, line1: str, line2: str):
-
-    """TextFrame을 두 단락으로 설정 (서식·탭스톱 보존). 화답송 ◎◎ 슬라이드 전용."""
-
-    from pptx.oxml import parse_xml as pptx_parse_xml
-
-    A_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main'
-
-    txBody = tf._txBody
-
-    existing_paras = txBody.findall(qn('a:p'))
-
-    # 템플릿 단락(pPr 포함)과 run 캡처 (deepcopy로 제거 전 보존)
-
-    template_p = copy.deepcopy(existing_paras[0]) if existing_paras else None
-
-    template_r = None
-
-    if template_p is not None:
-
-        for r in template_p.findall(qn('a:r')):
-
-            template_r = r
-
-            break
-
-    # 기존 단락 모두 제거
-
-    for p in existing_paras:
-
-        txBody.remove(p)
-
-    # 두 단락 생성
-
-    for text in [line1, line2]:
-
-        if template_p is not None:
-
-            new_p = copy.deepcopy(template_p)
-
-            for r in new_p.findall(qn('a:r')): new_p.remove(r)
-
-            for br in new_p.findall(qn('a:br')): new_p.remove(br)
-
-        else:
-
-            new_p = pptx_parse_xml(f'<a:p xmlns:a="{A_NS}"/>')
-
-        if template_r is not None:
-
-            new_r = copy.deepcopy(template_r)
-
-        else:
-
-            new_r = pptx_parse_xml(f'<a:r xmlns:a="{A_NS}"><a:t/></a:r>')
-
-        t_el = new_r.find(qn('a:t'))
-
-        if t_el is not None:
-
-            t_el.text = text
-
-        _para_append_run(new_p, new_r)
-
-        txBody.append(new_p)
-
-
-
 def _set_화답송_content_text(tf, refrain_text: str, verse_text: str):
     """화답송 본문에 ◎ 후렴(para0) + ○ 절(para1) 설정.
 
@@ -2778,27 +2710,6 @@ def _set_single_para_text(tf, text: str):
 
 
 
-
-
-
-
-def _josa(word: str) -> str:
-
-    """한글 주격 조사: 받침 없으면 '가', 있으면 '이'."""
-
-    if not word:
-
-        return '이'
-
-    last = word[-1]
-
-    code = ord(last)
-
-    if 0xAC00 <= code <= 0xD7A3:
-
-        return '이' if (code - 0xAC00) % 28 != 0 else '가'
-
-    return '이'
 
 
 

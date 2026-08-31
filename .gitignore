@@ -15,3 +15,7 @@ missa_to_ppt.exe
 # 하네스(mass-ppt-dev) 팀 작업 중간 산출물 — 감사 추적용 로컬 파일, 커밋 대상 아님
 _workspace/
 _workspace_*/
+
+# 리팩토링 골든 마스터 diff 도구(tools/golden_diff.py) 산출물 — 로컬 전용
+_golden/
+_golden_check_tmp/
