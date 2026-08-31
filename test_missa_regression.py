@@ -35,6 +35,7 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 import missa_to_ppt as m
+import missa_gui as gui
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -307,8 +308,8 @@ class TestComVerificationEnabledConfig:
         config_path.write_text(
             json.dumps(config_dict, ensure_ascii=False), encoding="utf-8"
         )
-        monkeypatch.setattr(m, "CONFIG_FILE", config_path)
-        m._COM_VERIFY_ENABLED_CACHE[0] = None
+        monkeypatch.setattr(gui, "CONFIG_FILE", config_path)
+        gui._COM_VERIFY_ENABLED_CACHE[0] = None
 
     def test_true_when_explicitly_enabled(self, monkeypatch, tmp_path):
         self._reset_cache_and_point_config(
@@ -351,7 +352,7 @@ class TestCountSlideLinesVerified:
     def _reset_state(self, monkeypatch):
         monkeypatch.setattr(m, "_COM_DISABLED", [False], raising=False)
         monkeypatch.setattr(m, "_COM_MISMATCH_COUNT", {}, raising=False)
-        monkeypatch.setattr(m, "_COM_VERIFY_ENABLED_CACHE", [True], raising=False)
+        monkeypatch.setattr(gui, "_COM_VERIFY_ENABLED_CACHE", [True], raising=False)
         monkeypatch.setattr(m, "_build_com_probe_pptx", lambda prs, slide: (Path("dummy.pptx"), 1), raising=False)
         monkeypatch.setattr(m, "_COM_ATEXIT_REGISTERED", [False], raising=False)
 
@@ -429,7 +430,7 @@ class TestCountSlideLinesVerified:
 
     def test_config_disabled_skips_com_entirely(self, monkeypatch):
         monkeypatch.setattr(m, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
-        monkeypatch.setattr(m, "_COM_VERIFY_ENABLED_CACHE", [False])
+        monkeypatch.setattr(gui, "_COM_VERIFY_ENABLED_CACHE", [False])
         calls = self._install_fake_com(monkeypatch, real_lines=m.LINES_PER_SLIDE + 1)
         result = m._count_slide_lines_verified(object(), self._FakeSlide(7))
         assert result == m.LINES_PER_SLIDE
