@@ -18,6 +18,10 @@ from pptx import Presentation
 from pptx.oxml.ns import qn
 from pptx.parts.presentation import PresentationPart
 
+HYMN_TYPES = ['입당', '봉헌', '성체', '2차봉헌', '파견']
+# entry(missa_to_ppt.py main())와 content_updaters(replace_성가) 양쪽에서 쓰여서
+# 여기(leaf 모듈)에 둔다 — entry→content_updaters 단방향 의존만 유지하기 위함.
+
 
 # python-pptx의 _next_slide_partname은 len(sldIdLst)+1을 사용하여
 # 삭제 후 add_slide 시 기존 파트명과 충돌이 발생한다.
