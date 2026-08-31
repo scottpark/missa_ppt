@@ -34,76 +34,33 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 import argparse
 
-import atexit
-
-import copy
-
-import io
-
 import json
-
-import os
 
 import re
 
-import subprocess
-
 import sys
 
-import tempfile
-
-import uuid
-
 from pathlib import Path
-
-from xml.sax.saxutils import escape as _xml_escape
 
 
 
 from pptx import Presentation
-
-from pptx.enum.shapes import MSO_SHAPE_TYPE
-
-from pptx.oxml.ns import qn
-
-from pptx.util import Emu, Pt
-from missa_ooxml_utils import (
-    HYMN_TYPES, _slide_text, all_slide_texts, delete_slide, move_slide, _blank_layout,
-    _copy_spTree, _copy_image_rels, _update_rId_in_spTree, _effective_bg,
-    _copy_bg_image_rels, duplicate_slide, insert_slide_copy, copy_slide_from_prs,
-    _com_probe_path, _build_com_probe_pptx, find_slide_with_text, find_shape_exact_text,
-    _set_slide_bg_black, _find_content_shape, _has_ending_text, _clear_text_frame,
-    _para_append_run, _replace_para_text_clone, _set_화답송_content_text,
-    _set_single_para_text, _update_book_name_after_br,
-)
+from missa_ooxml_utils import HYMN_TYPES, _slide_text, delete_slide
 from missa_gui import (
-    OUTPUT_ROOT, _progress_callback, _first_dialog_pos, _last_output_path,
-    _last_date_str, _preloaded_inputs, _set_window_icon, _apply_theme, _center_window,
-    _load_config, _save_config, _ask_onedrive_path_popup, get_onedrive_hymn_folder,
-    _com_verification_enabled, is_sunday_mass, _ask_numbers_popup, _ask_date_popup,
+    OUTPUT_ROOT, _last_output_path, _last_date_str, _preloaded_inputs,
+    get_onedrive_hymn_folder, is_sunday_mass, _ask_numbers_popup, _ask_date_popup,
     _ask_input_files_popup, _ask_combined_input_popup, _report_progress,
     _run_with_progress_window, _show_result_window,
 )
 from missa_reading_layout import (
-    LINES_PER_SLIDE, ORANGE, _ends_sentence, parse_into_verse_units, _visual_lines,
-    _wrap_line_count, _page_visual_lines, layout_units_on_slides, _verify_and_rebalance_pages,
-    _set_reading_text, _count_slide_lines, _rendered_wrap_count, _get_slide_render_params,
-    _count_slide_lines_rendered, _count_slide_lines_verified, _split_para_at_lines,
-    _restore_para_from_backup, _split_and_adjust_via_com, _rebalance_reading_slides_post_write,
+    parse_into_verse_units, layout_units_on_slides, _verify_and_rebalance_pages,
     replace_reading_slides, _align_ending_slides_to_제2독서, _reposition_merged_ending_shapes,
 )
-from missa_sections import (
-    find_content_range, find_복음_content_range, find_sections, _is_hymn_divider,
-    validate_pptx_structure, _orange_verse_numbers_in_range, _missing_orange_verse_numbers,
-    validate, _strip_slide_xml, strip_ppt2007_incompatible,
-)
+from missa_sections import find_sections, validate_pptx_structure, validate, strip_ppt2007_incompatible
 from missa_content_updaters import (
     update_title_slide, update_입당송, update_reading_title_slide, update_복음_title_slide,
-    _update_화답송_title_in_slide, update_화답송, update_복음환호송, _find_last_row_top,
-    _shape_first_run_font_size_emu, _shape_first_para_line_spacing_pct,
-    _set_shape_all_para_line_spacing, _set_shape_all_run_font_size, _estimate_text_lines,
-    _adjust_fit_if_needed, update_영성체송, replace_시작기도문, replace_미사후기도,
-    _update_성가_divider_number, _update_prefix_in_runs, _update_성가_header, replace_성가,
+    update_화답송, update_복음환호송, update_영성체송, replace_시작기도문, replace_미사후기도,
+    replace_성가,
 )
 
 

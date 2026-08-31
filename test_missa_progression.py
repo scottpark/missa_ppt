@@ -353,10 +353,11 @@ def test_15_residual_shapes_preserved(rendered):
 def test_16_copy_slide_from_prs_compatible(rendered, tmp_path):
     """생성 Presentation을 타깃에 copy_slide_from_prs로 복사 시 손상 없이 rel까지 복사."""
     import missa_to_ppt as mtp
+    import missa_ooxml_utils as ou
     from pptx import Presentation
 
     target = Presentation(str(TEMPLATE))
-    mtp.copy_slide_from_prs(target, len(target.slides), rendered, 0)
+    ou.copy_slide_from_prs(target, len(target.slides), rendered, 0)
     out = tmp_path / "copied.pptx"
     target.save(str(out))
     problems = mtp.validate_pptx_structure(str(out))

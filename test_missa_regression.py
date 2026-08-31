@@ -36,7 +36,9 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 import missa_to_ppt as m
 import missa_gui as gui
+import missa_ooxml_utils as ou
 import missa_reading_layout as rl
+import missa_sections as sec
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -90,14 +92,14 @@ class TestIsSundayMass:
 
 class TestWrapLineCount:
     def test_empty_text(self):
-        assert m._wrap_line_count("") == 0
+        assert rl._wrap_line_count("") == 0
 
     def test_short_line_is_one_line(self):
-        assert m._wrap_line_count("짧은 문장입니다.") == 1
+        assert rl._wrap_line_count("짧은 문장입니다.") == 1
 
     def test_long_text_wraps_to_multiple_lines(self):
         text = "가" * 60  # CHARS_PER_LINE(27) 초과
-        assert m._wrap_line_count(text) >= 2
+        assert rl._wrap_line_count(text) >= 2
 
 
 class TestParseIntoVerseUnits:
@@ -106,7 +108,7 @@ class TestParseIntoVerseUnits:
             "1 태초에 하느님께서 하늘과 땅을 창조하셨다. "
             "2 땅은 아직 모양을 갖추지 않고 비어 있었다."
         )
-        units = m.parse_into_verse_units(content)
+        units = rl.parse_into_verse_units(content)
         assert len(units) >= 2
         assert units[0]["verse_num"] == "1"
 
@@ -156,7 +158,7 @@ class TestSplitParaPreservesVerseColors:
     def test_verse_numbers_survive_paragraph_split(self):
         p_elem, font = self._build_two_verse_para()
         box_px = 220  # 좁게 잡아 여러 줄로 강제 wrap
-        rest_p = m._split_para_at_lines(p_elem, keep_lines=1, pil_font=font, box_px=box_px)
+        rest_p = rl._split_para_at_lines(p_elem, keep_lines=1, pil_font=font, box_px=box_px)
         assert rest_p is not None, "테스트 문단이 1줄에 다 들어가 분리가 일어나지 않음 — box_px를 줄일 것"
         combined = set(self._orange_texts(p_elem)) | set(self._orange_texts(rest_p))
         assert combined == {"51", "52"}, f"절 번호 오렌지색 유실: {combined}"
@@ -200,10 +202,10 @@ class TestSplitAndAdjustViaCom:
     def test_restore_para_from_backup_reverts_split(self):
         p = self._build_para(self._long_text())
         backup = copy.deepcopy(p)
-        rest = m._split_para_at_lines(p, keep_lines=1, pil_font=self._font(), box_px=150)
+        rest = rl._split_para_at_lines(p, keep_lines=1, pil_font=self._font(), box_px=150)
         assert rest is not None, "테스트 문단이 1줄에 다 들어가 분리가 일어나지 않음"
         assert self._text(p) != self._text(backup)
-        m._restore_para_from_backup(p, backup)
+        rl._restore_para_from_backup(p, backup)
         assert self._text(p) == self._text(backup)
 
     def _run_adjust(self, monkeypatch, responses, **kwargs):
@@ -228,17 +230,17 @@ class TestSplitAndAdjustViaCom:
             place_rest=place_rest, remove_rest=remove_rest, max_adjust=2,
         )
         defaults.update(kwargs)
-        result = m._split_and_adjust_via_com(**defaults)
+        result = rl._split_and_adjust_via_com(**defaults)
         return result, calls, placed
 
     def test_keep_increases_when_cur_slide_too_short(self, monkeypatch):
         p = self._build_para(self._long_text())
         (rest_p, final_lines), calls, placed = self._run_adjust(
             monkeypatch,
-            responses=[m.LINES_PER_SLIDE - 1, m.LINES_PER_SLIDE],
+            responses=[rl.LINES_PER_SLIDE - 1, rl.LINES_PER_SLIDE],
             p_elem=p, keep=2,
         )
-        assert final_lines == m.LINES_PER_SLIDE
+        assert final_lines == rl.LINES_PER_SLIDE
         assert len(calls) == 2
         assert len(placed) == 1  # 마지막으로 배치된 rest_p 하나만 남아 있어야 함
 
@@ -246,10 +248,10 @@ class TestSplitAndAdjustViaCom:
         p = self._build_para(self._long_text())
         (rest_p, final_lines), calls, placed = self._run_adjust(
             monkeypatch,
-            responses=[m.LINES_PER_SLIDE + 1, m.LINES_PER_SLIDE],
+            responses=[rl.LINES_PER_SLIDE + 1, rl.LINES_PER_SLIDE],
             p_elem=p, keep=3,
         )
-        assert final_lines == m.LINES_PER_SLIDE
+        assert final_lines == rl.LINES_PER_SLIDE
         assert len(calls) == 2
         assert len(placed) == 1
 
@@ -258,7 +260,7 @@ class TestSplitAndAdjustViaCom:
         original_text = self._text(p)
         (rest_p, final_lines), calls, placed = self._run_adjust(
             monkeypatch,
-            responses=[m.LINES_PER_SLIDE + 1] * 5,  # 절대 수렴하지 않는 상황(항상 초과)
+            responses=[rl.LINES_PER_SLIDE + 1] * 5,  # 절대 수렴하지 않는 상황(항상 초과)
             p_elem=p, keep=3, max_adjust=2,
         )
         # 초기 1회 + 조정 최대 2회 = 최대 3회 호출로 멈춰야 함(무한 루프 금지)
@@ -278,7 +280,7 @@ class TestSplitAndAdjustViaCom:
         p = self._build_para(self._long_text())
         (rest_p, final_lines), calls, placed = self._run_adjust(
             monkeypatch,
-            responses=[m.LINES_PER_SLIDE + 1, m.LINES_PER_SLIDE + 1],
+            responses=[rl.LINES_PER_SLIDE + 1, rl.LINES_PER_SLIDE + 1],
             p_elem=p, keep=2, max_adjust=1,
         )
         assert rest_p is None
@@ -288,7 +290,7 @@ class TestSplitAndAdjustViaCom:
         p_elem, font = TestSplitParaPreservesVerseColors._build_two_verse_para()
         (rest_p, final_lines), calls, placed = self._run_adjust(
             monkeypatch,
-            responses=[m.LINES_PER_SLIDE - 1, m.LINES_PER_SLIDE],
+            responses=[rl.LINES_PER_SLIDE - 1, rl.LINES_PER_SLIDE],
             p_elem=p_elem, keep=1, pil_font=font, box_px=220,
         )
         assert rest_p is not None
@@ -316,28 +318,28 @@ class TestComVerificationEnabledConfig:
         self._reset_cache_and_point_config(
             monkeypatch, tmp_path, {"com_verification_enabled": True}
         )
-        assert m._com_verification_enabled() is True
+        assert gui._com_verification_enabled() is True
 
     def test_false_when_explicitly_disabled(self, monkeypatch, tmp_path):
         self._reset_cache_and_point_config(
             monkeypatch, tmp_path, {"com_verification_enabled": False}
         )
-        assert m._com_verification_enabled() is False
+        assert gui._com_verification_enabled() is False
 
     def test_defaults_true_when_key_absent(self, monkeypatch, tmp_path):
         self._reset_cache_and_point_config(monkeypatch, tmp_path, {})
-        assert m._com_verification_enabled() is True
+        assert gui._com_verification_enabled() is True
 
     def test_result_is_memoized(self, monkeypatch, tmp_path):
         self._reset_cache_and_point_config(
             monkeypatch, tmp_path, {"com_verification_enabled": False}
         )
-        assert m._com_verification_enabled() is False
+        assert gui._com_verification_enabled() is False
         # 캐시된 이후에는 config.json 내용이 바뀌어도 재확인하지 않는다
         (tmp_path / "config.json").write_text(
             json.dumps({"com_verification_enabled": True}), encoding="utf-8"
         )
-        assert m._com_verification_enabled() is False
+        assert gui._com_verification_enabled() is False
 
 
 class TestCountSlideLinesVerified:
@@ -381,23 +383,23 @@ class TestCountSlideLinesVerified:
     def test_com_not_called_when_pillow_estimate_is_not_boundary(self, monkeypatch):
         monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: 8)
         calls = self._install_fake_com(monkeypatch, real_lines=10)
-        result = m._count_slide_lines_verified(object(), self._FakeSlide(1))
+        result = rl._count_slide_lines_verified(object(), self._FakeSlide(1))
         assert result == 8
         assert calls == []
 
     def test_com_confirms_boundary_estimate(self, monkeypatch, capsys):
-        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
-        calls = self._install_fake_com(monkeypatch, real_lines=m.LINES_PER_SLIDE)
-        result = m._count_slide_lines_verified(object(), self._FakeSlide(2))
-        assert result == m.LINES_PER_SLIDE
+        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: rl.LINES_PER_SLIDE)
+        calls = self._install_fake_com(monkeypatch, real_lines=rl.LINES_PER_SLIDE)
+        result = rl._count_slide_lines_verified(object(), self._FakeSlide(2))
+        assert result == rl.LINES_PER_SLIDE
         assert len(calls) == 1
         assert "불일치" not in capsys.readouterr().out
 
     def test_com_mismatch_is_adopted_and_logged(self, monkeypatch, capsys):
-        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
-        self._install_fake_com(monkeypatch, real_lines=m.LINES_PER_SLIDE + 1)
-        result = m._count_slide_lines_verified(object(), self._FakeSlide(3))
-        assert result == m.LINES_PER_SLIDE + 1
+        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: rl.LINES_PER_SLIDE)
+        self._install_fake_com(monkeypatch, real_lines=rl.LINES_PER_SLIDE + 1)
+        result = rl._count_slide_lines_verified(object(), self._FakeSlide(3))
+        assert result == rl.LINES_PER_SLIDE + 1
         assert "불일치" in capsys.readouterr().out
         assert rl._COM_MISMATCH_COUNT[3] == 1
 
@@ -408,33 +410,33 @@ class TestCountSlideLinesVerified:
         "성공"으로 잘못 보고된 사례(제1독서 슬라이드 19, 실제 10줄인데 9줄로 보고)가
         실측으로 확인됐다. 이제는 슬라이드별 이력과 무관하게 경계값(9)일 때마다
         매번 실제로 COM에 묻어야 한다."""
-        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
-        calls = self._install_fake_com(monkeypatch, real_lines=m.LINES_PER_SLIDE + 1)
+        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: rl.LINES_PER_SLIDE)
+        calls = self._install_fake_com(monkeypatch, real_lines=rl.LINES_PER_SLIDE + 1)
         slide = self._FakeSlide(4)
         for _ in range(5):
-            result = m._count_slide_lines_verified(object(), slide)
-            assert result == m.LINES_PER_SLIDE + 1  # 매번 실제 COM 값을 그대로 반환
+            result = rl._count_slide_lines_verified(object(), slide)
+            assert result == rl.LINES_PER_SLIDE + 1  # 매번 실제 COM 값을 그대로 반환
         assert len(calls) == 5  # 호출 이력과 무관하게 COM이 매번 실제로 호출됨
 
     def test_com_failure_permanently_disables_for_rest_of_run(self, monkeypatch, capsys):
-        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
+        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: rl.LINES_PER_SLIDE)
         calls = self._install_fake_com(monkeypatch, raises=True)
-        result_1 = m._count_slide_lines_verified(object(), self._FakeSlide(5))
-        assert result_1 == m.LINES_PER_SLIDE
+        result_1 = rl._count_slide_lines_verified(object(), self._FakeSlide(5))
+        assert result_1 == rl.LINES_PER_SLIDE
         assert rl._COM_DISABLED[0] is True
         assert "[경고]" in capsys.readouterr().out
 
         # 이후 같은 프로세스 내에서는(경계값이어도) COM을 다시 시도하지 않는다
-        result_2 = m._count_slide_lines_verified(object(), self._FakeSlide(6))
-        assert result_2 == m.LINES_PER_SLIDE
+        result_2 = rl._count_slide_lines_verified(object(), self._FakeSlide(6))
+        assert result_2 == rl.LINES_PER_SLIDE
         assert len(calls) == 1
 
     def test_config_disabled_skips_com_entirely(self, monkeypatch):
-        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
+        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: rl.LINES_PER_SLIDE)
         monkeypatch.setattr(gui, "_COM_VERIFY_ENABLED_CACHE", [False])
-        calls = self._install_fake_com(monkeypatch, real_lines=m.LINES_PER_SLIDE + 1)
-        result = m._count_slide_lines_verified(object(), self._FakeSlide(7))
-        assert result == m.LINES_PER_SLIDE
+        calls = self._install_fake_com(monkeypatch, real_lines=rl.LINES_PER_SLIDE + 1)
+        result = rl._count_slide_lines_verified(object(), self._FakeSlide(7))
+        assert result == rl.LINES_PER_SLIDE
         assert calls == []
 
     def test_probe_build_failure_falls_back_without_disabling_com_globally(self, monkeypatch, capsys):
@@ -445,17 +447,17 @@ class TestCountSlideLinesVerified:
         않는다"는 문서화된 계약을 어겼다. 이제는 이 슬라이드만 Pillow로
         폴백하고, COM 자체는 다른 슬라이드에 대해 계속 사용 가능해야 한다
         (probe 생성 실패는 COM 전체의 문제가 아니라 그 슬라이드만의 문제)."""
-        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: m.LINES_PER_SLIDE)
+        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: rl.LINES_PER_SLIDE)
 
         def _raise_probe_build(prs, slide):
             raise ValueError("simulated: content shape 없음")
 
         monkeypatch.setattr(rl, "_build_com_probe_pptx", _raise_probe_build)
-        calls = self._install_fake_com(monkeypatch, real_lines=m.LINES_PER_SLIDE)
+        calls = self._install_fake_com(monkeypatch, real_lines=rl.LINES_PER_SLIDE)
 
-        result = m._count_slide_lines_verified(object(), self._FakeSlide(8))
+        result = rl._count_slide_lines_verified(object(), self._FakeSlide(8))
 
-        assert result == m.LINES_PER_SLIDE  # 예외 없이 Pillow 값으로 폴백
+        assert result == rl.LINES_PER_SLIDE  # 예외 없이 Pillow 값으로 폴백
         assert calls == []  # COM 자체는 호출되지도 않음(probe 생성 단계에서 실패)
         assert rl._COM_DISABLED[0] is False  # COM을 전역적으로 비활성화하지 않음
         assert "[경고]" in capsys.readouterr().out
@@ -545,7 +547,7 @@ class TestBuildComProbePptx:
     def test_probe_slide_dimensions_match_original(self, generated_case):
         prs, sections = generated_case["prs"], generated_case["sections"]
         slide = prs.slides[sections["제1독서_start"]]
-        probe_path, _ = m._build_com_probe_pptx(prs, slide)
+        probe_path, _ = ou._build_com_probe_pptx(prs, slide)
         probe = Presentation(str(probe_path))
         assert probe.slide_width == prs.slide_width
         assert probe.slide_height == prs.slide_height
@@ -553,17 +555,17 @@ class TestBuildComProbePptx:
     def test_probe_content_text_matches_original(self, generated_case):
         prs, sections = generated_case["prs"], generated_case["sections"]
         slide = prs.slides[sections["제1독서_start"]]
-        original_text = m._find_content_shape(slide).text_frame.text
-        probe_path, _ = m._build_com_probe_pptx(prs, slide)
+        original_text = ou._find_content_shape(slide).text_frame.text
+        probe_path, _ = ou._build_com_probe_pptx(prs, slide)
         probe = Presentation(str(probe_path))
-        probe_text = m._find_content_shape(probe.slides[0]).text_frame.text
+        probe_text = ou._find_content_shape(probe.slides[0]).text_frame.text
         assert probe_text == original_text
 
     def test_probe_shape_index_is_1_based_and_points_to_content_shape(self, generated_case):
         prs, sections = generated_case["prs"], generated_case["sections"]
         slide = prs.slides[sections["제1독서_start"]]
-        original_text = m._find_content_shape(slide).text_frame.text
-        probe_path, shape_index = m._build_com_probe_pptx(prs, slide)
+        original_text = ou._find_content_shape(slide).text_frame.text
+        probe_path, shape_index = ou._build_com_probe_pptx(prs, slide)
         probe = Presentation(str(probe_path))
         shapes = list(probe.slides[0].shapes)
         assert 1 <= shape_index <= len(shapes)
@@ -575,13 +577,13 @@ class TestBuildComProbePptx:
         prs, sections = generated_case["prs"], generated_case["sections"]
         slide_a = prs.slides[sections["제1독서_start"]]
         slide_b = prs.slides[sections["복음_start"]]
-        path_a, _ = m._build_com_probe_pptx(prs, slide_a)
-        path_b, _ = m._build_com_probe_pptx(prs, slide_b)
+        path_a, _ = ou._build_com_probe_pptx(prs, slide_a)
+        path_b, _ = ou._build_com_probe_pptx(prs, slide_b)
         assert path_a == path_b, "프로세스당 하나의 임시 경로를 재사용해야 함(누적 생성 금지)"
         # 두 번째 호출 후 파일 내용은 slide_b 기준으로 덮어써져 있어야 한다
         probe = Presentation(str(path_b))
-        probe_text = m._find_content_shape(probe.slides[0]).text_frame.text
-        assert probe_text == m._find_content_shape(slide_b).text_frame.text
+        probe_text = ou._find_content_shape(probe.slides[0]).text_frame.text
+        assert probe_text == ou._find_content_shape(slide_b).text_frame.text
 
 
 def test_no_reading_slide_line_overflow(generated_case):
@@ -594,9 +596,9 @@ def test_no_reading_slide_line_overflow(generated_case):
             continue
         s, e = sections[start_key], sections[end_key]
         for idx in range(s, e):
-            lines = m._count_slide_lines_rendered(prs.slides[idx])
-            if lines > m.LINES_PER_SLIDE:
-                problems.append(f"{start_key} 슬라이드 {idx + 1}: {lines}줄 (>{m.LINES_PER_SLIDE})")
+            lines = rl._count_slide_lines_rendered(prs.slides[idx])
+            if lines > rl.LINES_PER_SLIDE:
+                problems.append(f"{start_key} 슬라이드 {idx + 1}: {lines}줄 (>{rl.LINES_PER_SLIDE})")
     assert not problems, "\n".join(problems)
 
 
@@ -618,7 +620,7 @@ def test_no_missing_orange_verse_numbers(generated_case):
             continue
         if start_key not in sections or end_key not in sections:
             continue
-        missing = m._missing_orange_verse_numbers(
+        missing = sec._missing_orange_verse_numbers(
             prs, sections[start_key], sections[end_key], reading["content"]
         )
         if missing:
@@ -651,13 +653,13 @@ def test_reading_verse_numbers_appear_in_ascending_order(generated_case):
         s, e = sections[start_key], sections[end_key]
         seq = []
         for idx in range(s, e):
-            shape = m._find_content_shape(prs.slides[idx])
+            shape = ou._find_content_shape(prs.slides[idx])
             if shape is None:
                 continue
             for para in shape.text_frame.paragraphs:
                 for run in para.runs:
                     try:
-                        if run.font.color.rgb != m.ORANGE:
+                        if run.font.color.rgb != rl.ORANGE:
                             continue
                     except Exception:
                         continue
@@ -778,12 +780,12 @@ class TestComVerify:
             s, e = sections[start_key], sections[end_key]
             for idx in range(s, e):
                 slide = prs.slides[idx]
-                if m._find_content_shape(slide) is None:
+                if ou._find_content_shape(slide) is None:
                     continue  # 종료 텍스트 병합 슬라이드 등 본문 텍스트박스가 없는 슬라이드는 대상 제외
-                probe_path, shape_idx = m._build_com_probe_pptx(prs, slide)
+                probe_path, shape_idx = ou._build_com_probe_pptx(prs, slide)
                 real_lines = com.count_slide_lines(str(probe_path), shape_idx)
-                if real_lines > m.LINES_PER_SLIDE:
+                if real_lines > rl.LINES_PER_SLIDE:
                     problems.append(
-                        f"{start_key} 슬라이드 {idx + 1}: COM 실측 {real_lines}줄 (>{m.LINES_PER_SLIDE})"
+                        f"{start_key} 슬라이드 {idx + 1}: COM 실측 {real_lines}줄 (>{rl.LINES_PER_SLIDE})"
                     )
         assert not problems, "\n".join(problems)
