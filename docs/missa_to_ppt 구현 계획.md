@@ -1,8 +1,10 @@
 # missa_to_ppt.py 구현 계획
 
-- 대상 파일: `missa_to_ppt.py` (~6,900줄), `missa_to_json.py`, `ppt_com_verify.py`,
-  `test_missa_regression.py`, `test_ppt_com_verify.py`
-- 최종 수정일: 2026-08-25
+- 대상 파일: `missa_to_ppt.py`(진입점, 939줄) + `missa_ooxml_utils.py`·`missa_gui.py`·
+  `missa_reading_layout.py`·`missa_sections.py`·`missa_content_updaters.py`(2026-09 모듈 분리
+  리팩토링으로 분리된 5개 모듈, 파일별 책임은 `CLAUDE.md` "핵심 파일" 참고), `missa_to_json.py`,
+  `ppt_com_verify.py`, `test_missa_regression.py`, `test_ppt_com_verify.py`
+- 최종 수정일: 2026-09-02
 - 이 문서는 버전 번호 없이 항상 현재 구현 전체를 처음부터 끝까지 담은 최신 완결 문서로
   유지한다(수정할 때마다 새 버전 파일을 만들지 않고 이 파일 자체를 갱신). 무엇이 언제
   바뀌었는지는 맨 끝 "부록 A: 변경 이력"에 날짜순으로 추가한다. v1.0~v1.4의 과거 버전 원문은
@@ -16,6 +18,11 @@
 참조 PPT를 python-pptx로 열어 JSON(미사 본문) + 성가/시작기도/화답송악보/미사후기도 PPT로
 내용을 교체한 뒤 새 PPT로 저장한다. 참조 PPT의 폰트·서식·레이아웃·배경은 최대한 그대로
 유지하고, 텍스트와 슬라이드 구성만 바꾸는 것이 핵심 원칙이다.
+
+구현은 `missa_to_ppt.py`(진입점) + 책임별 모듈 5개(`missa_ooxml_utils.py`·`missa_gui.py`·
+`missa_reading_layout.py`·`missa_sections.py`·`missa_content_updaters.py`)로 나뉘어 있다.
+이 문서는 함수의 동작을 설명하고, 각 함수가 지금 어느 파일에 있는지는 §16 "전체 함수 목록"에
+모듈별로 정리했다(파일별 책임 한 줄 요약은 `CLAUDE.md` "핵심 파일" 참고).
 
 **실행 진입점**
 - 인수 없이 실행 → 대화형 팝업 모드 (`_ask_date_popup` → `_ask_input_files_popup` →
@@ -263,7 +270,7 @@ run의 몇 번째 글자인지 실제로 계산해, 그 앞뒤 run들의 서식(
 때만** 실제 PowerPoint를 통해 그 슬라이드의 진짜 렌더링 줄 수를 확인한다(경계값이 아니면 이미
 분명히 맞거나 틀린 것이므로 COM을 부르지 않아 오버헤드를 줄인다).
 
-**`ppt_com_verify.py`** (신규 모듈, `missa_to_ppt.py`는 함수 내부에서만 지연 import — pywin32가
+**`ppt_com_verify.py`** (`missa_reading_layout.py`가 함수 내부에서만 지연 import — pywin32가
 없는 환경에서도 전체 도구가 동작해야 함):
 
 - `is_available() -> bool`: pywin32 임포트 가능 + `PowerPoint.Application` Dispatch 가능 여부.
@@ -284,13 +291,13 @@ run의 몇 번째 글자인지 실제로 계산해, 그 앞뒤 run들의 서식(
   래퍼를 캐싱해, 빌드된 exe가 다른 PowerPoint 버전(2007~365)의 최종 사용자 PC에서 실행될 때
   깨지므로 절대 쓰지 않는다
 
-**`_build_com_probe_pptx(prs, slide) -> (path, shape_index)`** (`missa_to_ppt.py`): `prs` 안의
+**`_build_com_probe_pptx(prs, slide) -> (path, shape_index)`** (`missa_ooxml_utils.py`): `prs` 안의
 한 슬라이드를, 크기가 원본과 동일한(스케일 보정 불필요) 임시 단일 슬라이드 `Presentation`으로
 `copy_slide_from_prs()`를 재사용해 복사한 뒤 디스크에 저장한다. 임시 파일은
 `tempfile.gettempdir()` 아래 프로세스당 1개 경로를 재사용(`_com_probe_path()`)하며,
 `atexit`로 프로세스 종료 시 삭제한다.
 
-**`_count_slide_lines_verified(prs, slide) -> int`**: `_count_slide_lines_rendered()`(Pillow)가
+**`_count_slide_lines_verified(prs, slide) -> int`** (`missa_reading_layout.py`): `_count_slide_lines_rendered()`(Pillow)가
 9가 아니면 그대로 반환. 9면 `_build_com_probe_pptx` + `ppt_com_verify.count_slide_lines`로
 실측하고, 다르면 실측값을 채택해 `[경고] 줄 수 불일치 감지: Pillow=9줄, COM 실측=N줄 → COM 값
 채택` 로그를 남긴다. COM 자체가 불가/실패하면(`ImportError`, `ComVerificationUnavailable`)
@@ -357,8 +364,8 @@ Pillow 전용으로 폴백하며, `[경고]`/`[설정]` 로그를 남긴다. 실
     다르면 `copy_slide_from_prs()`가 도형 위치·크기를 비율만큼 자동 보정한다(§11 참고).
   - **`화답송_pptx_path`가 없고 `화답송_img_path`만 있으면**, `missa_psalm_score_image.
     render_화답송_score_slide(화답송_img_path, title)`를 함수 내부에서 지연 import해 호출한다
-    (모듈 최상단에서 import하지 않음 — `missa_to_ppt.py`가 `missa_psalm_score_image.py`에
-    상시 하드 의존할 필요는 없다는 판단). 반환된 in-memory `Presentation`을 `악보_prs`로 삼아
+    (모듈 최상단에서 import하지 않음 — `update_화답송()`(`missa_content_updaters.py`)이
+    `missa_psalm_score_image.py`에 상시 하드 의존할 필요는 없다는 판단). 반환된 in-memory `Presentation`을 `악보_prs`로 삼아
     이후 `copy_slide_from_prs(prs, idx, 악보_prs, 0)` 경로는 PPT 입력 때와 완전히 동일하게
     진행된다 — 통합 표면이 좁다. `title`은 이미 `json_data['화답송']['title']`로 구해져 있는
     값을 그대로 넘기므로 JSON 제목 자동 연결에 추가 가공이 필요 없다. PPT가 있으면 이미지는
@@ -371,9 +378,10 @@ Pillow 전용으로 폴백하며, `[경고]`/`[설정]` 로그를 남긴다. 실
 
 ### 6.1 화답송 악보 사진 → 슬라이드 변환 — `missa_psalm_score_image.py`
 
-`missa_to_ppt.py`(OOXML 슬라이드 XML 조작 중심)와 관심사가 달라 별도 모듈로 분리했다.
-Pillow/numpy/python-pptx에만 의존하며 `missa_to_ppt.py`를 import하지 않는 단방향 의존이라,
-파일 자체만으로도 pytest 단위 테스트가 가능하다(`test_missa_progression.py`).
+OOXML 슬라이드 XML 조작을 담당하는 `missa_ooxml_utils.py` 등 missa_ppt 계열 모듈과 관심사가
+달라 별도 모듈로 분리했다. Pillow/numpy/python-pptx에만 의존하며 missa_ppt 계열 모듈(
+`missa_to_ppt.py`/`missa_ooxml_utils.py`/`missa_content_updaters.py` 등)을 전혀 import하지
+않는 단방향 의존이라, 파일 자체만으로도 pytest 단위 테스트가 가능하다(`test_missa_progression.py`).
 
 - **`render_화답송_score_slide(image_path, title, template_path=ASSET_TEMPLATE) -> Presentation`**
   (진입점): 슬라이드 1장짜리 in-memory `Presentation`을 반환한다. 부작용 없음(저장은 호출자
@@ -409,9 +417,9 @@ Pillow/numpy/python-pptx에만 의존하며 `missa_to_ppt.py`를 import하지 �
     두 단의 폭이 크게 달라지는 악보에서도, 공통 배율 덕에 음표 크기가 두 줄에서 항상 동일하게
     유지되고 폭이 좁은 쪽은 밴드를 다 채우지 않은 채 남는다(사용자 지시 — "두 단 폭이 다르면
     높이가 더 작아지는" 결과).
-  - 제목 교체는 `missa_to_ppt._replace_para_text_clone`과 동일한 안전 패턴
-    (`_replace_title_paragraph`)을 이 모듈에 복제해 사용한다 — 단방향 의존 규칙상
-    `missa_to_ppt.py`를 import할 수 없기 때문. 새 run은 `<a:p>`의 `endParaRPr`보다 반드시
+  - 제목 교체는 `missa_ooxml_utils._replace_para_text_clone`과 동일한 안전 패턴
+    (`_replace_title_paragraph`)을 이 모듈에 복제해 사용한다 — 단방향 의존 규칙상 missa_ppt
+    계열 모듈을 import할 수 없기 때문. 새 run은 `<a:p>`의 `endParaRPr`보다 반드시
     앞에 삽입한다(`_insert_run_before_end_para_rpr`) — `endParaRPr`를 남긴 채 run을 단순
     `append()`하면 `pPr, endParaRPr, r` 순서가 되어 `CT_TextParagraph` 스키마(`pPr?,
     (run|br)*, endParaRPr?`) 위반이 된다(리뷰에서 발견, CLAUDE.md "pPr append 금지" 함정이
@@ -573,64 +581,76 @@ monkeypatch로, 그리고 실제 PowerPoint가 있는 머신에서는 실제 COM
 새 기대값으로 갱신) → 필요한 통합 검증 함수 추가 → 전체 재실행해 기존 케이스가 여전히
 통과하는지 확인 후 병합.
 
-## 16. 전체 함수 목록 (2026-08-04 기준)
+## 16. 전체 함수 목록 (2026-09-02 기준, 모듈별)
 
-**설정 관리**: `_load_config` `_save_config` `_ask_onedrive_path_popup` `get_onedrive_hymn_folder`
-`_com_verification_enabled`
+2026-09 모듈 분리 리팩토링(순수 이동, 동작 무변경) 이후 기준. 아래 각 모듈 제목 옆 괄호는
+`CLAUDE.md` "핵심 파일"에 정리된 책임 요약이다. 함수 자체의 동작 설명은 이 문서의 해당 절
+(§4~§14)을 그대로 참고하면 되고, 여기서는 "지금 어느 파일에 있는지"만 정리한다.
 
-**팝업 UI**: `_ask_date_popup` `_ask_input_files_popup` `_ask_combined_input_popup`
-`_ask_numbers_popup` `_report_progress` `_run_with_progress_window` `_show_result_window`
-`_set_window_icon` `_apply_theme` `_center_window`
+**`missa_to_ppt.py`(진입점)** — CLI 인자 파싱·파일 탐색·JSON 로드·main()/`__main__` 흐름
+- **파일/인수**: `parse_args` `_infer_hymn_numbers` `find_files` `apply_화답송_override`
+  `get_json_data`
+- **진입점**: `main`
 
-**파일/인수**: `parse_args` `_infer_hymn_numbers` `find_files` `apply_화답송_override`
-`get_json_data`
+**`missa_ooxml_utils.py`**(leaf, 슬라이드/도형 OOXML 저수준 프리미티브) — 프로젝트 내부 의존성
+없음
+- **슬라이드 복사 유틸**: `delete_slide` `move_slide` `_blank_layout` `duplicate_slide`
+  `insert_slide_copy` `copy_slide_from_prs` `_copy_spTree` `_copy_image_rels`
+  `_update_rId_in_spTree` `_effective_bg` `_copy_bg_image_rels` `_set_slide_bg_black`
+  `_com_probe_path` `_build_com_probe_pptx`
+- **python-pptx 몽키패치**: `_safe_next_slide_partname` — `PresentationPart._next_slide_partname`을
+  교체해 슬라이드 삽입/삭제를 반복해도 partname이 항상 안전하게 채번되도록 한다(모듈 임포트 시
+  1회 적용, 직접 호출하는 함수가 아님)
+- **섹션 탐색 저수준 헬퍼**: `find_slide_with_text` `find_shape_exact_text` `_slide_text`
+  `all_slide_texts` `_find_content_shape` `_has_ending_text` `_clear_text_frame`
+- **텍스트 서식 유틸**: `_para_append_run` `_replace_para_text_clone` `_set_화답송_content_text`
+  `_set_single_para_text` `_update_book_name_after_br`
+- **상수**: `HYMN_TYPES` — entry(`main()`)와 content_updaters(`replace_성가`) 양쪽에서 쓰여
+  순환 임포트를 피하려고 leaf 모듈에 둠
 
-**미사 유형**: `is_sunday_mass`
+**`missa_gui.py`**(leaf, Tkinter 팝업 + 날짜판단/설정) — `is_sunday_mass`/config류가 GUI와
+진입점 양쪽에서 호출돼 entry에 두면 순환 임포트가 생기므로 흡수(entry→gui 단방향)
+- **설정 관리**: `_load_config` `_save_config` `_ask_onedrive_path_popup` `get_onedrive_hymn_folder`
+  `_com_verification_enabled`
+- **팝업 UI**: `_ask_date_popup` `_ask_input_files_popup` `_ask_combined_input_popup`
+  `_ask_numbers_popup` `_report_progress` `_run_with_progress_window` `_show_result_window`
+  `_set_window_icon` `_apply_theme` `_center_window`
+- **미사 유형**: `is_sunday_mass`
+- **상수**: `OUTPUT_ROOT` — entry(`find_files`/`get_json_data`)와 gui(`_show_result_window`)
+  양쪽에서 쓰여 여기 위치
 
-**슬라이드 복사 유틸**: `delete_slide` `move_slide` `_blank_layout` `duplicate_slide`
-`insert_slide_copy` `copy_slide_from_prs` `_copy_spTree` `_copy_image_rels`
-`_update_rId_in_spTree` `_effective_bg` `_copy_bg_image_rels` `_set_slide_bg_black`
-`_com_probe_path` `_build_com_probe_pptx`
+**`missa_sections.py`**(섹션 탐색 + 검증) — `missa_ooxml_utils`, `missa_reading_layout`
+(`validate`가 `parse_into_verse_units` 호출) 의존
+- **섹션 탐색**: `find_sections` `find_content_range` `find_복음_content_range` `_is_hymn_divider`
+- **검증·저장**: `validate_pptx_structure` `validate` `_orange_verse_numbers_in_range`
+  `_missing_orange_verse_numbers` `_strip_slide_xml` `strip_ppt2007_incompatible`
 
-**python-pptx 몽키패치**: `_safe_next_slide_partname` — `PresentationPart._next_slide_partname`을
-교체해 슬라이드 삽입/삭제를 반복해도 partname이 항상 안전하게 채번되도록 한다(모듈 임포트 시
-1회 적용, 직접 호출하는 함수가 아님)
+**`missa_reading_layout.py`**(독서/복음 레이아웃 엔진) — `missa_ooxml_utils`,
+`missa_gui`(`_count_slide_lines_verified`가 `_com_verification_enabled` 호출) 의존
+- **독서·복음 파싱/배분/기록**: `_ends_sentence` `parse_into_verse_units` `_visual_lines`
+  `_wrap_line_count` `_page_visual_lines` `layout_units_on_slides` `_verify_and_rebalance_pages`
+  `_set_reading_text` `_count_slide_lines` `_rendered_wrap_count` `_get_slide_render_params`
+  `_count_slide_lines_rendered` `_count_slide_lines_verified` `_split_para_at_lines`
+  `_restore_para_from_backup` `_split_and_adjust_via_com` `_rebalance_reading_slides_post_write`
+  `replace_reading_slides`
+- **종료 슬라이드**: `_align_ending_slides_to_제2독서` `_reposition_merged_ending_shapes`
 
-**섹션 탐색**: `find_sections` `find_content_range` `find_복음_content_range`
-`find_slide_with_text` `find_shape_exact_text` `_is_hymn_divider` `_slide_text` `all_slide_texts`
-
-**텍스트 서식 유틸**: `_para_append_run` `_replace_para_text_clone` `_set_두_줄_text`
-`_set_화답송_content_text` `_set_single_para_text` `_josa` `_update_book_name_after_br`
-`_ends_sentence` `_update_prefix_in_runs`
-
-**독서·복음 파싱/배분/기록**: `parse_into_verse_units` `_visual_lines` `_wrap_line_count`
-`_page_visual_lines` `layout_units_on_slides` `_verify_and_rebalance_pages`
-`_find_content_shape` `_has_ending_text` `_clear_text_frame` `_set_reading_text`
-`_count_slide_lines` `_rendered_wrap_count` `_get_slide_render_params`
-`_count_slide_lines_rendered` `_count_slide_lines_verified` `_split_para_at_lines`
-`_restore_para_from_backup` `_split_and_adjust_via_com` `_rebalance_reading_slides_post_write`
-`replace_reading_slides`
-
-**종료 슬라이드**: `_align_ending_slides_to_제2독서` `_reposition_merged_ending_shapes`
-
-**섹션별 업데이트**: `update_title_slide` `update_입당송` `update_reading_title_slide`
-`update_복음_title_slide` `_update_화답송_title_in_slide` `update_화답송` `update_복음환호송`
-`update_영성체송`
-
-**본문 자동 맞춤**: `_find_last_row_top` `_shape_first_run_font_size_emu`
-`_shape_first_para_line_spacing_pct` `_set_shape_all_para_line_spacing`
-`_set_shape_all_run_font_size` `_estimate_text_lines` `_adjust_fit_if_needed`
-
-**시작기도·성가·미사후기도**: `replace_시작기도문` `replace_미사후기도`
-`_update_성가_divider_number` `_update_성가_header` `replace_성가`
-
-**검증·저장**: `validate_pptx_structure` `validate` `_orange_verse_numbers_in_range`
-`_missing_orange_verse_numbers` `_strip_slide_xml` `strip_ppt2007_incompatible`
-
-**진입점**: `main`
+**`missa_content_updaters.py`**(화답송·성가 등 섹션별 콘텐츠 갱신) — `missa_ooxml_utils`,
+`missa_sections`(`replace_성가`가 `find_sections` 직접 호출) 의존
+- **섹션별 업데이트**: `update_title_slide` `update_입당송` `update_reading_title_slide`
+  `update_복음_title_slide` `_update_화답송_title_in_slide` `update_화답송` `update_복음환호송`
+  `update_영성체송`
+- **본문 자동 맞춤**: `_find_last_row_top` `_shape_first_run_font_size_emu`
+  `_shape_first_para_line_spacing_pct` `_set_shape_all_para_line_spacing`
+  `_set_shape_all_run_font_size` `_estimate_text_lines` `_adjust_fit_if_needed`
+- **시작기도·성가·미사후기도**: `replace_시작기도문` `replace_미사후기도`
+  `_update_성가_divider_number` `_update_prefix_in_runs` `_update_성가_header` `replace_성가`
 
 **PowerPoint COM 래퍼** (`ppt_com_verify.py`, 별도 모듈): `is_available` `count_slide_lines`
 `shutdown` `_ensure_app` `_discard_app` `_open_and_measure`
+
+> `_josa()`·`_set_두_줄_text()`(구 텍스트 서식 유틸)는 파일 내 어디서도 호출되지 않는 죽은
+> 코드로 확인되어 모듈 분리 리팩토링 과정에서 삭제됐다(2026-09-02).
 
 **화답송 악보 사진 처리** (`missa_psalm_score_image.py`, 별도 모듈, §6.1 참고): 이미지 로드
 `load_flattened_image` `load_gray_array` / 워터마크·경계 `detect_watermark_crop_x` `staff_band`
@@ -651,12 +671,18 @@ monkeypatch로, 그리고 실제 PowerPoint가 있는 머신에서는 실제 COM
 - json, pathlib, re, copy, io, subprocess, zipfile, tempfile, uuid, atexit (표준 라이브러리)
 - `requirements.txt`에 위 서드파티 의존성이 명시되어 있다(`pip install -r requirements.txt`)
 
-**PyInstaller 빌드**: `missa_to_ppt.spec`의 `hiddenimports`에 `ppt_com_verify`·pywin32 관련
-모듈(`win32com.client`, `win32com.gen_py`, `win32timezone`, `pythoncom`, `pywintypes`,
-`win32api`)에 더해 `missa_psalm_score_image`·`numpy`·`PIL`이 추가되어 있다(전부 함수 내부
-지연 import라 PyInstaller의 정적 스캐너가 놓치기 쉽다). `datas`에는 고정 템플릿 자산
-`assets/화답송_악보_template.pptx`의 절대경로가 포함되어, 빌드된 실행 파일 안에서도
-`render_화답송_score_slide()`가 자산을 로드할 수 있다.
+**PyInstaller 빌드**: `missa_to_ppt.spec`의 `hiddenimports`에 `missa_to_json`·`ppt_com_verify`·
+pywin32 관련 모듈(`win32com.client`, `win32com.gen_py`, `win32timezone`, `pythoncom`,
+`pywintypes`, `win32api`)에 더해 `missa_psalm_score_image`·`numpy`·`PIL`이 추가되어 있다
+(전부 함수 내부 지연 import라 PyInstaller의 정적 스캐너가 놓치기 쉽다). 모듈 분리 리팩토링으로
+새로 생긴 5개 모듈(`missa_ooxml_utils`·`missa_gui`·`missa_reading_layout`·`missa_sections`·
+`missa_content_updaters`)은 `missa_to_ppt.py` 상단에서 정적 `from X import (...)`로 참조되므로
+PyInstaller가 자동으로 추적해 `hiddenimports` 추가가 불필요했다(실제 빌드+exe 실행으로 확인,
+2026-09-02).
+
+고정 템플릿 자산 `assets/화답송_악보_template.pptx`는 `datas`로 묻지 않는다 — onefile 빌드에서
+실행 시점에 디스크로 추출되지 않는 문제가 실측 확인되어, `config.json`과 동일하게 exe 옆의
+외부 `assets/` 폴더로 배포한다(`missa_psalm_score_image.py`의 frozen 분기가 이 경로를 읽는다).
 
 ---
 
@@ -675,6 +701,7 @@ v1.4까지는 버전 번호로 관리했다(원문은 `docs/archive/`). 그 이�
 | 2026-08-25 | (문서 버전 번호 매기기 중단, 이 문서를 항상 최신 상태로 유지하는 방식으로 전환) `_ask_numbers_popup()`에 성가번호 필수/형식 검증 추가(§3.5). `find_files()`가 평일미사에서는 OneDrive 성가 폴더를 아예 조회하지 않도록 변경(§3.3). `copy_slide_from_prs()`가 도형 크기뿐 아니라 폰트 크기·단락 여백도 함께 스케일 보정해 텍스트 잘림 방지(§11). `_update_성가_header()`가 원본 악보의 구분 라벨을 이번 주 실제 용도에 맞게 교정(§9). §16 함수 목록에 누락돼 있던 `_safe_next_slide_partname`(몽키패치)·`_set_window_icon`·`_apply_theme`·`_center_window` 보완 | (이 문서) |
 | 2026-08-28 | 화답송 악보 이미지 입력 **1차 마일스톤** — 신규 모듈 `missa_psalm_score_image.py`(순수 함수 묶음, `missa_to_ppt.py`를 import하지 않는 단방향 의존). 함수: `load_flattened_image`/`load_gray_array`(RGBA 알파 평탄화), `detect_watermark_crop_x`(좌측 여백 zero-run 통째 제외 후 분리 공백 띠 우측을 크롭 시작으로; 미검출 시 미크롭+경고 폴백), `staff_band`, `detect_content_bounds`, `detect_barlines`(오선 밴드 col_fill>0.85 그룹핑), `choose_split_x`(중앙창 [0.30,0.70] 내 좌우 폭 최소차 바라인; 없으면 기하 중앙 폴백), `split_and_place`(무손실 좌/우 분할), `build_slide`/`render_화답송_score_slide`(고정 밴드 종횡비 유지·중앙정렬 배치, 제목 교체는 첫 run 서식 복제 방식). 자산 빌더 `tools/build_화답송_template.py`가 20260816 베이스에서 악보 PICTURE 2개만 크기/타입 기준으로 제거해 `assets/화답송_악보_template.pptx`(커밋 대상)를 생성. 프로그레션 테스트 16개(`test_missa_progression.py`, 3세트 실측 기대값). `update_화답송()` 배선은 2차 마일스톤 | (이 문서) |
 | 2026-08-29 | 화답송 악보 이미지 입력 **2차 마일스톤**(§3.3·§3.4·§3.5·§6·§6.1) 완료·사용자 최종 승인. `find_files()`에 `화답송_img` 키(PPT 우선 → 이름 매칭 → 폴더 내 유일 이미지 폴백 → 모호하면 미검출) 추가, `apply_화답송_override()` 신설(CLI `--화답송` 오버라이드 확장자 분기, 반대쪽 키 명시적 초기화), 입력창 2곳(`_ask_input_files_popup`/`_ask_combined_input_popup`)의 화답송 행 filetypes 확장(공유 상수 `PPTX_TYPES` 무변경), `update_화답송()`에 `화답송_img_path` 파라미터 추가(PPT 없으면 `render_화답송_score_slide()`로 폴백, `copy_slide_from_prs()` 경로는 그대로). 사용자 실사용 미리보기 육안 검수로 `detect_barlines()`의 오검출(온음표·8분음표 기둥+깃발이 마디선으로 잘못 잡힘)을 발견해 노트헤드/스템 인접 배제 필터(`_is_fused_with_adjacent_note`)를 추가하고, 상/하 두 줄 배치를 "왼쪽 정렬·오른쪽 정렬 + 공통 배율"로 변경(§6.1). PyInstaller 빌드(`missa_to_ppt.spec`)에 `missa_psalm_score_image`/`numpy`/`PIL`(hiddenimports)과 템플릿 자산(datas) 반영(§17) | (이 문서) |
+| 2026-09-02 | `missa_to_ppt.py`(7,342줄) 모듈 분리 리팩토링 완료(순수 이동, 동작 무변경). 진입점(939줄) + 신규 모듈 5개(`missa_ooxml_utils.py`·`missa_gui.py`·`missa_reading_layout.py`·`missa_sections.py`·`missa_content_updaters.py`)로 분리(9개 커밋). is_sunday_mass/config류가 GUI·진입점 양쪽에서 호출돼 entry에 남기면 순환 임포트가 생겨 gui 모듈로 흡수, HYMN_TYPES는 entry·content_updaters 양쪽 필요로 leaf 모듈(ooxml_utils)로 이동. 죽은 코드 `_josa`/`_set_두_줄_text` 삭제(§16). 리팩토링 검증용 골든 마스터 XML diff 도구(`tools/golden_diff.py`) 신규 도입 — 매 단계 회귀 52개·프로그레션 56개 스위트 전체 통과 + 골든 마스터 3케이스(주일·평일·성수축복) 출력 100% 동일 확인. PyInstaller 빌드도 hiddenimports 추가 없이 정상 동작 확인(§17). §16·§17 갱신 | (이 문서) |
 
 ## 부록 B: 재발 방지 규칙
 

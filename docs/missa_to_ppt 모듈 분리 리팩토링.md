@@ -1,5 +1,15 @@
 # missa_to_ppt.py 모듈 분리 리팩토링 — 분석·설계·구현계획
 
+**상태: 완료 (2026-09-02).** Phase 0~7 전부 실행·검증·커밋 완료. 커밋 `95aba55`(날짜 폴더
+output/ 이동, 선행 작업)~`bc904cb`(Phase 7) 9개. 결과: `missa_to_ppt.py` 7,342줄 → 939줄
+진입점 + 신규 모듈 5개(`missa_ooxml_utils.py` 1,006줄·`missa_gui.py` 1,321줄·
+`missa_reading_layout.py` 1,798줄·`missa_sections.py` 777줄·`missa_content_updaters.py`
+1,422줄). 매 Phase마다 회귀 52개·프로그레션 56개 스위트 전체 통과 + §3.2 골든 마스터 XML
+diff(주일·평일·성수축복 3케이스) 100% 동일 확인. PyInstaller 빌드+exe 실행까지 검증(§3.5의
+"hiddenimports 누락" 우려는 실측 결과 불필요한 것으로 확인 — 신규 모듈이 진입점 상단에서
+정적 import돼 PyInstaller가 자동 추적함). §4의 질문 3개에 대한 실제 결정과, 실행 중 계획과
+달라진 지점은 문서 끝 "완료 후기"에 기록했다.
+
 **범위**: 순수 파일 분리 리팩토링. 로직/이름/동작은 바꾸지 않고, 책임별로 파일만 나눈다.
 **실행 주체**: 메인 에이전트(오케스트레이터 없이 직접, 단계별 진행 + 매 단계 대화로 확인).
 **목표 모듈 수**: 6개 (신규 5개 + 슬림화된 진입점 1개).
@@ -227,3 +237,46 @@ python tools/golden_diff.py check      # 다시 생성 후 _golden/ 과 XML 레�
    나열(장황하지만 명확) 중 선호가 있는지?
 3. **착수 시점**: 지금 바로 Phase 0(골든 마스터 스냅샷 도구 작성)부터 시작할지, 이 문서를 먼저
    검토할 시간을 가질지?
+
+---
+
+## 5. 완료 후기 (2026-09-02)
+
+### 5.1 §4 질문에 대한 실제 결정
+
+1. **죽은 코드**: 삭제(사용자 결정). `_josa()`, `_set_두_줄_text()`를 Phase 0에서 제거하고
+   골든 마스터 diff로 출력에 영향 없음을 확인한 뒤 별도 커밋(`302a896`)으로 남김.
+2. **재노출 방식**: 명시적 이름 나열(사용자 결정). `from missa_X import *` 대신 Phase 1~5
+   내내 `from missa_X import (이름1, 이름2, ...)` 형태를 사용.
+3. **착수 시점**: 즉시 시작.
+
+### 5.2 설계 대비 실제 배정이 달라진 지점
+
+- **`HYMN_TYPES`**: 설계서 §2.2 ②에서는 gui 소속으로 잠정 배정했으나(§2.4에서 이미 "재검증
+  필요"로 표시해 둠), Phase 5에서 실제 grep으로 확인한 결과 entry(`main()`)와
+  content_updaters(`replace_성가`) 양쪽에서만 쓰이고 GUI와는 무관했다. gui에 두면 불필요한
+  결합이 생기므로 leaf 모듈인 `missa_ooxml_utils.py`로 배정(entry→content_updaters 단방향
+  유지 목적은 동일).
+- **`OUTPUT_ROOT`**: 설계서에는 없던 전역(2번째 세션에서 신설되어 §2.2 ⑥에 각주로만 기록됨).
+  Phase 2에서 `_show_result_window()`(gui)가 참조한다는 사실이 드러나 entry가 아닌
+  `missa_gui.py`로 배정.
+- 나머지 모듈 배정(①~⑤)은 설계서 그대로 실행됐다.
+
+### 5.3 실행 중 새로 발견한 함정 (설계서에 없던 것)
+
+- **모듈 이동 후 monkeypatch 테스트 무력화**: 함수를 재노출(re-export)하면 `m.함수명(...)`
+  직접 호출은 계속 동작하지만, 그 함수가 내부적으로 읽는 전역을 테스트가
+  `monkeypatch.setattr(m, "전역명", ...)`으로 패치하면 조용히 무효화된다 — 함수가 실제로
+  참조하는 것은 함수가 *정의된* 모듈의 네임스페이스이지, 호출자가 그 함수를 찾은 경로(재노출
+  모듈)가 아니기 때문이다. Phase 2(`_COM_VERIFY_ENABLED_CACHE`/`CONFIG_FILE`)와 Phase 3
+  (`_count_slide_lines_verified`/`_count_slide_lines_rendered`/`_build_com_probe_pptx`/
+  `_COM_DISABLED` 등)에서 각각 겪었고, monkeypatch 대상을 실제 소유 모듈로 옮겨 해결했다.
+  이후 Phase에서는 이동 직후 pyflakes와 함께 이 패턴을 먼저 점검했다.
+- **import 누락은 pyflakes로 전수 검사**: Phase 5에서 `qn`/`copy`/`Presentation`/`_xml_escape`
+  임포트를 빠뜨려 실제 생성이 `NameError`로 실패했다. 이후 각 Phase(특히 Phase 6 최종 슬림화)
+  에서 신규 모듈 전체 + 진입점 + 테스트 파일을 `python -m pyflakes`로 한 번에 정적 검사해
+  누락/불필요 임포트를 확정한 뒤 진행하는 절차로 굳혔다.
+- **골든 마스터 diff의 동시 실행 취약성**: 같은 `output/` 폴더에 쓰는 검증 프로세스(pytest
+  통합 테스트, `golden_diff.py check`)를 백그라운드로 동시에 돌리면 파일 쓰기가 겹쳐 가짜
+  diff가 발생할 수 있음을 실측으로 확인(Phase 0에서 1회 재현). 이후로는 골든 diff 검증을
+  항상 다른 작업과 겹치지 않게 단독으로 실행했다.
