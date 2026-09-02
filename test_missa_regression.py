@@ -789,3 +789,327 @@ class TestComVerify:
                         f"{start_key} 슬라이드 {idx + 1}: COM 실측 {real_lines}줄 (>{rl.LINES_PER_SLIDE})"
                     )
         assert not problems, "\n".join(problems)
+
+
+# ---------------------------------------------------------------------------
+# 종료 텍스트박스 위치 재계산 (본문+종료 통합 슬라이드)
+#   test_missa_progression.py에서 승격 (2026-09-02, regression-qa).
+#   버그: _reposition_merged_ending_shapes()가 line_height를
+#   content_shape.height // LINES_PER_SLIDE로 역산 → 짧은 본문 박스에서 과소 산출 →
+#   종료 텍스트박스가 본문과 겹침(20260906 idx 61, 약 640,000 EMU 겹침).
+#   수정: line_height를 폰트 실측(ascent+descent × lnSpc)으로 직접 계산 + 한 슬라이드에
+#   안 들어가면 도형 통째로 다음 슬라이드 이동(분리 금지). 요청:
+#   _workspace/bugfix_ending_textbox_position/00_request.md
+# ---------------------------------------------------------------------------
+
+_ENDING_TEXT = "주님의 말씀입니다.\n◎ 하느님, 감사합니다."
+
+
+def _rep_mk_prs():
+    from pptx import Presentation as _P
+    return _P()  # 기본 9144000×6858000
+
+
+def _rep_add_reading_box(slide, lines, top, height,
+                         left=1_000_000, width=7_000_000, ending=False):
+    """32pt BatangChe 텍스트박스 추가. _get_slide_render_params가 폰트 메트릭을
+    읽을 수 있도록 run rPr에 sz/latin이 실제로 들어가게 한다."""
+    from pptx.util import Emu, Pt
+    box = slide.shapes.add_textbox(Emu(left), Emu(top), Emu(width), Emu(height))
+    tf = box.text_frame
+    tf.word_wrap = True
+    for i, text in enumerate(lines):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        run = p.add_run()
+        run.text = text
+        run.font.size = Pt(32)
+        run.font.name = "BatangChe"
+    return box
+
+
+def _rep_find_ending_shapes(slide):
+    return [
+        sh for sh in slide.shapes
+        if sh.has_text_frame and "주님의 말씀입니다" in sh.text_frame.text
+    ]
+
+
+def _rep_font_metrics_available(slide):
+    pil, _ = rl._get_slide_render_params(slide)
+    return pil is not None
+
+
+class TestRepositionMergedEndingShapes:
+    """본문+종료 통합 슬라이드의 종료 텍스트박스 재배치 회귀."""
+
+    def test_short_body_no_overlap(self):
+        """본문 5줄 + 실제보다 큰 본문 박스(20260906 idx 61 재현)에서 재계산된 종료
+        텍스트박스 top이 본문 텍스트 실제 영역(5줄 분량) 아래로 내려가 겹치지 않는다.
+        박스 bottom이 아니라 구현이 배치에 쓰는 실측값(line_count × line_height)과
+        비교한다."""
+        prs = _rep_mk_prs()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        content = _rep_add_reading_box(
+            slide, [f"본문 문장 {i}" for i in range(5)], top=0, height=2_876_621)
+        ending = _rep_add_reading_box(
+            slide, _ENDING_TEXT.split("\n"), top=2_227_981, height=1_300_000, ending=True)
+
+        if not _rep_font_metrics_available(slide):
+            pytest.skip("Pillow/한글 폰트 미존재 — 폴백 경로는 통합 회귀가 커버")
+
+        line_height = rl._content_line_height_emu(slide, content)
+        line_count = sum(
+            rl._wrap_line_count(p.text.strip())
+            for p in content.text_frame.paragraphs if p.text.strip()
+        )
+        assert line_count == 5
+        text_bottom = content.top + line_count * line_height
+
+        sections = {"제1독서_start": 0, "제1독서_end": 1}
+        rl._reposition_merged_ending_shapes(prs, sections)
+
+        assert ending.top >= text_bottom, (
+            "종료 텍스트박스가 본문 텍스트 실제 영역과 겹침", ending.top, text_bottom
+        )
+
+    def test_overflow_moves_whole_ending_to_next_slide(self):
+        """본문 줄 수가 많아 종료 텍스트박스가 온전히 못 들어가면 도형을 통째로 새
+        다음 슬라이드로 옮긴다(텍스트 분리 없이 단일 도형). 뒤의 무관한 슬라이드를
+        덮지 않고 그 앞에 새 슬라이드를 만든다."""
+        prs = _rep_mk_prs()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        _rep_add_reading_box(
+            slide, [f"본문 문장 {i}" for i in range(8)], top=0, height=4_600_000)
+        _rep_add_reading_box(
+            slide, _ENDING_TEXT.split("\n"), top=2_227_981, height=1_300_000, ending=True)
+        from pptx.util import Emu
+        other = prs.slides.add_slide(prs.slide_layouts[6])
+        ob = other.shapes.add_textbox(Emu(0), Emu(0), Emu(3_000_000), Emu(1_000_000))
+        ob.text_frame.text = "다음 섹션 슬라이드"
+
+        if not _rep_font_metrics_available(slide):
+            pytest.skip("Pillow/한글 폰트 미존재 — 폴백 경로는 통합 회귀가 커버")
+
+        n_before = len(prs.slides._sldIdLst)
+        sections = {"제1독서_start": 0, "제1독서_end": 1}
+        rl._reposition_merged_ending_shapes(prs, sections)
+
+        assert len(prs.slides._sldIdLst) == n_before + 1
+        assert not rl._has_ending_text(prs.slides[0]), "본문 슬라이드에 종료 텍스트가 남음"
+        assert rl._find_content_shape(prs.slides[0]) is not None
+        moved = _rep_find_ending_shapes(prs.slides[1])
+        assert len(moved) == 1, "종료 텍스트가 단일 도형이 아님(분리됨)"
+        assert moved[0].text_frame.text.strip() == _ENDING_TEXT, "종료 텍스트 일부 손실/분리"
+        assert any(
+            sh.has_text_frame and "다음 섹션" in sh.text_frame.text
+            for sh in prs.slides[2].shapes
+        ), "무관한 다음 슬라이드가 종료 텍스트로 덮이거나 사라짐"
+
+    def test_line_height_is_font_measured_not_box_division(self):
+        """line_height가 '박스 height ÷ 9'가 아니라 폰트 실측으로 산출된다는 것을,
+        서로 다른 박스 height를 준 두 슬라이드가 같은 종료 top을 내는지로 확인한다."""
+        def _make(height):
+            prs = _rep_mk_prs()
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            _rep_add_reading_box(
+                slide, [f"본문 {i}" for i in range(5)], top=0, height=height)
+            ending = _rep_add_reading_box(
+                slide, _ENDING_TEXT.split("\n"), top=2_227_981, height=1_300_000, ending=True)
+            return prs, slide, ending
+
+        prs_a, slide_a, ending_a = _make(2_876_621)
+        prs_b, slide_b, ending_b = _make(4_200_000)
+
+        if not (_rep_font_metrics_available(slide_a) and _rep_font_metrics_available(slide_b)):
+            pytest.skip("Pillow/한글 폰트 미존재 — 폴백 경로는 통합 회귀가 커버")
+
+        rl._reposition_merged_ending_shapes(prs_a, {"제1독서_start": 0, "제1독서_end": 1})
+        rl._reposition_merged_ending_shapes(prs_b, {"제1독서_start": 0, "제1독서_end": 1})
+
+        assert ending_a.top == ending_b.top, (
+            "종료 top이 박스 height에 의존 — line_height가 폰트 실측이 아님",
+            ending_a.top, ending_b.top,
+        )
+
+
+# ---------------------------------------------------------------------------
+# 성가 헤더 라벨 재작성 시 run 색상 오염 버그 (bugfix_성가_label_run_color)
+#
+# test_missa_progression.py에서 승격(2026-09-02, regression-qa).
+# 원인: _update_성가_header가 라벨을 정규화하며 라벨 글자 수가 바뀌면(예: '2차봉헌'(4)
+# → '2차 봉헌'(5)), 옛 _update_prefix_in_runs가 라벨/구분자/숫자를 하나의 문자 스트림으로
+# 취급해 옛 run 길이 기준으로 통짜 재배치하며 라벨 마지막 글자('헌')가 구분자 공백 run
+# (우연히 회색) 슬롯으로 밀려 그 색을 물려받았다.
+# 수정: 정규식 그룹 경계(라벨 vs 구분자+숫자)를 재배치의 하드 경계로 삼아 각 구간을
+# 독립적으로 재배치 → 한쪽의 길이 변화가 다른 쪽 run 색상을 침범하지 않는다.
+# 설계 계열: CLAUDE.md "단락 분리·병합 함수는 run 개수를 2개로 가정하지 않는다".
+# ---------------------------------------------------------------------------
+
+import missa_content_updaters as cu  # noqa: E402
+from pptx.oxml.ns import qn as _cu_qn  # noqa: E402
+from pptx.oxml import parse_xml as _cu_parse_xml  # noqa: E402
+from pptx.util import Emu as _cu_Emu  # noqa: E402
+from xml.sax.saxutils import escape as _cu_esc  # noqa: E402
+
+# 소스 456 PPT의 실측 색상(원본 run 구성): bg1=흰색, bg2 lumMod75000=회색, FFC000=주황
+_CU_FILL_XML = {
+    "white": '<a:schemeClr val="bg1"/>',
+    "gray": '<a:schemeClr val="bg2"><a:lumMod val="75000"/></a:schemeClr>',
+    "orange": '<a:srgbClr val="FFC000"/>',
+}
+
+
+def _cu_make_run_xml(text: str, color: str):
+    xml = (
+        '<a:r xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        '<a:rPr lang="ko-KR"><a:solidFill>{fill}</a:solidFill></a:rPr>'
+        "<a:t>{t}</a:t></a:r>"
+    ).format(fill=_CU_FILL_XML[color], t=_cu_esc(text))
+    return _cu_parse_xml(xml)
+
+
+def _cu_build_slide_with_runs(runs):
+    """runs: list[(text, color_key)] → (slide, para) 한 텍스트박스 단락에 그 run들을 넣는다."""
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])  # Blank
+    tb = slide.shapes.add_textbox(_cu_Emu(0), _cu_Emu(0), _cu_Emu(6000000), _cu_Emu(1000000))
+    para = tb.text_frame.paragraphs[0]
+    p = para._p
+    for r in p.findall(_cu_qn("a:r")):
+        p.remove(r)
+    for text, color in runs:
+        p.append(_cu_make_run_xml(text, color))
+    return slide, para
+
+
+def _cu_run_color_key(run):
+    rpr = run._r.find(_cu_qn("a:rPr"))
+    if rpr is None:
+        return None
+    sf = rpr.find(_cu_qn("a:solidFill"))
+    if sf is None:
+        return None
+    scheme = sf.find(_cu_qn("a:schemeClr"))
+    if scheme is not None:
+        val = scheme.get("val")
+        return {"bg1": "white", "bg2": "gray"}.get(val, val)
+    srgb = sf.find(_cu_qn("a:srgbClr"))
+    if srgb is not None:
+        v = srgb.get("val")
+        return "orange" if v == "FFC000" else v
+    return None
+
+
+def _cu_char_colors(para):
+    """단락을 (글자, 색상키) 리스트로 펼친다 — run 경계를 넘어 글자 단위 색상을 본다."""
+    out = []
+    for run in para.runs:
+        at = run._r.find(_cu_qn("a:t"))
+        txt = (at.text if at is not None else "") or ""
+        c = _cu_run_color_key(run)
+        for ch in txt:
+            out.append((ch, c))
+    return out
+
+
+def _cu_assert_label_number_colors(para, expected_text, label_char_idx, number_char_idx):
+    cc = _cu_char_colors(para)
+    text = "".join(ch for ch, _ in cc)
+    assert text.startswith(expected_text), (text, expected_text)
+    for i in label_char_idx:
+        assert cc[i][1] == "white", ("라벨 글자가 흰색이 아님", i, cc[i], cc)
+    for i in number_char_idx:
+        assert cc[i][1] == "orange", ("숫자 글자가 주황색이 아님", i, cc[i], cc)
+
+
+def test_성가헤더_라벨확장_헌글자_색상오염_없음_synthetic():
+    """라벨이 늘어나며(2차봉헌→2차 봉헌) 구분자 회색 run 슬롯으로 '헌'이 밀려 회색이 되던
+    버그의 재현·수정 확인. 수정 전엔 '헌'이 회색, 수정 후엔 라벨 전체가 흰색, 숫자는 주황."""
+    slide, _ = _cu_build_slide_with_runs([
+        ("2", "white"),
+        ("차봉헌", "white"),
+        (" ", "gray"),        # 원본 제작자 실수로 이 공백만 회색
+        ("456", "orange"),
+        ("  ", "orange"),
+        ("둘이나 셋이 모인 곳에", "orange"),
+    ])
+    cu._update_성가_header(slide, "2차봉헌", 456)
+    para = slide.shapes[0].text_frame.paragraphs[0]
+    # "2차 봉헌 456": idx 0='2',1='차',2=' ',3='봉',4='헌',5=' ',6='4',7='5',8='6'
+    _cu_assert_label_number_colors(para, "2차 봉헌 456", [0, 1, 3, 4], [6, 7, 8])
+
+
+def test_성가헤더_라벨축소_숫자색상_침범없음_synthetic():
+    """라벨이 줄어드는 반대 방향(2차 봉헌→봉헌). 통짜 재배치라면 숫자 '45'가 라벨 run(흰색)에
+    흡수되고 '6'이 구분자 회색 run으로 새지만, 그룹 경계 재배치는 숫자를 전부 주황으로 유지."""
+    slide, _ = _cu_build_slide_with_runs([
+        ("2차 봉헌", "white"),
+        (" ", "gray"),
+        ("456", "orange"),
+        (" 둘이나 셋이", "orange"),
+    ])
+    cu._update_성가_header(slide, "봉헌", 456)
+    para = slide.shapes[0].text_frame.paragraphs[0]
+    # "봉헌 456": idx 0='봉',1='헌',2=' ',3='4',4='5',5='6'
+    _cu_assert_label_number_colors(para, "봉헌 456", [0, 1], [3, 4, 5])
+
+
+def test_성가헤더_라벨동일_길이변화없음_회귀없음_synthetic():
+    """기존 정상 케이스(라벨 길이 동일 '봉헌'→'봉헌', 숫자 62→100). 라벨은 흰색, 숫자는
+    주황으로 유지되고 구분자 회색이 라벨/숫자로 새지 않는다."""
+    slide, _ = _cu_build_slide_with_runs([
+        ("봉헌", "white"),
+        (" ", "gray"),
+        ("62", "orange"),
+        ("  둘이나", "orange"),
+    ])
+    cu._update_성가_header(slide, "봉헌", 100)
+    para = slide.shapes[0].text_frame.paragraphs[0]
+    # "봉헌 100": idx 0='봉',1='헌',2=' ',3='1',4='0',5='0'
+    _cu_assert_label_number_colors(para, "봉헌 100", [0, 1], [3, 4, 5])
+
+
+def test_성가헤더_run경계가_그룹경계와_어긋남_방어적_synthetic():
+    """방어적 커버리지(regression-qa 승격 시 추가): 한 원본 run이 라벨 끝 글자+구분자+숫자
+    첫 글자를 함께 담아 run 경계 != 정규식 그룹 경계인 배치. 라벨이 확장(2차봉헌→2차 봉헌)돼도
+    (1) 텍스트가 완전 보존되고 (2) 숫자 전용 주황 run('56')이 라벨 길이 변화에 침범당하지
+    않고 주황을 유지함을 확인한다. (straddle run 내부 글자색은 소스 rPr이 결정하므로 그 run에
+    속한 '4'의 색은 단언하지 않는다 — 이 함수는 텍스트만 재배치하고 rPr을 보존하기 때문.)"""
+    slide, _ = _cu_build_slide_with_runs([
+        ("2차봉", "white"),
+        ("헌 4", "white"),        # 라벨 끝 '헌' + 구분자 ' ' + 숫자 '4'가 한 run에 (straddle)
+        ("56", "orange"),          # 숫자 전용 주황 run
+        (" 둘이나", "orange"),
+    ])
+    cu._update_성가_header(slide, "2차봉헌", 456)
+    para = slide.shapes[0].text_frame.paragraphs[0]
+    cc = _cu_char_colors(para)
+    text = "".join(ch for ch, _ in cc)
+    # (1) 텍스트 완전 보존 (라벨 1글자 확장 반영)
+    assert text == "2차 봉헌 456 둘이나", text
+    # (2) 라벨 글자는 흰색 유지
+    for i in (0, 1, 3, 4):  # '2','차','봉','헌'
+        assert cc[i][1] == "white", ("라벨 글자 색 오염", i, cc[i], cc)
+    # (3) 숫자 전용 주황 run('5','6')이 라벨 확장에 침범당하지 않고 주황 유지
+    assert cc[7] == ("5", "orange"), (cc[7], cc)
+    assert cc[8] == ("6", "orange"), (cc[8], cc)
+
+
+def test_성가헤더_실제456소스_헌글자_흰색_realdata():
+    """실측 소스 PPT(성가 456)로 end-to-end 확인 — '헌' 글자가 더 이상 별도 회색으로
+    분리되지 않고 라벨 전체가 흰색, 숫자 456이 주황으로 유지된다."""
+    src = Path(
+        r"C:\Users\Scott\OneDrive\PPT 문서\09.가톨릭 성가\성가-악보버전"
+        r"\성가 456 둘이나 셋이 모인 곳에.pptx"
+    )
+    if not src.exists():
+        pytest.skip("소스 456 PPT 없음 — 실측 테스트 건너뜀")
+    prs = Presentation(str(src))
+    slide = prs.slides[0]
+    cu._update_성가_header(slide, "2차봉헌", 456)
+    rect = next(
+        sh for sh in slide.shapes
+        if sh.has_text_frame and sh.name == "Rectangle 11"
+    )
+    para = rect.text_frame.paragraphs[0]
+    _cu_assert_label_number_colors(para, "2차 봉헌 456", [0, 1, 3, 4], [6, 7, 8])

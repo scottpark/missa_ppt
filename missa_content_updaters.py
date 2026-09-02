@@ -1190,63 +1190,109 @@ def _update_성가_divider_number(prs, divider_idx: int, new_number: int):
 
 
 
-def _update_prefix_in_runs(para, old_prefix: str, new_prefix: str):
+def _update_prefix_in_runs(para, segments):
 
-    """para 앞부분 old_prefix → new_prefix 교체. run의 rPr(색상 등) 보존."""
+    """para 앞부분을 세그먼트 단위로 교체한다. run의 rPr(색상 등)은 보존하고 텍스트만 바꾼다.
 
-    old_len = len(old_prefix)
+    segments: [(old_text, new_text), ...] — 원본 텍스트 맨 앞부터 순서대로 덮는 구간들.
+    각 구간은 원본 run들에서 len(old_text)만큼의 글자를 소비하며, 신규 텍스트는 그 구간이
+    차지하던 run 범위 안에서만 재배치된다.
 
-    new_remaining = new_prefix
+    왜 세그먼트로 나누는가: 라벨/구분자/숫자를 하나의 문자 스트림으로 취급해 옛 run 길이
+    기준으로 통짜 재배치하면, 한 구간(예: 라벨)의 글자 수가 바뀔 때 뒤 구간의 글자가 앞 run으로
+    (또는 그 반대로) 밀려, 우연히 다른 색이던 run(예: 소스 제작자가 회색으로 칠한 구분자 공백)의
+    서식을 엉뚱한 글자가 물려받는다. 호출부가 정규식 그룹 경계(라벨 vs 구분자+숫자)를 세그먼트로
+    끊어 넘겨주면, 한 구간의 길이 변화가 다른 구간이 점유하던 run 색상을 침범하지 못한다.
+    (CLAUDE.md "단락 분리·병합 함수는 run 개수를 2개로 가정하지 않는다"와 같은 계열의 함정.)
+    """
 
-    pos = 0
-
-    last_a_t = None
-
-    last_after = ''
-
-
+    ats = []
 
     for run in para.runs:
 
         a_t = run._r.find(qn('a:t'))
 
-        if a_t is None:
+        if a_t is not None:
+
+            ats.append(a_t)
+
+    orig = [a_t.text or '' for a_t in ats]
+
+    pieces = [None] * len(ats)   # None=원본 유지, list=새 텍스트로 교체
+
+    consumed = [0] * len(ats)    # 각 run에서 prefix가 소비한 글자 수(= 꼬리 시작 위치)
+
+    ri = 0   # 현재 run 인덱스
+
+    off = 0  # 현재 run 내 오프셋(원본 글자 기준)
+
+    for old_seg, new_seg in segments:
+
+        rem_old = len(old_seg)
+
+        touched = []  # 이 세그먼트가 걸치는 (run_idx, 소비 글자 수)
+
+        while rem_old > 0 and ri < len(orig):
+
+            avail = len(orig[ri]) - off
+
+            if avail <= 0:
+
+                ri += 1
+
+                off = 0
+
+                continue
+
+            take = min(avail, rem_old)
+
+            if pieces[ri] is None:
+
+                pieces[ri] = []
+
+            touched.append((ri, take))
+
+            rem_old -= take
+
+            off += take
+
+            consumed[ri] = off
+
+            if off >= len(orig[ri]):
+
+                ri += 1
+
+                off = 0
+
+        # new_seg를 이 세그먼트가 점유한 run들에만 분배한다.
+
+        # 마지막 run이 남는 글자(길이 증가분)를 흡수 → 증가/감소가 세그먼트 안에 갇힌다.
+
+        if touched:
+
+            rem_new = new_seg
+
+            last = len(touched) - 1
+
+            for j, (rj, take) in enumerate(touched):
+
+                if j == last:
+
+                    pieces[rj].append(rem_new)
+
+                else:
+
+                    pieces[rj].append(rem_new[:take])
+
+                    rem_new = rem_new[take:]
+
+    for idx, a_t in enumerate(ats):
+
+        if pieces[idx] is None:
 
             continue
 
-        run_text = a_t.text or ''
-
-        run_len = len(run_text)
-
-        if pos >= old_len:
-
-            break
-
-        n = min(pos + run_len, old_len) - pos
-
-        new_portion = new_remaining[:n]
-
-        new_remaining = new_remaining[n:]
-
-        after = run_text[n:]
-
-        a_t.text = new_portion + after
-
-        last_a_t = a_t
-
-        last_after = after
-
-        pos += run_len
-
-
-
-    # new_prefix가 old_prefix보다 긴 경우 나머지를 마지막 처리 run에 삽입
-
-    if new_remaining and last_a_t is not None:
-
-        prefix_part = last_a_t.text[:-len(last_after)] if last_after else last_a_t.text
-
-        last_a_t.text = prefix_part + new_remaining + last_after
+        a_t.text = ''.join(pieces[idx]) + orig[idx][consumed[idx]:]
 
 
 
@@ -1286,15 +1332,23 @@ def _update_성가_header(slide, expected_type: str, new_number: int, slide_no: 
 
                 continue
 
-            old_prefix = m.group(0)
-
             correct_label = CANONICAL_LABEL.get(expected_type, expected_type)
 
-            new_prefix = m.group(1) + correct_label + m.group(3) + str(new_number)
+            # 정규식 그룹 경계를 재배치의 하드 경계로 삼는다: 라벨(선행 공백+라벨)과
+            # 구분자+숫자를 별개 세그먼트로 넘겨, 라벨 길이 변화가 숫자 쪽 run 색상을(또는
+            # 반대 방향으로) 침범하지 못하게 한다. (bugfix_성가_label_run_color)
 
-            if old_prefix != new_prefix:
+            label_old = m.group(1) + m.group(2)
 
-                _update_prefix_in_runs(para, old_prefix, new_prefix)
+            label_new = m.group(1) + correct_label
+
+            number_old = m.group(3) + m.group(4)
+
+            number_new = m.group(3) + str(new_number)
+
+            if label_old != label_new or number_old != number_new:
+
+                _update_prefix_in_runs(para, [(label_old, label_new), (number_old, number_new)])
 
             return
 

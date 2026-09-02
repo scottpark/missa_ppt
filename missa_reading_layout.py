@@ -777,6 +777,72 @@ def _count_slide_lines_rendered(slide) -> int:
     return total
 
 
+def _content_lnspc_factor(content_shape) -> float:
+    """콘텐츠 shape 첫 단락의 줄간격(lnSpc spcPct) 배율. 없으면 1.0(단일 간격)."""
+    body = content_shape.text_frame._txBody
+    for p in body.findall(qn('a:p')):
+        pPr = p.find(qn('a:pPr'))
+        if pPr is None:
+            continue
+        ln = pPr.find(qn('a:lnSpc'))
+        if ln is None:
+            continue
+        pct = ln.find(qn('a:spcPct'))
+        if pct is not None and pct.get('val'):
+            return int(pct.get('val')) / 100000.0
+    return 1.0
+
+
+def _content_line_height_emu(slide, content_shape):
+    """콘텐츠 텍스트 1줄 높이를 폰트 메트릭 기반 EMU로 직접 계산.
+
+    기존에는 box_height // LINES_PER_SLIDE로 역산했으나, 실제 본문 박스 높이는
+    슬라이드마다 다르고 '항상 9줄 분량'이 아니라서 줄 수가 적은(짧은) 박스에서는
+    line_height가 과소 산출돼 종료 텍스트박스가 본문과 겹쳤다. Pillow가 실측한 폰트
+    글리프 높이(ascent+descent, 96dpi px)를 EMU로 환산하고 lnSpc 배율을 적용한다.
+
+    Pillow/폰트 파일 미존재로 폰트 객체를 못 얻으면 None을 반환한다(호출부에서 기존
+    box_height // LINES_PER_SLIDE 방식으로 안전 폴백 — 종료 텍스트박스가 배치 자체를
+    건너뛰는 상황은 없어야 한다)."""
+    pil_font, _box_px = _get_slide_render_params(slide)
+    if pil_font is None:
+        return None
+    ascent, descent = pil_font.getmetrics()
+    # _get_slide_render_params는 폰트를 96dpi px로 로드한다. 1px = 914400/96 = 9525 EMU.
+    glyph_emu = (ascent + descent) * 9525
+    return int(round(glyph_emu * _content_lnspc_factor(content_shape)))
+
+
+def _move_ending_shape_to_next_slide(prs, slide_idx, ending_shape, line_height):
+    """종료 텍스트박스가 slide_idx 한 장에 온전히 못 들어갈 때, 도형을 통째로 새
+    다음 슬라이드로 옮긴다(텍스트 일부만 걸치는 분리 금지 — 종료 텍스트박스는 항상
+    단일 도형이므로 도형 통째 이동을 뜻한다).
+
+    같은 프레젠테이션 내부 슬라이드를 insert_slide_copy로 복제하므로 복제본은 이미
+    올바른 배경/레이아웃을 갖는다(copy_slide_from_prs가 아니라서 배경 재설정 함정과
+    무관하고, 별도 재설정도 불필요). 복제 후 본문 텍스트만 비워 종료 전용 슬라이드로
+    만든다."""
+    ENDING_KW = ('주님의 말씀입니다', '◎ 하느님', '◎ 그리스도님')
+
+    insert_slide_copy(prs, slide_idx + 1, slide_idx)
+    new_slide = prs.slides[slide_idx + 1]
+
+    # 새 슬라이드는 본문+종료 사본 → 본문을 비워 종료 전용으로 만들고 종료 도형을 상단 배치
+    new_content = _find_content_shape(new_slide)
+    if new_content is not None:
+        new_top = new_content.top + line_height  # 빈 본문 위 한 줄 여백
+        _clear_text_frame(new_content.text_frame)
+    else:
+        new_top = line_height
+    for shape in new_slide.shapes:
+        if shape.has_text_frame and any(kw in shape.text_frame.text for kw in ENDING_KW):
+            shape.top = new_top
+            break
+
+    # 원래 슬라이드에서 종료 도형 제거 (본문만 남긴다)
+    ending_shape._element.getparent().remove(ending_shape._element)
+
+
 _COM_DISABLED = [False]
 _COM_MISMATCH_COUNT: dict = {}
 _COM_ATEXIT_REGISTERED = [False]
@@ -1739,13 +1805,18 @@ def _reposition_merged_ending_shapes(prs, sections: dict):
 
 
 
+    GAP = 2  # 본문 마지막 줄과 종료 텍스트박스 사이 여백 줄 수
+
+    # 섹션을 뒤(복음)부터 처리한다: 종료 텍스트박스가 슬라이드를 못 넘어가 다음
+    # 슬라이드를 새로 삽입할 때(방어적 경로) 삽입은 더 높은 인덱스만 밀어내므로,
+    # 아직 처리하지 않은 낮은 인덱스 섹션의 sections 값이 무효화되지 않는다.
     for start_key, end_key in [
 
-        ('제1독서_start', '제1독서_end'),
+        ('복음_start', '복음_end'),
 
         ('제2독서_start', '제2독서_end'),
 
-        ('복음_start', '복음_end'),
+        ('제1독서_start', '제1독서_end'),
 
     ]:
 
@@ -1785,14 +1856,34 @@ def _reposition_merged_ending_shapes(prs, sections: dict):
 
                 continue
 
-            # ending shape 탐색 및 위치 재조정
-
+            # ending shape 탐색
+            ending_shape = None
             for shape in slide.shapes:
-
                 if shape.has_text_frame and any(kw in shape.text_frame.text for kw in ENDING_KW):
-
-                    line_height = content_shape.height // LINES_PER_SLIDE
-
-                    shape.top = content_shape.top + (line_count + 2) * line_height
-
+                    ending_shape = shape
                     break
+            if ending_shape is None:
+                continue
+
+            # line_height는 폰트 실측으로 산출한다. 박스 height // 9는 '박스가 항상 9줄'
+            # 이라는 틀린 전제라 짧은 박스에서 종료 텍스트박스가 본문과 겹쳤다.
+            line_height = _content_line_height_emu(slide, content_shape)
+            if line_height is None or line_height <= 0:
+                line_height = content_shape.height // LINES_PER_SLIDE  # 폴백
+
+            # 종료 텍스트박스 자체의 시각 줄 수 (일반적으로 2줄: 사제 응답 + 회중 응답)
+            ending_span = 0
+            for para in ending_shape.text_frame.paragraphs:
+                t = para.text.strip()
+                if t:
+                    ending_span += _wrap_line_count(t)
+            if ending_span == 0:
+                ending_span = 2
+
+            # 본문(line_count줄) + 여백(GAP줄) + 종료(ending_span줄)이 한 슬라이드
+            # 세로 공간(LINES_PER_SLIDE줄)을 넘으면 도형 통째로 다음 슬라이드로 옮긴다
+            # (종료 텍스트박스는 반드시 한 슬라이드에 온전히 들어가야 한다 — 분리 금지).
+            if line_count + GAP + ending_span > LINES_PER_SLIDE:
+                _move_ending_shape_to_next_slide(prs, i, ending_shape, line_height)
+            else:
+                ending_shape.top = content_shape.top + (line_count + GAP) * line_height

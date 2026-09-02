@@ -349,7 +349,19 @@ Pillow 전용으로 폴백하며, `[경고]`/`[설정]` 로그를 남긴다. 실
   크기로 리사이즈된다(`CLAUDE.md` 참고)
 - `_reposition_merged_ending_shapes(prs, sections)`: §5.3-6에서 본문+종료 텍스트가
   통합된 슬라이드의 종료 텍스트박스를, 실제 본문 마지막 줄로부터 두 줄 공백 위치로 재조정한다.
-  `_align_ending_slides_to_제2독서()` 실행 **이후**에 호출해야 한다
+  `_align_ending_slides_to_제2독서()` 실행 **이후**에 호출해야 한다.
+  - **1줄 높이는 폰트 실측으로 산출한다.** 본문 박스 height는 슬라이드마다 다르고 "항상 9줄
+    분량"이 아니라서, `content_shape.height // LINES_PER_SLIDE`로 역산하면 줄 수가 적은 짧은
+    박스에서 line_height가 과소 산출돼 종료 텍스트박스가 본문과 겹쳤다(2026-09-02 버그).
+    `_content_line_height_emu()`가 `_get_slide_render_params()`의 Pillow 폰트 글리프 높이
+    (ascent+descent)를 EMU로 환산하고 lnSpc(`_content_lnspc_factor()`) 배율을 적용해 직접
+    계산한다. Pillow/폰트 미존재 시 `content_shape.height // LINES_PER_SLIDE`로 안전 폴백.
+  - **종료 텍스트박스는 한 슬라이드에 온전히 들어가야 한다(분리 금지).** 본문 줄 수 + 여백
+    2줄 + 종료 줄 수가 `LINES_PER_SLIDE`(9)를 넘으면, 종료 도형을 통째로 다음 슬라이드로
+    옮긴다(`_move_ending_shape_to_next_slide()`: `insert_slide_copy`로 슬라이드 복제 →
+    복제본 본문 비우기 → 원본에서 종료 도형 제거). 병합은 본문 5줄 이하일 때만 일어나므로
+    이 이동은 실무에서 트리거되지 않는 방어적 경로다. 삽입이 뒤 섹션 인덱스를 밀지 않도록
+    섹션을 복음→제2독서→제1독서 역순으로 순회한다
 
 ## 6. 화답송 처리 — `update_화답송(prs, json_data, sections, 화답송_pptx_path, 화답송_img_path=None, is_sunday=True)`
 
@@ -453,7 +465,11 @@ PICTURE 2개만(`shape_type==PICTURE and width>1_000_000 and height>1_000_000` �
   보존). 원본 악보 첫 줄의 구분 라벨(예: "2차 봉헌")이 이번 주 실제 용도와 다를 수 있어
   (예: 성가 62가 원본은 "2차 봉헌"으로 인쇄돼 있지만 이번 주는 입당 성가로 쓰임),
   `CANONICAL_LABEL` 매핑으로 번호뿐 아니라 라벨도 `expected_type`에 맞게 함께 교정한다. 라벨을
-  못 찾으면 `[경고] 성가 N: 첫 줄에서 구분 라벨을 찾지 못함 (슬라이드 i/n)`을 남기고 계속 진행
+  못 찾으면 `[경고] 성가 N: 첫 줄에서 구분 라벨을 찾지 못함 (슬라이드 i/n)`을 남기고 계속 진행.
+  라벨 교정으로 라벨 글자 수가 바뀌는 경우(예: `2차봉헌`(4자)→`2차 봉헌`(5자)) 텍스트 재작성은
+  정규식 그룹 경계(라벨 vs 구분자+숫자)를 세그먼트로 끊어 `_update_prefix_in_runs()`에 넘긴다 —
+  각 세그먼트를 독립 재배치해, 라벨 길이 변화가 숫자 쪽 run 색상을(또는 반대 방향으로) 침범하지
+  못하게 한다(§부록 2026-09-02 참고)
 - `copy_scores=True`(주일): 기존 content 슬라이드 삭제 후 성가 PPT 슬라이드를
   `copy_slide_from_prs()`로 삽입(악보 포함, 크기 차이 자동 보정)
 - `copy_scores=False`(평일): 삽입을 생략하고 삭제만 수행 — 참조 PPT에 남아 있던 기존 악보
@@ -491,7 +507,9 @@ PICTURE 2개만(`shape_type==PICTURE and width>1_000_000 and height>1_000_000` �
 - `_set_single_para_text(tf, text)`: 단일 단락 텍스트 교체
 - `_replace_para_text_clone(para, text)`: 단락 run 재구성
 - `_set_reading_text(tf, units, line_spacing)`: 절 번호 오렌지 run + 본문 run 생성
-- `_para_append_run(p, new_r)` / `_update_prefix_in_runs(para, old, new)` / `_clear_text_frame(tf)`
+- `_para_append_run(p, new_r)` / `_update_prefix_in_runs(para, segments)` / `_clear_text_frame(tf)`
+  — `_update_prefix_in_runs`는 `segments=[(old_text, new_text), ...]`를 받아 각 세그먼트를
+  독립적으로 run 재배치한다(옛 run 길이로 통짜 재배치하지 않음, run 서식 보존)
 - `_has_ending_text(slide)` / `_find_content_shape(slide)`
 - `_restore_para_from_backup(p_elem, backup)`: `_split_para_at_lines()`로 분리된 단락을 분리 전
   deepcopy 백업 상태로 되돌린다(§5.5-COM의 재시도 루프에서 사용)
@@ -634,6 +652,7 @@ monkeypatch로, 그리고 실제 PowerPoint가 있는 머신에서는 실제 COM
   `_restore_para_from_backup` `_split_and_adjust_via_com` `_rebalance_reading_slides_post_write`
   `replace_reading_slides`
 - **종료 슬라이드**: `_align_ending_slides_to_제2독서` `_reposition_merged_ending_shapes`
+  `_content_lnspc_factor` `_content_line_height_emu` `_move_ending_shape_to_next_slide`
 
 **`missa_content_updaters.py`**(화답송·성가 등 섹션별 콘텐츠 갱신) — `missa_ooxml_utils`,
 `missa_sections`(`replace_성가`가 `find_sections` 직접 호출) 의존
@@ -701,7 +720,9 @@ v1.4까지는 버전 번호로 관리했다(원문은 `docs/archive/`). 그 이�
 | 2026-08-25 | (문서 버전 번호 매기기 중단, 이 문서를 항상 최신 상태로 유지하는 방식으로 전환) `_ask_numbers_popup()`에 성가번호 필수/형식 검증 추가(§3.5). `find_files()`가 평일미사에서는 OneDrive 성가 폴더를 아예 조회하지 않도록 변경(§3.3). `copy_slide_from_prs()`가 도형 크기뿐 아니라 폰트 크기·단락 여백도 함께 스케일 보정해 텍스트 잘림 방지(§11). `_update_성가_header()`가 원본 악보의 구분 라벨을 이번 주 실제 용도에 맞게 교정(§9). §16 함수 목록에 누락돼 있던 `_safe_next_slide_partname`(몽키패치)·`_set_window_icon`·`_apply_theme`·`_center_window` 보완 | (이 문서) |
 | 2026-08-28 | 화답송 악보 이미지 입력 **1차 마일스톤** — 신규 모듈 `missa_psalm_score_image.py`(순수 함수 묶음, `missa_to_ppt.py`를 import하지 않는 단방향 의존). 함수: `load_flattened_image`/`load_gray_array`(RGBA 알파 평탄화), `detect_watermark_crop_x`(좌측 여백 zero-run 통째 제외 후 분리 공백 띠 우측을 크롭 시작으로; 미검출 시 미크롭+경고 폴백), `staff_band`, `detect_content_bounds`, `detect_barlines`(오선 밴드 col_fill>0.85 그룹핑), `choose_split_x`(중앙창 [0.30,0.70] 내 좌우 폭 최소차 바라인; 없으면 기하 중앙 폴백), `split_and_place`(무손실 좌/우 분할), `build_slide`/`render_화답송_score_slide`(고정 밴드 종횡비 유지·중앙정렬 배치, 제목 교체는 첫 run 서식 복제 방식). 자산 빌더 `tools/build_화답송_template.py`가 20260816 베이스에서 악보 PICTURE 2개만 크기/타입 기준으로 제거해 `assets/화답송_악보_template.pptx`(커밋 대상)를 생성. 프로그레션 테스트 16개(`test_missa_progression.py`, 3세트 실측 기대값). `update_화답송()` 배선은 2차 마일스톤 | (이 문서) |
 | 2026-08-29 | 화답송 악보 이미지 입력 **2차 마일스톤**(§3.3·§3.4·§3.5·§6·§6.1) 완료·사용자 최종 승인. `find_files()`에 `화답송_img` 키(PPT 우선 → 이름 매칭 → 폴더 내 유일 이미지 폴백 → 모호하면 미검출) 추가, `apply_화답송_override()` 신설(CLI `--화답송` 오버라이드 확장자 분기, 반대쪽 키 명시적 초기화), 입력창 2곳(`_ask_input_files_popup`/`_ask_combined_input_popup`)의 화답송 행 filetypes 확장(공유 상수 `PPTX_TYPES` 무변경), `update_화답송()`에 `화답송_img_path` 파라미터 추가(PPT 없으면 `render_화답송_score_slide()`로 폴백, `copy_slide_from_prs()` 경로는 그대로). 사용자 실사용 미리보기 육안 검수로 `detect_barlines()`의 오검출(온음표·8분음표 기둥+깃발이 마디선으로 잘못 잡힘)을 발견해 노트헤드/스템 인접 배제 필터(`_is_fused_with_adjacent_note`)를 추가하고, 상/하 두 줄 배치를 "왼쪽 정렬·오른쪽 정렬 + 공통 배율"로 변경(§6.1). PyInstaller 빌드(`missa_to_ppt.spec`)에 `missa_psalm_score_image`/`numpy`/`PIL`(hiddenimports)과 템플릿 자산(datas) 반영(§17) | (이 문서) |
+| 2026-09-02 | 본문+종료 통합 슬라이드의 종료 텍스트박스 겹침 버그 수정(§5.3-6). `_reposition_merged_ending_shapes()`가 쓰던 `content_shape.height // LINES_PER_SLIDE` 역산을 폰트 실측 기반 `_content_line_height_emu()`(Pillow ascent+descent → EMU + lnSpc 배율, `_content_lnspc_factor()`)로 교체 — 본문 박스가 짧을 때 line_height가 과소 산출돼 종료 텍스트가 본문과 겹치던 문제(20260906 인덱스 61) 해소. Pillow/폰트 미존재 시 기존 나눗셈으로 폴백. 종료 텍스트박스가 한 슬라이드에 온전히 안 들어가면(본문+2줄여백+종료 > 9줄) 도형 통째로 다음 슬라이드로 이동(`_move_ending_shape_to_next_slide()`, 방어적 경로 — 병합은 본문 5줄 이하일 때만이라 실무 미트리거). 섹션을 복음→제2→제1 역순 순회로 삽입 시 인덱스 무효화 방지. 프로그레션 테스트 3개 추가 | (이 문서) |
 | 2026-09-02 | `missa_to_ppt.py`(7,342줄) 모듈 분리 리팩토링 완료(순수 이동, 동작 무변경). 진입점(939줄) + 신규 모듈 5개(`missa_ooxml_utils.py`·`missa_gui.py`·`missa_reading_layout.py`·`missa_sections.py`·`missa_content_updaters.py`)로 분리(9개 커밋). is_sunday_mass/config류가 GUI·진입점 양쪽에서 호출돼 entry에 남기면 순환 임포트가 생겨 gui 모듈로 흡수, HYMN_TYPES는 entry·content_updaters 양쪽 필요로 leaf 모듈(ooxml_utils)로 이동. 죽은 코드 `_josa`/`_set_두_줄_text` 삭제(§16). 리팩토링 검증용 골든 마스터 XML diff 도구(`tools/golden_diff.py`) 신규 도입 — 매 단계 회귀 52개·프로그레션 56개 스위트 전체 통과 + 골든 마스터 3케이스(주일·평일·성수축복) 출력 100% 동일 확인. PyInstaller 빌드도 hiddenimports 추가 없이 정상 동작 확인(§17). §16·§17 갱신 | (이 문서) |
+| 2026-09-02 | 성가 헤더 라벨 재작성 시 run 색상 오염 버그 수정(§9). `_update_prefix_in_runs()` 시그니처를 `(para, old_prefix, new_prefix)`→`(para, segments)`로 변경하고, 라벨/구분자/숫자를 하나의 문자 스트림으로 통짜 재배치하던 방식을 정규식 그룹 경계별 **세그먼트 독립 재배치**로 교체. 라벨 정규화로 라벨 글자 수가 바뀌면(`2차봉헌`(4)→`2차 봉헌`(5)) 라벨 마지막 글자가 원래 구분자 공백 run(소스 제작자가 우연히 회색으로 칠함)의 슬롯으로 밀려 그 색을 물려받던 문제(20260906 "헌" 회색 렌더링) 해소. 호출부 `_update_성가_header()`가 그룹 경계를 세그먼트로 끊어 전달. 프로그레션 테스트 4개 추가(라벨 확장/축소/동일 + 실측 456 소스 end-to-end, 글자 단위 색상 대조). 전체 스위트 117 passed, `validate_pptx_structure()` 무손상 | (이 문서) |
 
 ## 부록 B: 재발 방지 규칙
 

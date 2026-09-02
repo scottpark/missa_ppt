@@ -21,6 +21,15 @@ description: "missa_to_ppt.py에서 python-pptx/lxml로 OOXML(a:pPr, spTree, rPr
   위치에 `insert`를 쓰고 있는가?
 - [ ] 기존 요소를 교체할 때 `remove()` 후 `insert(0, new_element)`를 쓰고 있는가?
   (`append()`로 재추가하면 안 됨)
+- [ ] **대안 고려**: 새 도형을 통째로 추가하는 경우라면(기존 도형의 일부만 수정하는 게
+  아니라), 처음부터 완성된 스키마-유효 XML 문자열을 구성해서 부모(`spTree` 등)에 `append()`
+  하는 방법을 고려한다. `<p:spTree>`의 자식(`p:sp`/`p:pic`/...) 순서는 자유롭기 때문에,
+  "기존 요소를 찾아 부분 수정"하는 대신 "완성된 새 요소를 통째로 추가"하면 `<a:pPr>`/`<a:p>`
+  내부의 순서 함정 자체를 구조적으로 피할 수 있다(2026-08-30, 화답송 이미지 기능의
+  with-skill/without-skill 비교 실험에서 확인 — 정적 텍스트 도형을 기존 도형 mutate 대신
+  완성 XML 통째 추가 방식으로 짠 구현은 이 함정 클래스에 아예 노출되지 않았다). 단, 기존
+  도형의 서식을 그대로 유지해야 하는 경우(예: 날짜마다 바뀌는 성가 제목)에는 이 방법을 못 쓰고
+  기존 요소를 찾아 안전하게 수정해야 하므로, 상황에 맞게 판단한다.
 
 ## 2. 다른 프레젠테이션에서 슬라이드를 복사할 때 (`copy_slide_from_prs()` 계열)
 
@@ -94,3 +103,10 @@ python -c "from missa_to_ppt import validate_pptx_structure; print(validate_pptx
 
 빈 리스트가 아니면 구조 손상이 있다는 뜻이다. `regression-qa` 에이전트가 이 확인을 다시
 하겠지만, 구현 직후 스스로도 먼저 확인해 왕복을 줄인다.
+
+**주의: `validate_pptx_structure()`는 요소 순서를 검사하지 않는다.** XML 제어문자와 끊어진
+rId만 확인하는 검사기라, 항목 1의 순서 함정(run이 endParaRPr 뒤에 오는 등)이 있어도 이 함수는
+빈 리스트를 반환한다(2026-08-29 실제 사례 — 42개 테스트와 이 검사기 모두 통과했지만 독립
+리뷰가 실제 렌더링 XML을 직접 열어보고서야 발견). `<a:pPr>`/`<a:p>` 자식 순서를 직접
+건드렸다면, `validate_pptx_structure()` 통과에 안심하지 말고 lxml로 해당 요소의 자식 순서를
+직접 assert하는 테스트를 별도로 추가한다.
