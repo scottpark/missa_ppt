@@ -27,7 +27,7 @@
 **실행 진입점**
 - 인수 없이 실행 → 대화형 팝업 모드 (`_ask_date_popup` → `_ask_input_files_popup` →
   `_ask_numbers_popup`) 또는 EXE GUI 모드(`_ask_combined_input_popup`에서 미리 수집한 값 사용)
-- 인수 지정 실행 → CLI 모드: `python missa_to_ppt.py YYYYMMDD [--입당 N ...] [--화답송 PATH] [--미사후기도 PATH] [--test]`
+- 인수 지정 실행 → CLI 모드: `python missa_to_ppt.py YYYYMMDD [--입당 N ...] [--화답송 PATH] [--미사후기도 PATH] [--공지사항 PATH] [--test]`
 
 두 경로 모두 `main()` 안에서 합쳐져 이후 처리 흐름은 동일하다. GUI 모드에서 오류가 나면
 `_show_result_window()`가 전체 로그가 아니라 **오류 메시지만** 팝업에 표시하고, 전체 로그는
@@ -48,6 +48,7 @@ stdout/stderr을 `log_out`/`log_err`로 분리 캡처).
 | [5] 시작기도문 교체 | 80% | `replace_시작기도문()` (파일 지정 시) |
 | [6] 성가 교체 | 88% | `replace_성가()` × 5종, `copy_scores=is_sunday` |
 | [6.5] 미사 후 기도 | 92% | `replace_미사후기도()` (평일 + 파일 지정 시) |
+| [6.7] 공지사항 삽입 | 93% | `insert_공지사항()` (파일 지정 시). 직전에 `find_sections(prs)` 재호출(인덱스 이동 반영) |
 | [7] 저장 | 95% | `prs.save(output_path)`, 파일명 `output/YYYYMMDD/{liturgy}.pptx` |
 | [7.5] PPT 호환성 정리 | 96% | `strip_ppt2007_incompatible()` |
 | [8] 검증 | 98% | `validate_pptx_structure()` → `validate()` |
@@ -83,7 +84,7 @@ def is_sunday_mass(date_str: str) -> bool:
 ### 3.3 `find_files(date_str, hymn_numbers) -> dict` (CLI 모드 파일 탐색)
 
 `output/YYYYMMDD/` 폴더를 스캔해 다음을 채운 dict를 반환한다: `ref_pptx`, `시작기도`, `화답송_pptx`,
-`화답송_img`, `미사후기도`, `성가`(dict, 못 찾은 항목은 키 자체가 없음).
+`화답송_img`, `미사후기도`, `공지사항`, `성가`(dict, 못 찾은 항목은 키 자체가 없음).
 
 - 화답송 악보 PPT: 파일명에 "화답송 악보" 포함
 - 화답송 악보 사진(`화답송_img`): `화답송_pptx`를 찾지 못했을 때만 탐색한다(PPT 우선, 기존
@@ -94,6 +95,7 @@ def is_sunday_mass(date_str: str) -> bool:
   화답송으로 처리)보다 미검출이 안전하다는 원칙
 - 시작기도: 파일명에 "시작기도" 포함
 - 미사후기도: 파일명에 "미사후기도" 포함
+- 공지사항: 파일명에 "공지사항" 포함 (`--공지사항` 인자가 있으면 `main()`에서 덮어씀)
 - 성가: `find_files(date_str, hymn_numbers, is_sunday)`의 `is_sunday`에 따라 분기한다. 주일미사는
   OneDrive 폴더에서 `re.search(rf'성가 {num}(?!\d)', f.name)`로 우선 탐색, 못 찾으면 날짜 폴더
   fallback. 평일미사는 악보 슬라이드 자체를 쓰지 않으므로 **OneDrive 폴더를 아예 조회하지
@@ -109,9 +111,11 @@ stderr에 출력 후 종료한다. 이는 성가 **번호** 누락 검증(§3.4)
 
 ### 3.4 `parse_args()` (CLI 인수 파싱)
 
-`argparse`로 `date`, `--입당/--봉헌/--성체/--2차봉헌/--파견`(정수), `--화답송`, `--미사후기도`
-(경로 override), `--test`(팝업 없이 폴더 파일로 번호 자동 추론)를 받는다. 성가번호가 하나라도
-비어 있으면 `_infer_hymn_numbers()`로 테스트 기본값(`_TEST_HYMN_DEFAULTS`)을 채운다.
+`argparse`로 `date`, `--입당/--봉헌/--성체/--2차봉헌/--파견`(정수), `--화답송`, `--미사후기도`,
+`--공지사항`(경로 override), `--test`(팝업 없이 폴더 파일로 번호 자동 추론)를 받는다. 성가번호가
+하나라도 비어 있으면 `_infer_hymn_numbers()`로 테스트 기본값(`_TEST_HYMN_DEFAULTS`)을 채운다.
+반환은 `(date, numbers, 화답송_override, 미사후기도_override, 공지사항_override)` 5-튜플이다.
+`--공지사항`은 `.pptx`가 아니면 오류 메시지 출력 후 `sys.exit(1)`(조용히 무시하지 않음).
 
 `--화답송` 오버라이드는 `apply_화답송_override(files, override_path_str) -> None`이 처리한다.
 확장자가 `.png`/`.jpg`/`.jpeg`이면 `files['화답송_img']`에, 그 외(pptx)면 `files['화답송_pptx']`에
@@ -133,6 +137,10 @@ stderr에 출력 후 종료한다. 이는 성가 **번호** 누락 검증(§3.4)
   다른 행이 쓰는 공유 상수 `PPTX_TYPES`는 그대로 둔다(회귀 방지). `on_ok()`에서 선택된 파일의
   확장자로 `화답송_pptx`/`화답송_img` 중 알맞은 키에 담는다. 두 팝업 함수(단일 입력창/날짜+파일
   통합 입력창)에 동일한 패턴을 반복 적용했다
+- 공지사항 입력란은 **통합 팝업(`_ask_combined_input_popup`)에만** 화답송 행 바로 다음에
+  추가한다(레거시 단일 팝업은 요구사항 범위 밖). `on_ok()`에서 값이 있고 확장자가 `.pptx`가
+  아니면 `messagebox.showwarning` 후 `return`해 팝업을 유지하고 재선택을 유도한다(참조 PPT
+  누락 검증과 동일한 차단 방식)
 - `_ask_numbers_popup(defaults, is_sunday=True) -> dict`: 성가 5종 번호 입력. 주일은 5종 전부,
   평일은 2차봉헌을 제외한 4종을 필수로 검증하고 숫자 형식도 확인한다 — 누락/형식 오류 시
   `messagebox.showerror`로 안내하고 다시 입력받는다
@@ -481,11 +489,31 @@ PICTURE 2개만(`shape_type==PICTURE and width>1_000_000 and height>1_000_000` �
 - 있으면 기존 미사 후 기도 슬라이드를 삭제하고 새 PPT의 슬라이드로 교체
 - 위치: 파견 성가 콘텐츠 → blank divider → 미사 후 기도 → blank → (다음 섹션 또는 끝)
 
+## 10-2. 공지사항 — `insert_공지사항(prs, path, sections) -> int`
+
+- `replace_미사후기도`와 달리 **삭제/교체가 아니라 순수 삽입**이라 별도 함수로 신설했다.
+- 슬롯 판별: `sections.get('2차봉헌_content_end')`가 `None`이면(= `find_sections`가 슬롯이 없어
+  키 자체를 넣지 않은 경우) 경고 후 `return 0`. 직접 인덱싱(`sections['...']`)은 KeyError를
+  내므로 금지.
+- `front_blank = sections['2차봉헌_content_end']`(2차봉헌 콘텐츠 직후 blank 인덱스, exclusive-end)를
+  앞쪽 구분선으로 재사용한다. 방어적으로 그 슬라이드가 실제 blank인지(`not texts[front_blank].strip()`)
+  확인하고, 아니면 경고 후 `return 0`.
+- 콘텐츠 삽입: `copy_slide_from_prs(prs, front_blank + 1 + i, src_prs, i)`로 원본 서식 그대로
+  복사(`_set_slide_bg_black()` 호출하지 않음 — §6 원칙). 뒤쪽 구분선은 `insert_slide_copy(prs,
+  front_blank + 1 + n_src, front_blank)`로 앞 blank를 같은 프레젠테이션 내에서 1장 복제해 만든다
+  (원본 blank가 Blank 레이아웃 검정을 상속하므로 배경 재지정 불필요).
+- 반환값 = `n_src + 1`(공지사항 장수 + 뒤 구분선 1장). 로드 실패/0장/경로 없음 → `0`.
+- `main()`은 [6.7] 단계에서 **호출 직전 `find_sections(prs)`를 재호출**해 최신 인덱스를 쓴다
+  (앞 단계의 슬라이드 이동으로 `2차봉헌_content_end`가 이동했을 수 있음).
+
 ## 11. 슬라이드 복사·서식 보존 핵심 유틸
 
 **슬라이드 복사**
 - `duplicate_slide(prs, src_idx) -> int`: 같은 프레젠테이션 내부에서 슬라이드 복제(shape 트리 +
-  이미지 rel + 배경 복사), 맨 끝에 추가
+  이미지 rel + 배경 복사), 맨 끝에 추가. 최상위 `<p:sld>`의 `showMasterSp` 속성(마스터 상속 요소
+  숨김 여부)도 원본에 있으면 복제본에 그대로 옮긴다 — `p:bg`가 같아도 이 속성이 다르면 마스터
+  배치 요소 노출 여부가 달라져 색이 다르게 보이기 때문(2026-09-13 공지사항 뒤 구분 슬라이드 색상
+  불일치 버그 수정, CLAUDE.md 참고). 원본에 속성이 없으면 복제본에도 넣지 않는다.
 - `insert_slide_copy(prs, position, src_idx)`: `duplicate_slide` 후 원하는 위치로 이동
 - `copy_slide_from_prs(target_prs, position, source_prs, source_idx)`: **다른** 프레젠테이션에서
   슬라이드를 원본 서식(배경 포함) 그대로 복사. 소스 레이아웃 이름으로 타겟에서 매칭 레이아웃을
@@ -662,8 +690,9 @@ monkeypatch로, 그리고 실제 PowerPoint가 있는 머신에서는 실제 COM
 - **본문 자동 맞춤**: `_find_last_row_top` `_shape_first_run_font_size_emu`
   `_shape_first_para_line_spacing_pct` `_set_shape_all_para_line_spacing`
   `_set_shape_all_run_font_size` `_estimate_text_lines` `_adjust_fit_if_needed`
-- **시작기도·성가·미사후기도**: `replace_시작기도문` `replace_미사후기도`
-  `_update_성가_divider_number` `_update_prefix_in_runs` `_update_성가_header` `replace_성가`
+- **시작기도·성가·미사후기도·공지사항**: `replace_시작기도문` `replace_미사후기도`
+  `insert_공지사항` `_update_성가_divider_number` `_update_prefix_in_runs` `_update_성가_header`
+  `replace_성가`
 
 **PowerPoint COM 래퍼** (`ppt_com_verify.py`, 별도 모듈): `is_available` `count_slide_lines`
 `shutdown` `_ensure_app` `_discard_app` `_open_and_measure`
@@ -723,6 +752,8 @@ v1.4까지는 버전 번호로 관리했다(원문은 `docs/archive/`). 그 이�
 | 2026-09-02 | 본문+종료 통합 슬라이드의 종료 텍스트박스 겹침 버그 수정(§5.3-6). `_reposition_merged_ending_shapes()`가 쓰던 `content_shape.height // LINES_PER_SLIDE` 역산을 폰트 실측 기반 `_content_line_height_emu()`(Pillow ascent+descent → EMU + lnSpc 배율, `_content_lnspc_factor()`)로 교체 — 본문 박스가 짧을 때 line_height가 과소 산출돼 종료 텍스트가 본문과 겹치던 문제(20260906 인덱스 61) 해소. Pillow/폰트 미존재 시 기존 나눗셈으로 폴백. 종료 텍스트박스가 한 슬라이드에 온전히 안 들어가면(본문+2줄여백+종료 > 9줄) 도형 통째로 다음 슬라이드로 이동(`_move_ending_shape_to_next_slide()`, 방어적 경로 — 병합은 본문 5줄 이하일 때만이라 실무 미트리거). 섹션을 복음→제2→제1 역순 순회로 삽입 시 인덱스 무효화 방지. 프로그레션 테스트 3개 추가 | (이 문서) |
 | 2026-09-02 | `missa_to_ppt.py`(7,342줄) 모듈 분리 리팩토링 완료(순수 이동, 동작 무변경). 진입점(939줄) + 신규 모듈 5개(`missa_ooxml_utils.py`·`missa_gui.py`·`missa_reading_layout.py`·`missa_sections.py`·`missa_content_updaters.py`)로 분리(9개 커밋). is_sunday_mass/config류가 GUI·진입점 양쪽에서 호출돼 entry에 남기면 순환 임포트가 생겨 gui 모듈로 흡수, HYMN_TYPES는 entry·content_updaters 양쪽 필요로 leaf 모듈(ooxml_utils)로 이동. 죽은 코드 `_josa`/`_set_두_줄_text` 삭제(§16). 리팩토링 검증용 골든 마스터 XML diff 도구(`tools/golden_diff.py`) 신규 도입 — 매 단계 회귀 52개·프로그레션 56개 스위트 전체 통과 + 골든 마스터 3케이스(주일·평일·성수축복) 출력 100% 동일 확인. PyInstaller 빌드도 hiddenimports 추가 없이 정상 동작 확인(§17). §16·§17 갱신 | (이 문서) |
 | 2026-09-02 | 성가 헤더 라벨 재작성 시 run 색상 오염 버그 수정(§9). `_update_prefix_in_runs()` 시그니처를 `(para, old_prefix, new_prefix)`→`(para, segments)`로 변경하고, 라벨/구분자/숫자를 하나의 문자 스트림으로 통짜 재배치하던 방식을 정규식 그룹 경계별 **세그먼트 독립 재배치**로 교체. 라벨 정규화로 라벨 글자 수가 바뀌면(`2차봉헌`(4)→`2차 봉헌`(5)) 라벨 마지막 글자가 원래 구분자 공백 run(소스 제작자가 우연히 회색으로 칠함)의 슬롯으로 밀려 그 색을 물려받던 문제(20260906 "헌" 회색 렌더링) 해소. 호출부 `_update_성가_header()`가 그룹 경계를 세그먼트로 끊어 전달. 프로그레션 테스트 4개 추가(라벨 확장/축소/동일 + 실측 456 소스 end-to-end, 글자 단위 색상 대조). 전체 스위트 117 passed, `validate_pptx_structure()` 무손상 | (이 문서) |
+| 2026-09-09 | 공지사항 슬라이드 삽입 기능 추가(§2 파이프라인 [6.7], §3.3·§3.4·§3.5, §10-2, §16). 신규 함수 `insert_공지사항(prs, path, sections) -> int`(`missa_content_updaters.py`) — 2차봉헌 성가 콘텐츠 직후 blank를 앞 구분선으로 재사용하고 콘텐츠를 `copy_slide_from_prs()`로 원본 서식 그대로 삽입한 뒤 뒤 구분선 1장을 `insert_slide_copy()`로 복제 추가(반환 `n_src+1`). 슬롯 판별은 `sections.get('2차봉헌_content_end') is None`(키 부재 = 슬롯 없음), 로드 실패/0장/미입력 모두 경고 후 `0`. `main()` [6.7] 단계에서 호출 직전 `find_sections(prs)` 재호출(stale 인덱스 방지). CLI `--공지사항`(5-튜플 반환) + `find_files()` 자동 탐색(파일명 "공지사항") + GUI 통합 팝업 입력란, CLI/GUI 모두 `.pptx` 확장자 검증. 프로그레션 테스트 14개 추가(`test_missa_progression.py`). 회귀 62개 green(무침범 확인) | (이 문서) |
+| 2026-09-13 | 공지사항 뒤 구분 슬라이드 색상 불일치 버그 수정(§11 `duplicate_slide`). 실사용자가 2026-09-13 실제 미사 PPT를 육안 검수하다 `insert_공지사항()`이 만든 뒤 구분 슬라이드(idx141)가 앞 구분 슬라이드(idx132, `2차봉헌_content_end` 재사용 hand-authored)와 색이 달라 보임을 발견. layout/`p:bg`는 100% 동일했으나 앞쪽만 `<p:sld showMasterSp="0">`(마스터 상속 요소 숨김), 뒤쪽은 속성 부재였던 것이 원인. `duplicate_slide()`가 spTree/이미지 rel/`p:bg`만 복사하고 `<p:sld>`의 `showMasterSp` 속성은 복사하지 않던 것을 고쳐, 원본에 속성이 있으면 복제본에 동일 값을 옮기고 없으면 넣지 않도록 함(`missa_ooxml_utils.py`). `duplicate_slide`/`insert_slide_copy`를 쓰는 화답송·미사후기도·성가 복제 경로에 공통 적용. 프로그레션 테스트 3개 추가(present/absent + 20260712 idx132 실측 재현). 회귀+프로그레션 135개 green. CLAUDE.md에 신규 원칙 항목 추가 | (이 문서) |
 
 ## 부록 B: 재발 방지 규칙
 

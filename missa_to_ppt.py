@@ -60,7 +60,7 @@ from missa_sections import find_sections, validate_pptx_structure, validate, str
 from missa_content_updaters import (
     update_title_slide, update_입당송, update_reading_title_slide, update_복음_title_slide,
     update_화답송, update_복음환호송, update_영성체송, replace_시작기도문, replace_미사후기도,
-    replace_성가,
+    replace_성가, insert_공지사항,
 )
 
 
@@ -124,6 +124,10 @@ def parse_args():
 
                         help='미사 후 기도 PPT 경로 (평일미사 전용)')
 
+    parser.add_argument('--공지사항', dest='공지사항', type=str, default=None,
+
+                        help='공지사항 PPT 경로 (2차봉헌 성가 뒤에 삽입)')
+
     parser.add_argument('--test', action='store_true', help='테스트 모드: 누락 성가 번호를 테스트 기본값으로 채움(검증 생략)')
 
     args = parser.parse_args()
@@ -180,7 +184,14 @@ def parse_args():
 
 
 
-    return args.date, numbers, args.화답송_pptx, getattr(args, '미사후기도', None)
+    # 공지사항 확장자 검증(요구사항 §1.2.1 CLI 분기): .pptx만 허용, 위반 시 오류 종료.
+    공지사항_path = getattr(args, '공지사항', None)
+    if 공지사항_path and Path(공지사항_path).suffix.lower() != '.pptx':
+        print('오류: --공지사항 파일은 PowerPoint(.pptx)만 지정할 수 있습니다.',
+              file=sys.stderr)
+        sys.exit(1)
+
+    return args.date, numbers, args.화답송_pptx, getattr(args, '미사후기도', None), 공지사항_path
 
 
 
@@ -196,7 +207,7 @@ def find_files(date_str: str, hymn_numbers: dict, is_sunday: bool = None) -> dic
 
 
 
-    files = {'ref_pptx': None, '시작기도': None, '화답송_pptx': None, '화답송_img': None, '미사후기도': None, '성가': {}}
+    files = {'ref_pptx': None, '시작기도': None, '화답송_pptx': None, '화답송_img': None, '미사후기도': None, '공지사항': None, '성가': {}}
 
 
 
@@ -315,6 +326,11 @@ def find_files(date_str: str, hymn_numbers: dict, is_sunday: bool = None) -> dic
     for f in folder.iterdir():
         if f.suffix.lower() == '.pptx' and '미사후기도' in f.name and not f.name.startswith('~$'):
             files['미사후기도'] = f
+
+    # 공지사항 PPT (--공지사항 인자가 있으면 main에서 덮어씀)
+    for f in folder.iterdir():
+        if f.suffix.lower() == '.pptx' and '공지사항' in f.name and not f.name.startswith('~$'):
+            files['공지사항'] = f
 
     # 참조 PPT: YYYYMMDD_ 로 시작하는 파일 중 현재 날짜가 아닌 것을 우선 선택
 
@@ -483,7 +499,7 @@ def main():
 
     else:
 
-        date_str, hymn_numbers, 화답송_override, 미사후기도_override = parse_args()
+        date_str, hymn_numbers, 화답송_override, 미사후기도_override, 공지사항_override = parse_args()
 
         files = find_files(date_str, hymn_numbers, is_sunday_mass(date_str))
 
@@ -494,6 +510,10 @@ def main():
         if 미사후기도_override:
 
             files['미사후기도'] = Path(미사후기도_override)
+
+        if 공지사항_override:
+
+            files['공지사항'] = Path(공지사항_override)
 
 
 
@@ -815,6 +835,21 @@ def main():
         sec = find_sections(prs)
 
         replace_미사후기도(prs, files['미사후기도'], sec)
+
+
+
+    # 6.7. 공지사항 슬라이드 삽입 (2차봉헌 성가 뒤). 앞 단계들이 슬라이드를 추가·삭제해
+    # 인덱스가 이동했으므로 여기서 find_sections를 반드시 재호출한다(stale 인덱스 방지).
+
+    if files.get('공지사항'):
+
+        _report_progress(93, '공지사항 삽입 중...')
+
+        print('\n[6.7] 공지사항 삽입...')
+
+        sec = find_sections(prs)
+
+        insert_공지사항(prs, files['공지사항'], sec)
 
 
 

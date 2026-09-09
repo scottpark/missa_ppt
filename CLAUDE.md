@@ -119,6 +119,35 @@ r` 순서로 렌더링됐다. `validate_pptx_structure()`(XML 제어문자·끊�
 **발견 경위 (2026-07-16):** `update_화답송()`의 악보 슬라이드 분기에서 `copy_slide_from_prs()`
 직후 `_set_slide_bg_black()`을 호출해 원본 화답송 악보 PPT의 서식이 사라졌다.
 
+## 슬라이드 복제 시 `<p:sld>`의 `showMasterSp` 속성도 원본과 맞춘다
+
+슬라이드를 복제할 때(`duplicate_slide`/`insert_slide_copy`)는 `p:cSld` 안의 `p:bg`(배경)뿐
+아니라 최상위 `<p:sld>` 요소 자체의 `showMasterSp` 속성도 원본과 동일하게 맞춰야 한다.
+`showMasterSp="0"`은 슬라이드 마스터에 배치된 요소(배경 장식·로고 등)를 이 슬라이드에서 숨기라는
+뜻으로, `p:bg`와는 **별개의** 속성이다 — 두 슬라이드가 같은 layout/master를 쓰고 `p:bg`가
+동일해도, 한쪽에만 `showMasterSp="0"`이 있으면 마스터 상속 요소의 노출 여부가 달라져 색이 다르게
+보인다. `p:bg` 복사만으로는 이 차이가 커버되지 않는다.
+
+`python-pptx`의 `prs.slides.add_slide()`가 만드는 새 슬라이드의 `<p:sld>`에는 이 속성이 아예
+없다(속성 부재 = 기본값 "마스터 요소 노출"). 따라서 복제 시 원본의 값을 명시적으로 옮겨야 한다.
+`showMasterSp`는 `p:sld`의 네임스페이스 프리픽스 없는 unqualified attribute이므로 `qn()` 없이
+`src_slide.element.get('showMasterSp')` / `new_slide.element.set('showMasterSp', ...)`로 처리한다
+(자식 요소 조작이 아니라 요소 자체의 속성이라 순서 스키마 함정과는 무관). 원본에 속성이 없으면
+새 슬라이드에도 넣지 않는다(불필요한 속성 주입 금지 — `add_slide` 기본 상태를 그대로 둔다).
+
+**향후 빈 슬라이드를 삽입할 때도 이 원칙이 그대로 적용된다** — 새 blank 슬라이드를 어떤 원본에서
+복제하든, 원본의 `showMasterSp` 상태를 따라가야 마스터 상속 요소의 노출이 원본과 일치한다.
+
+**발견 경위 (2026-09-13):** 실사용자가 2026-09-13 실제 미사 PPT(`20260913_연중 제24주일.pptx`)를
+생성해 육안 검수하던 중, `insert_공지사항()`이 만든 뒤쪽 구분 슬라이드(1-based 142)가 앞쪽 구분
+슬라이드(1-based 133, `2차봉헌_content_end`를 재사용한 hand-authored 슬라이드)와 색이 달라 보이는
+것을 발견했다. 두 슬라이드는 `slide_layout`이 완전히 동일한 객체이고 둘 다 자체 `p:bg`가 없어
+배경 속성은 100% 동일했으나, raw XML을 직접 비교하니 앞쪽은 `<p:sld showMasterSp="0">`인데 뒤쪽은
+이 속성이 아예 없었다(python-pptx `add_slide()` 기본값). 뒤쪽 슬라이드는 마스터 상속 요소 숨김이
+적용되지 않아 마스터 요소가 그대로 노출돼 색이 달라 보였다. 근본 원인은 `missa_ooxml_utils.py`의
+`duplicate_slide()`가 `_copy_spTree`·`_copy_image_rels`·`p:bg` 복사는 하면서 최상위 `<p:sld>`의
+`showMasterSp` 속성은 복사하지 않던 것이었다. 이 속성을 원본과 동일하게 설정하도록 고쳤다.
+
 ## 도형 분류 시 "빈 텍스트"가 falsy임을 주의
 
 빈 문자열(`""`)은 파이썬에서 falsy다. 도형을 텍스트 키워드로 분류하는 코드(`'ending' if kw in txt

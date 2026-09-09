@@ -332,6 +332,18 @@ def duplicate_slide(prs, src_idx: int) -> int:
 
 
 
+    # showMasterSp 속성 복사 (<p:sld> 최상위 unqualified attribute).
+    # layout/배경(p:bg)이 같아도 이 속성이 다르면 마스터 배치 요소(장식·로고 등)의 노출
+    # 여부가 달라져 색이 다르게 보인다. p:bg 복사만으로는 커버되지 않으므로 별도로 맞춘다.
+    # 원본에 속성이 없으면(add_slide 기본 상태) 새 슬라이드에도 넣지 않는다.
+    src_show_master = src_slide.element.get('showMasterSp')
+
+    if src_show_master is not None:
+
+        new_slide.element.set('showMasterSp', src_show_master)
+
+
+
     return len(prs.slides) - 1
 
 

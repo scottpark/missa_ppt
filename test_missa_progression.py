@@ -515,3 +515,329 @@ def test_update_화답송_prefers_pptx_over_image(monkeypatch):
     mtp.update_화답송(
         prs, json_data, sections, pptx_path, 화답송_img_path=img_path, is_sunday=True
     )
+
+
+# ---------------------------------------------------------------------------
+# 공지사항 슬라이드 삽입 (설계서 _workspace/공지사항_슬라이드/01_architect_design.md)
+# §6 테스트 대상 행동 1~9. 8번(GUI tkinter 확장자 검증)만 자동 테스트 제외.
+# 기대 인덱스는 세 git 추적 픽스처의 실측 find_sections() 값이다(추측 아님):
+#   20260712(주일) n=147, 2차봉헌_content_end=132(blank)
+#   20260705(성수축복) n=144, 2차봉헌_content_end=129(blank)
+#   20260624(평일) 2차봉헌_* 키 부재
+# ---------------------------------------------------------------------------
+
+from pptx import Presentation as _Presentation  # noqa: E402
+from pptx.util import Emu as _Emu  # noqa: E402
+from missa_content_updaters import insert_공지사항  # noqa: E402
+from missa_ooxml_utils import all_slide_texts as _all_slide_texts  # noqa: E402
+
+_FIXTURES = {
+    "20260712": BASE / "output" / "20260712" / "20260712_연중 제15주일.pptx",
+    "20260705": BASE / "output" / "20260705"
+    / "20260705_한국 성직자들의 수호자 성 김대건 안드레아 사제 순교자 - 신심 미사.pptx",
+    "20260624": BASE / "output" / "20260624" / "20260624_성 요한 세례자 탄생 대축일.pptx",
+}
+
+
+def _make_공지사항_pptx(path, n):
+    """식별 가능한 텍스트를 가진 n장짜리 공지사항 PPT를 임시 생성한다.
+
+    각 슬라이드에 '공지사항 슬라이드 {i}' 텍스트박스를 넣어 삽입 후 서식/순서 보존을
+    강하게 단언할 수 있게 한다. n==0이면 슬라이드 없는 빈 PPT를 만든다.
+    """
+    prs = _Presentation()
+    for i in range(n):
+        slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank layout
+        box = slide.shapes.add_textbox(_Emu(914400), _Emu(914400), _Emu(3657600), _Emu(914400))
+        box.text_frame.text = f"공지사항 슬라이드 {i}"
+    prs.save(str(path))
+    return prs
+
+
+def _src_texts(path):
+    src = _Presentation(str(path))
+    return [
+        "\n".join(
+            sh.text_frame.text for sh in s.shapes if sh.has_text_frame
+        ).strip()
+        for s in src.slides
+    ]
+
+
+def test_공지사항_01_insert_count_주일(tmp_path):
+    """[삽입 총수] N장짜리 공지사항 → 반환 N+1, 전체 슬라이드 == 기존 + N + 1."""
+    from missa_sections import find_sections
+
+    n_src = 4
+    src = tmp_path / "공지사항.pptx"
+    _make_공지사항_pptx(src, n_src)
+
+    prs = _Presentation(str(_FIXTURES["20260712"]))
+    before = len(prs.slides)
+    sec = find_sections(prs)
+    added = insert_공지사항(prs, src, sec)
+
+    assert added == n_src + 1
+    assert len(prs.slides) == before + n_src + 1
+
+
+def test_공지사항_02_one_divider_each_side(tmp_path):
+    """[앞뒤 구분선 정확히 1장씩] 앞 구분선(기존 content_end)·뒤 구분선(신규) 모두 blank,
+    그 뒤는 non-blank(마침 축복). 공지사항 경계에 2장 연속 blank가 없음."""
+    from missa_sections import find_sections
+
+    n_src = 3
+    src = tmp_path / "공지사항.pptx"
+    _make_공지사항_pptx(src, n_src)
+
+    prs = _Presentation(str(_FIXTURES["20260712"]))
+    sec = find_sections(prs)
+    front = sec["2차봉헌_content_end"]  # 132 (실측)
+    insert_공지사항(prs, src, sec)
+
+    texts = _all_slide_texts(prs)
+    is_blank = [not t.strip() for t in texts]
+
+    # 앞 구분선: content_end 자리 그대로 blank
+    assert is_blank[front], ("앞 구분선이 blank가 아님", front)
+    # 공지사항 콘텐츠 n_src장: 모두 non-blank
+    for i in range(n_src):
+        assert not is_blank[front + 1 + i], ("공지사항 콘텐츠가 blank임", front + 1 + i)
+    # 뒤 구분선: 콘텐츠 마지막 다음 자리 blank
+    rear = front + 1 + n_src
+    assert is_blank[rear], ("뒤 구분선이 blank가 아님", rear)
+    # 2026-09-13 실측 버그의 end-to-end 재발 방지: 뒤 구분선도 앞 구분선과 동일하게
+    # showMasterSp="0"이어야 한다(다르면 마스터 상속 요소가 노출돼 색이 달라 보임).
+    front_show_master = prs.slides[front].element.get("showMasterSp")
+    rear_show_master = prs.slides[rear].element.get("showMasterSp")
+    assert rear_show_master == front_show_master, (
+        "뒤 구분선의 showMasterSp가 앞 구분선과 다름", front_show_master, rear_show_master,
+    )
+    # 뒤 구분선 다음은 non-blank(마침 축복 기도)
+    assert not is_blank[rear + 1], ("뒤 구분선 다음이 blank임 — 2장 연속 blank", rear + 1)
+    # front-1(2차봉헌 마지막 콘텐츠)도 non-blank → front 앞뒤로 2장 연속 blank 없음
+    assert not is_blank[front - 1], ("앞 구분선 앞이 blank임 — 2장 연속 blank", front - 1)
+
+
+def test_공지사항_03_content_format_preserved(tmp_path):
+    """[콘텐츠 서식 보존] 삽입된 공지사항 슬라이드 텍스트가 원본과 동일(순서 포함).
+    뒤 구분선 슬라이드는 shapes 0개."""
+    from missa_sections import find_sections
+
+    n_src = 3
+    src = tmp_path / "공지사항.pptx"
+    _make_공지사항_pptx(src, n_src)
+    src_texts = _src_texts(src)  # ['공지사항 슬라이드 0', '...1', '...2']
+
+    prs = _Presentation(str(_FIXTURES["20260712"]))
+    sec = find_sections(prs)
+    front = sec["2차봉헌_content_end"]
+    insert_공지사항(prs, src, sec)
+
+    for i in range(n_src):
+        slide = prs.slides[front + 1 + i]
+        joined = "\n".join(
+            sh.text_frame.text for sh in slide.shapes if sh.has_text_frame
+        ).strip()
+        assert joined == src_texts[i], (i, joined, src_texts[i])
+
+    rear = front + 1 + n_src
+    assert len(prs.slides[rear].shapes) == 0, "뒤 구분선은 원본 blank 복제라 shapes 0개여야 함"
+
+
+def test_공지사항_04_no_2차봉헌_slot_skips_평일(tmp_path):
+    """[2차봉헌 없는 평일 → 경고 후 skip] 예외 없이 반환 0, 슬라이드 수 불변."""
+    from missa_sections import find_sections
+
+    src = tmp_path / "공지사항.pptx"
+    _make_공지사항_pptx(src, 2)
+
+    prs = _Presentation(str(_FIXTURES["20260624"]))
+    before = len(prs.slides)
+    sec = find_sections(prs)
+    assert sec.get("2차봉헌_content_end") is None  # 실측: 키 자체가 없음
+
+    added = insert_공지사항(prs, src, sec)
+    assert added == 0
+    assert len(prs.slides) == before
+
+
+def test_공지사항_05_insert_성수축복(tmp_path):
+    """[성수축복(2차봉헌 있는 특수 주일)] content_end=129 기준 삽입 성립."""
+    from missa_sections import find_sections
+
+    n_src = 2
+    src = tmp_path / "공지사항.pptx"
+    _make_공지사항_pptx(src, n_src)
+
+    prs = _Presentation(str(_FIXTURES["20260705"]))
+    before = len(prs.slides)
+    sec = find_sections(prs)
+    front = sec["2차봉헌_content_end"]  # 129 (실측)
+    added = insert_공지사항(prs, src, sec)
+
+    assert added == n_src + 1
+    assert len(prs.slides) == before + n_src + 1
+
+    texts = _all_slide_texts(prs)
+    is_blank = [not t.strip() for t in texts]
+    assert is_blank[front]
+    rear = front + 1 + n_src
+    assert is_blank[rear]
+    assert not is_blank[rear + 1]
+
+
+def test_공지사항_06a_missing_path_returns_zero(tmp_path):
+    """[로드 실패 방어] 존재하지 않는 경로 → 반환 0, 슬라이드 불변, 예외 없음."""
+    from missa_sections import find_sections
+
+    prs = _Presentation(str(_FIXTURES["20260712"]))
+    before = len(prs.slides)
+    sec = find_sections(prs)
+    added = insert_공지사항(prs, tmp_path / "없는파일.pptx", sec)
+    assert added == 0
+    assert len(prs.slides) == before
+
+
+def test_공지사항_06b_zero_slide_pptx_returns_zero(tmp_path):
+    """[0장 방어] 슬라이드 0장짜리 공지사항 PPT → 반환 0, 슬라이드 불변."""
+    from missa_sections import find_sections
+
+    src = tmp_path / "empty.pptx"
+    _make_공지사항_pptx(src, 0)
+
+    prs = _Presentation(str(_FIXTURES["20260712"]))
+    before = len(prs.slides)
+    sec = find_sections(prs)
+    added = insert_공지사항(prs, src, sec)
+    assert added == 0
+    assert len(prs.slides) == before
+
+
+def test_공지사항_07_front_not_blank_skips(tmp_path):
+    """[앞 구분선이 blank 아님 → skip] content_end가 non-blank를 가리키면 반환 0(방어 (c))."""
+    from missa_sections import find_sections
+
+    src = tmp_path / "공지사항.pptx"
+    _make_공지사항_pptx(src, 2)
+
+    prs = _Presentation(str(_FIXTURES["20260712"]))
+    before = len(prs.slides)
+    sec = find_sections(prs)
+    # 132(blank) 대신 133(마침 축복, non-blank)을 가리키도록 조작
+    sec = dict(sec, **{"2차봉헌_content_end": 133})
+    added = insert_공지사항(prs, src, sec)
+    assert added == 0
+    assert len(prs.slides) == before
+
+
+def test_공지사항_structure_valid_after_insert(tmp_path):
+    """[구조 무손상] 삽입·저장 후 validate_pptx_structure()가 빈 리스트(끊어진 rId/제어문자 없음)."""
+    from missa_sections import find_sections
+
+    src = tmp_path / "공지사항.pptx"
+    _make_공지사항_pptx(src, 3)
+
+    prs = _Presentation(str(_FIXTURES["20260712"]))
+    sec = find_sections(prs)
+    insert_공지사항(prs, src, sec)
+
+    out = tmp_path / "out.pptx"
+    prs.save(str(out))
+    assert mtp.validate_pptx_structure(str(out)) == []
+
+
+def test_공지사항_08_cli_rejects_non_pptx(monkeypatch):
+    """[CLI 확장자 검증] --공지사항에 .pptx 아닌 경로 → SystemExit(오류 종료)."""
+    monkeypatch.setattr(
+        "sys.argv", ["missa_to_ppt.py", "20260712", "--공지사항", "foo.docx", "--test"]
+    )
+    with pytest.raises(SystemExit):
+        mtp.parse_args()
+
+
+def test_공지사항_08b_cli_accepts_pptx_into_5tuple(monkeypatch):
+    """[CLI 통과] .pptx면 parse_args가 5-튜플을 반환하고 5번째가 공지사항 경로다."""
+    monkeypatch.setattr(
+        "sys.argv", ["missa_to_ppt.py", "20260712", "--공지사항", "notice.pptx", "--test"]
+    )
+    result = mtp.parse_args()
+    assert len(result) == 5
+    assert result[4] == "notice.pptx"
+
+
+def test_공지사항_08c_cli_default_none(monkeypatch):
+    """[CLI 기본값] --공지사항 미지정이면 5번째가 None(선택 입력)."""
+    monkeypatch.setattr("sys.argv", ["missa_to_ppt.py", "20260712", "--test"])
+    result = mtp.parse_args()
+    assert len(result) == 5
+    assert result[4] is None
+
+
+def test_공지사항_09_find_files_detects_by_name(tmp_path):
+    """[자동 탐색] 파일명에 '공지사항'이 든 .pptx가 files['공지사항']에 잡힌다."""
+    (tmp_path / "20260712_ref.pptx").write_bytes(b"")
+    (tmp_path / "공지사항.pptx").write_bytes(b"")
+    files = mtp.find_files(str(tmp_path), {}, is_sunday=False)
+    assert files["공지사항"] is not None
+    assert files["공지사항"].name == "공지사항.pptx"
+
+
+def test_공지사항_09b_find_files_none_when_absent(tmp_path):
+    """[미입력 무변경 가드 근거] 공지사항 파일이 없으면 files['공지사항']==None →
+    main의 `if files.get('공지사항')` 가드가 False라 insert_공지사항이 호출되지 않는다."""
+    (tmp_path / "20260712_ref.pptx").write_bytes(b"")
+    files = mtp.find_files(str(tmp_path), {}, is_sunday=False)
+    assert files.get("공지사항") is None
+    assert not files.get("공지사항")  # 가드 falsy
+
+
+# ---------------------------------------------------------------------------
+# duplicate_slide()의 showMasterSp 속성 보존 (2026-09-13 실측 버그)
+# insert_공지사항이 만든 뒤 구분 슬라이드(142, duplicate_slide 산출물)가 앞 구분 슬라이드
+# (133, hand-authored)와 색이 달라 보였다. 두 슬라이드는 layout/배경이 100% 동일했으나
+# 최상위 <p:sld>의 showMasterSp 속성이 앞쪽은 "0"(마스터 상속 요소 숨김), 뒤쪽은 부재
+# (python-pptx add_slide 기본값 = 마스터 요소 노출)였던 것이 원인. duplicate_slide가
+# spTree/이미지 rel/p:bg는 복사하면서 <p:sld> 자체의 showMasterSp 속성은 복사하지 않았다.
+# ---------------------------------------------------------------------------
+
+from missa_ooxml_utils import duplicate_slide as _duplicate_slide  # noqa: E402
+
+
+def test_showmastersp_present_copied_to_duplicate():
+    """원본 <p:sld showMasterSp="0">이면 복제본의 <p:sld>도 showMasterSp="0"이어야 한다.
+
+    이 속성이 누락되면 layout/배경이 동일해도 마스터 배치 요소(장식·로고 등)가 복제본에서만
+    노출돼 색이 달라 보인다. p:bg 복사만으로는 커버되지 않는 별도 속성이다.
+    """
+    prs = _Presentation()
+    src = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+    src.element.set("showMasterSp", "0")
+    new_idx = _duplicate_slide(prs, 0)
+    assert prs.slides[new_idx].element.get("showMasterSp") == "0"
+
+
+def test_showmastersp_absent_stays_absent():
+    """원본에 showMasterSp 속성이 없으면 복제본에도 추가하지 않는다(불필요한 속성 주입 금지).
+
+    원본이 add_slide 기본 상태(속성 부재 = 마스터 요소 노출)면 복제본도 그 상태를 그대로
+    유지해야 한다 — 원본에 없던 속성을 새로 만들어 넣으면 안 된다.
+    """
+    prs = _Presentation()
+    src = prs.slides.add_slide(prs.slide_layouts[6])
+    assert src.element.get("showMasterSp") is None  # 전제: add_slide 기본은 속성 부재
+    new_idx = _duplicate_slide(prs, 0)
+    assert prs.slides[new_idx].element.get("showMasterSp") is None
+
+
+def test_showmastersp_real_fixture_handauthored_slide():
+    """실측 재현: 20260712 idx132(hand-authored, showMasterSp="0")를 복제하면 복제본도 "0".
+
+    2026-09-13 프로덕션 파일의 앞 구분 슬라이드(idx132)와 동일한 성격의 슬라이드다(git 추적
+    픽스처 20260712 idx132도 showMasterSp="0"임을 실측). 이 슬라이드를 재사용해 뒤 구분
+    슬라이드를 만들 때 속성이 보존돼야 두 슬라이드가 같은 색으로 렌더링된다.
+    """
+    prs = _Presentation(str(_FIXTURES["20260712"]))
+    assert prs.slides[132].element.get("showMasterSp") == "0"  # 픽스처 실측 전제
+    new_idx = _duplicate_slide(prs, 132)
+    assert prs.slides[new_idx].element.get("showMasterSp") == "0"

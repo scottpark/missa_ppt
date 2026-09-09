@@ -1156,6 +1156,61 @@ def replace_미사후기도(prs, path: Path, sections: dict) -> int:
     return n_src - n_deleted
 
 
+def insert_공지사항(prs, path: Path, sections: dict) -> int:
+    """2차봉헌 성가 콘텐츠 뒤에 공지사항 PPT 슬라이드를 순수 삽입한다(교체 아님).
+
+    반환값: 삽입으로 늘어난 슬라이드 수(공지사항 n_src장 + 뒤 구분선 1장). 미삽입 시 0.
+
+    replace_미사후기도와 달리 기존 슬라이드를 삭제하지 않는다(순수 삽입). 앞쪽 구분선은
+    2차봉헌_content_end 자리의 기존 blank를 재사용하고, 뒤쪽 구분선 1장만 새로 추가한다.
+    """
+    # (a) 입력 없음 — 조용히 skip
+    if not path or not Path(path).exists():
+        return 0
+
+    # (b) 2차봉헌 슬롯 없음 — find_sections는 슬롯이 없으면 키 자체를 넣지 않는다.
+    #     sections['...']로 직접 인덱싱하면 KeyError로 파이프라인이 죽으므로 .get()으로 판별.
+    front_blank = sections.get('2차봉헌_content_end')
+    if front_blank is None:
+        print('  [경고] 2차봉헌 성가 슬롯이 없어 공지사항 삽입을 건너뜁니다.')
+        return 0
+
+    # (c) 재사용할 앞쪽 구분선이 실제로 blank인지 방어적 확인(콘텐츠가 끝까지 이어져 blank가
+    #     없던 예외 방지). blank는 shapes 0개라 텍스트가 ''(falsy)이다.
+    texts = all_slide_texts(prs)
+    n = len(prs.slides)
+    if front_blank >= n or texts[front_blank].strip():
+        print('  [경고] 2차봉헌 콘텐츠 뒤 구분(blank) 슬라이드를 찾을 수 없어 '
+              '공지사항 삽입을 건너뜁니다.')
+        return 0
+
+    # (d) 공지사항 PPT 로드 방어 (replace_미사후기도 패턴 이식)
+    try:
+        src_prs = Presentation(str(path))
+    except Exception as e:
+        print(f'  [경고] 공지사항 PPT 로드 실패: {e}')
+        return 0
+    n_src = len(src_prs.slides)
+    if n_src == 0:
+        print('  [경고] 공지사항 PPT에 슬라이드가 없어 삽입을 건너뜁니다.')
+        return 0
+
+    # (e) 콘텐츠 삽입: 앞 구분선(front_blank) 바로 뒤부터 순서대로.
+    #     다른 프레젠테이션에서 복사한 경우이므로 _set_slide_bg_black()을 부르지 않는다
+    #     (copy_slide_from_prs가 이미 원본 배경을 정확히 복사 — CLAUDE.md "배경 재설정 금지").
+    for i in range(n_src):
+        copy_slide_from_prs(prs, front_blank + 1 + i, src_prs, i)
+
+    # (f) 뒤쪽 구분선 1장: 같은 프레젠테이션 내 앞 구분선 blank를 복제해 콘텐츠 마지막 다음에
+    #     삽입. front_blank는 (e)에서 뒤에만 삽입했으므로 인덱스가 그대로 유효하다. 원본 blank는
+    #     자체 p:bg 없이 Blank 레이아웃 검정을 상속하므로 _set_slide_bg_black() 불필요.
+    insert_slide_copy(prs, front_blank + 1 + n_src, front_blank)
+
+    print(f'  공지사항: {n_src}장 삽입 + 뒤 구분 슬라이드 1장 '
+          f'(슬라이드 {front_blank + 2}부터)')
+    return n_src + 1
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────

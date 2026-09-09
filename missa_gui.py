@@ -708,9 +708,11 @@ def _ask_combined_input_popup() -> tuple:
 
         ('ref_pptx',    '참조 미사 PPT  *',  True),
 
+        ('시작기도',    '시작기도 PPT',      False),
+
         ('화답송_pptx', '화답송 악보 PPT/사진', False),
 
-        ('시작기도',    '시작기도 PPT',      False),
+        ('공지사항',    '공지사항 PPT',      False),
 
         ('미사후기도',  '미사 후 기도 PPT',  False),
 
@@ -818,6 +820,26 @@ def _ask_combined_input_popup() -> tuple:
 
                 화답송_pptx_val = _p
 
+        # 공지사항: 파일 선택 필터에 '모든 파일'이 있어 .docx 등을 고를 수 있으므로
+        # 확인 시점에 확장자를 검증한다(요구사항 §1.2.1). 빈 값이면 선택 사항이라 통과.
+        공지사항 = vars_['공지사항'].get()
+
+        if 공지사항 and Path(공지사항).suffix.lower() != '.pptx':
+
+            messagebox.showwarning(
+
+                '입력 오류',
+
+                '공지사항 파일은 PowerPoint(.pptx) 파일만 선택할 수 있습니다.\n'
+
+                '다른 파일을 선택해 주세요.',
+
+                parent=root,
+
+            )
+
+            return  # 팝업 유지, 재선택 유도
+
         시작기도 = vars_['시작기도'].get()
 
         미사후기도 = vars_['미사후기도'].get()
@@ -833,6 +855,8 @@ def _ask_combined_input_popup() -> tuple:
                 '화답송_pptx': 화답송_pptx_val,
 
                 '화답송_img':  화답송_img_val,
+
+                '공지사항':    Path(공지사항) if 공지사항 else None,
 
                 '시작기도':    Path(시작기도) if 시작기도 else None,
 
