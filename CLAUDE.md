@@ -31,13 +31,50 @@
   `render_화답송_score_slide()`. 고정 템플릿 자산은 `assets/화답송_악보_template.pptx`
   (`tools/build_화답송_template.py`로 생성). `missa_to_ppt.py`(`find_files()`/CLI `--화답송`
   오버라이드/입력창/`update_화답송()`)에 배선 완료 — 수작업 PPT가 없을 때 자동 폴백된다.
+- `missa_youth_gospel.py` — (청년미사 1단계) universalis.com에서 날짜별 **미사 전 섹션**(First
+  reading·Responsorial Psalm·Second reading·Gospel Acclamation·Gospel)을 조회해 JSON으로 반환
+  (2026-09-11 v2 확장 — 최초 버전은 Gospel만 조회했다). `fetch_gospel_html`(리다이렉트 차단 —
+  3xx면 `GospelFetchError`, 과거 날짜가 조용히 오늘자로 리다이렉트되는 함정 차단), `parse_mass`
+  (stdlib `html.parser`, 섹션 마커=`align="left"` th/참조=그 뒤 첫 `align="right"` th, 영어 키만
+  사용·한글 키 없음, Psalm은 reference만, Gospel Acclamation의 "Or:" 대체 환호송은 `"or"`
+  중첩), `get_youth_mass`(기본 출력 파일명 `missa_en_YYYYMMDD.json`, 한글 미사
+  `missa_YYYYMMDD.json`과 구분). `parse_gospel`/`get_youth_gospel`(Gospel 섹션만, 한글 키
+  `"복음"`)은 하위호환 래퍼로 유지. **완전 독립 leaf** — `missa_to_ppt.py`/`missa_to_json.py`를
+  import하지 않고, 본 파이프라인도 아직 이 모듈을 호출하지 않는다(통합은 후속 단계).
+- `missa_youth_hymn_pdf.py` — (청년미사 1단계) PDF 성가집(나주노=스캔 이미지 / 야훼 이레=텍스트
+  레이어) → 성가 슬라이드 PPT 생성. 번호 조회 → 이미지 오선 밴드 탐지(`detect_system_bands`,
+  콘텐츠폭 기준 row_fill>0.40) → `_group_content_bbox`(그룹 **행 범위 안의 잉크 열**만으로 좌우
+  경계를 잡는 per-group 크롭 — 전역 `detect_content_bounds`를 쓰면 그 그룹과 무관한 다른 줄
+  (저작권/제목 등)이 폭을 오염시켜 크롭 우측에 불필요한 흰 여백이 생긴다. 2026-09-11 나주노 447
+  우측 여백 버그의 원인이자 수정 지점 — **여러 시스템/그룹을 한 이미지에서 크롭하는 코드는 항상
+  전역이 아니라 그 그룹의 실제 행 범위로 좌우 경계를 잡아야 한다**는 일반 원칙으로 확장 가능) →
+  `pack_systems`(동적 min-slide 균형 패킹: 같은 배율로 최대 3개 시스템까지 겹침 없이 들어가고
+  그것이 실제로 슬라이드 수를 줄이거나 균형을 개선할 때만 3개씩 묶는다 — 순수 "들어가면 무조건
+  3개" greedy는 오히려 불균형한 3+1 분할을 만들 수 있어 채택하지 않음; 참조용 고정 2개/장
+  `group_systems`는 남아 있음) → 저작권 크롭(`resolve_copyright_crop`, 트리거
+  "Administered by"/"Adm. by" 유무와 무관하게 꼬리 마침표를 잉크런 분석으로 제거
+  `_trim_trailing_period_px`, 배치 높이는 288032×0.9=259229 EMU로 전곡 고정·폭은 곡별 크롭
+  종횡비 유지) → 헤더 run 조립(`build_header_runs`, 출처 표시명만 `SOURCE_DISPLAY`로 치환 —
+  "야훼 이레"→"야훼이레", `SOURCES` 키/CLI/조회 함수는 원본 유지; 제목이 헤더 폭을 넘치면
+  `_autosize_header`가 자간 spc→0 → 그래도 넘치면 제목 run만 폰트 축소, 궁서 `batang.ttc`
+  index 2 Pillow 측정) → `duplicate_slide` 복제 조립(`build_hymn_pptx`). 헤더 run 삽입은
+  `missa_psalm_score_image._insert_run_before_end_para_rpr`(endParaRPr 앞 삽입) 재사용.
+  고정 템플릿 자산 `assets/청년미사_성가_template.pptx`(`tools/build_청년미사_template.py`로 생성),
+  나주노 저작권 크롭 좌표는 `assets/나주노_copyright_bbox_cache.json`(개발자 PC에서 Tesseract OCR
+  **1회** 생성 — 재생성 툴 `tools/build_나주노_copyright_cache.py`, 개발 전용; **런타임·exe는 캐시만
+  읽고 Tesseract를 호출하지 않는다**; 도구가 만드는 값은 초안일 뿐이며 447 항목처럼 손제작 샘플과
+  대조해 사람이 손으로 확정한 값이 있을 수 있다 — 도구를 재실행하면 그 hand-tuned 값이 도구
+  기본값으로 덮인다). 이 모듈도 **완전 독립 leaf**로 본 파이프라인 미접촉이며,
+  테스트는 `test_missa_progression.py`에만 있고(회귀 테스트 승격은 미실시 — 정식 회귀 아님).
 - `test_missa_progression.py` — 아직 안정화되지 않은 신규 동작을 먼저 명세하는 프로그레션
   테스트(TDD red→green). 안정화되면 `test_missa_regression.py`로 승격.
 - `test_missa_regression.py` — 주일/평일 통합 + 단위 회귀 테스트 (`pytest`로 실행).
 - `config.json` — `onedrive_hymn_folder`(악보 성가 PPT 경로).
 - `missa_to_ppt.spec` + `dist/` — PyInstaller 빌드(`missa_to_ppt.exe`, GUI 모드).
 - `docs/` — 요구사항·구현 계획(버전 번호 없이 항상 최신 상태 유지, 변경 이력은 문서 맨 끝
-  부록 참고), `archive/`(v1.0~v1.3 과거 버전 원문), `ai-readiness-check/`.
+  부록 참고), `archive/`(v1.0~v1.3 과거 버전 원문), `ai-readiness-check/`,
+  `ooxml-pitfalls-log.md`(아래 OOXML 함정 규칙들의 "발견 경위" 전문 — CLAUDE.md에는 규칙
+  본문과 한 줄 요약만 남기고 상세 사고 경위는 여기로 분리했다, 2026-09-13).
 
 **날짜 폴더(`output/YYYYMMDD/`):** 미사별 작업 디렉터리. `OUTPUT_ROOT`(`missa_gui.py`) 상수가
 가리키는 `output/` 폴더 밑에 날짜별로 위치한다. JSON, 템플릿·결과 pptx, 화답송 악보 pptx,
@@ -71,9 +108,8 @@ pPr.insert(0, pptx_parse_xml('<a:lnSpc .../>'))
 ### 기존 요소 교체 시
 `remove()` 후 `insert(0, new_element)`를 사용한다. `append()`로 재추가하지 않는다.
 
-**이 규칙의 발견 경위 (2026-07-14):**
-`_set_reading_text`에서 `lnSpc`를 `append()`로 추가해 `spcAft` 뒤에 놓이게 됐다.
-특정 참조 PPT(`spcAft`를 포함한 단락 서식)에서만 오류가 재현되어 원인 파악에 오랜 시간이 걸렸다.
+**발견 경위 (2026-07-14):** `_set_reading_text`의 `lnSpc.append()`로 재현(상세:
+`docs/ooxml-pitfalls-log.md`).
 
 ### 이 원칙은 `<a:pPr>`뿐 아니라 순서 스키마를 가진 모든 요소에 적용된다
 
@@ -99,13 +135,8 @@ else:
 요소의 OOXML 스키마 시퀀스를 확인한 뒤 `append()`가 마지막 자식(시퀀스상 옵션인 꼬리 요소,
 예: `endParaRPr`, `extLst`) 뒤에 요소를 놓지는 않는지 점검한다.
 
-**발견 경위 (2026-08-29):** `missa_psalm_score_image.py`의 `_replace_title_paragraph`가
-제목 단락의 run/br만 지우고 `endParaRPr`는 남긴 뒤 새 run을 `append()`해, `pPr → endParaRPr →
-r` 순서로 렌더링됐다. `validate_pptx_structure()`(XML 제어문자·끊어진 rId만 검사)와 42개
-프로그레션 테스트 전부가 이 스키마 위반을 잡지 못했고, 독립 코드 리뷰(`ooxml-code-reviewer`)가
-실제 렌더링 XML을 직접 열어보고서야 발견했다. 구현자 본인은 "pPr을 직접 조작하지 않았으니
-안전하다"고 자평했으나, append 위험을 "pPr 자식 순서"라는 기억된 형태로만 점검해 같은 원리가
-`<a:p>` 자식 레벨(run vs endParaRPr)에도 적용됨을 일반화하지 못했다.
+**발견 경위 (2026-08-29):** `_replace_title_paragraph`의 `p.append(new_r)`로 재현, 독립
+코드 리뷰가 실제 렌더링 XML을 열어보고서야 발견(상세: `docs/ooxml-pitfalls-log.md`).
 
 ## 슬라이드 복사 시 배경/서식 재설정 금지
 
@@ -116,8 +147,8 @@ r` 순서로 렌더링됐다. `validate_pptx_structure()`(XML 제어문자·끊�
 복제한 경우(`insert_slide_copy`/`duplicate_slide`)는 원본이 이미 이 문서의 스타일을 따르므로
 `_set_slide_bg_black()`을 걸어도 안전하다.
 
-**발견 경위 (2026-07-16):** `update_화답송()`의 악보 슬라이드 분기에서 `copy_slide_from_prs()`
-직후 `_set_slide_bg_black()`을 호출해 원본 화답송 악보 PPT의 서식이 사라졌다.
+**발견 경위 (2026-07-16):** `update_화답송()`이 `copy_slide_from_prs()` 직후
+`_set_slide_bg_black()`을 호출해 원본 서식이 사라짐(상세: `docs/ooxml-pitfalls-log.md`).
 
 ## 슬라이드 복제 시 `<p:sld>`의 `showMasterSp` 속성도 원본과 맞춘다
 
@@ -138,15 +169,9 @@ r` 순서로 렌더링됐다. `validate_pptx_structure()`(XML 제어문자·끊�
 **향후 빈 슬라이드를 삽입할 때도 이 원칙이 그대로 적용된다** — 새 blank 슬라이드를 어떤 원본에서
 복제하든, 원본의 `showMasterSp` 상태를 따라가야 마스터 상속 요소의 노출이 원본과 일치한다.
 
-**발견 경위 (2026-09-13):** 실사용자가 2026-09-13 실제 미사 PPT(`20260913_연중 제24주일.pptx`)를
-생성해 육안 검수하던 중, `insert_공지사항()`이 만든 뒤쪽 구분 슬라이드(1-based 142)가 앞쪽 구분
-슬라이드(1-based 133, `2차봉헌_content_end`를 재사용한 hand-authored 슬라이드)와 색이 달라 보이는
-것을 발견했다. 두 슬라이드는 `slide_layout`이 완전히 동일한 객체이고 둘 다 자체 `p:bg`가 없어
-배경 속성은 100% 동일했으나, raw XML을 직접 비교하니 앞쪽은 `<p:sld showMasterSp="0">`인데 뒤쪽은
-이 속성이 아예 없었다(python-pptx `add_slide()` 기본값). 뒤쪽 슬라이드는 마스터 상속 요소 숨김이
-적용되지 않아 마스터 요소가 그대로 노출돼 색이 달라 보였다. 근본 원인은 `missa_ooxml_utils.py`의
-`duplicate_slide()`가 `_copy_spTree`·`_copy_image_rels`·`p:bg` 복사는 하면서 최상위 `<p:sld>`의
-`showMasterSp` 속성은 복사하지 않던 것이었다. 이 속성을 원본과 동일하게 설정하도록 고쳤다.
+**발견 경위 (2026-09-13):** `duplicate_slide()`가 `p:bg`는 복사하면서 `showMasterSp`는
+빠뜨려, 실사용자 육안 검수에서 구분 슬라이드 색이 미세하게 다르게 보임(상세:
+`docs/ooxml-pitfalls-log.md`).
 
 ## 도형 분류 시 "빈 텍스트"가 falsy임을 주의
 
@@ -157,7 +182,7 @@ else 'content'` 같은 패턴)에서 `if key == 'content' and txt:` 식으로 "�
 `shape.name == 'BlackBg'`처럼 이름으로 명시적으로 먼저 걸러낸다.
 
 **발견 경위 (2026-07-16):** `_align_ending_slides_to_제2독서()`에서 `BlackBg`가 `content`로
-오분류되어 종료전용 템플릿의 작은 콘텐츠 자리표시자 크기로 잘못 리사이즈됐다.
+오분류돼 잘못 리사이즈됨(상세: `docs/ooxml-pitfalls-log.md`).
 
 ## 텍스트 키워드로 도형을 식별할 때 부분 문자열 충돌 주의
 
@@ -168,13 +193,8 @@ else 'content'` 같은 패턴)에서 `if key == 'content' and txt:` 식으로 "�
 매칭되어 그 내용을 덮어쓴다. 키워드는 "의도한 도형에만 나타나는" 형태(공백·구두점 포함 등
 더 구체적인 패턴)로 좁혀서, 순회 순서와 무관하게 안전하도록 만든다.
 
-**발견 경위 (2026-08-29):** `missa_psalm_score_image.py`의 `_update_title`이 제목 도형을
-`"화 답 송" in t or "화답송" in t`(공백 없는 형태 포함)로 찾았는데, 화답송 악보 템플릿의
-저작권 표기 도형에 "…박원주 <**화답송**과 시편의 노래>…"라는 문구가 있어 공백 없는 "화답송"
-키워드가 이 도형에도 매칭됐다. 제목 도형이 저작권 도형보다 먼저 순회되는 현재 도형 순서
-덕분에만 우연히 안전했고, 순서가 바뀌면 저작권 문구가 제목으로 조용히 덮어써질 수 있었다.
-독립 코드 리뷰(`ooxml-code-reviewer`)가 지적해 키워드를 공백이 있는 `"화 답 송"` 형태(제목
-도형에만 나타남)로 좁혀 해결했다.
+**발견 경위 (2026-08-29):** `_update_title`의 "화답송"(공백 없음) 키워드가 저작권 표기 도형의
+문구에도 우연히 매칭됨, 독립 리뷰가 지적(상세: `docs/ooxml-pitfalls-log.md`).
 
 ## post-write 재조정 이후 값을 참조할 때는 최신 상태를 다시 측정
 
@@ -183,9 +203,8 @@ else 'content'` 같은 패턴)에서 `if key == 'content' and txt:` 식으로 "�
 **계획값**(`units_pages` 등, 실제 반영 전 값)을 참조하면 안 된다. 앞 단계가 슬라이드를
 추가/재배치할 수 있으므로, 실제 물리 슬라이드에서 다시 측정(`_count_slide_lines()` 등)해야 한다.
 
-**발견 경위 (2026-07-16):** 종료 텍스트 병합 여부 판단이 `_page_visual_lines(units_pages[-1])`
-(재조정 이전 계획)을 썼다가, 재조정으로 슬라이드가 추가되면서 실제 마지막 슬라이드 내용과
-어긋나 병합이 되어야 할 때 안 되는 문제가 발생했다.
+**발견 경위 (2026-07-16):** 종료 텍스트 병합 판단이 재조정 이전 계획값(`units_pages[-1]`)을
+써서 실제 마지막 슬라이드와 어긋남(상세: `docs/ooxml-pitfalls-log.md`).
 
 ## 도형 위치 계산: 1줄 높이를 "박스 height ÷ 고정 줄 수"로 역산하지 않는다
 
@@ -197,22 +216,14 @@ else 'content'` 같은 패턴)에서 `if key == 'content' and txt:` 식으로 "�
 lnSpc(spcPct) 배율을 곱한다(`_content_line_height_emu()`). Pillow/폰트 미존재 시에만 기존
 나눗셈으로 폴백한다.
 
-**주의:** Pillow의 ascent+descent는 PowerPoint 실제 줄 높이보다 약 14~18% 작다(32pt BatangChe
-실측: ascent+descent=44px → lnSpc 미적용 glyph 419,100 EMU, 실제 PowerPoint 단일 줄
-≈487,680 EMU(1.2×32pt) 이상 — 419,100/487,680 ≈ 0.86, 즉 약 14% 작음; lnSpc 110%를 한쪽에만
-곱해 비교하면 최대 ~18%까지 벌어져 보일 수 있으므로 두 값에 항상 같은 조건(lnSpc 포함 여부)을
-적용해 비교해야 한다). 겹침 방지 여백(GAP=2줄)이 이 과소추정을 흡수한다: 겹침 없음 조건은
-`(line_count+GAP)×computed ≥ line_count×real`이고, 위 실측값을 대입하면
-`419,100×(line_count+2) ≥ 487,680×line_count` → `line_count ≤ 12.2`. 즉 GAP=2면 본문 12줄까지
-안전(병합 대상은 5줄 이하이므로 실무 마진 방대). lnSpc 배율은 computed·real 양쪽에 동일하게
-곱해져 비율이 불변이므로 이 결론은 lnSpc 값과 무관하다. 여백을 줄이거나(GAP<2) 이 안전
-마진(line_count>12)을 벗어나는 변경 시 재검토가 필요하다.
+**주의:** Pillow의 ascent+descent는 PowerPoint 실제 줄 높이보다 약 14~18% 작다. 겹침 방지
+여백(GAP=2줄)이 이 과소추정을 흡수하며, 이 조합은 본문 12줄까지 안전하다(병합 대상은 5줄
+이하라 마진 방대). GAP을 줄이거나 line_count>12로 벗어나는 변경 시 재검토 필요 — 보정치 유도
+전체 수식은 `docs/ooxml-pitfalls-log.md` 참고.
 
-**발견 경위 (2026-09-02):** `_reposition_merged_ending_shapes()`가 본문+종료 통합 슬라이드의
-종료 텍스트박스 위치를 `line_height = content_shape.height // 9`로 계산했다. 20260906 제1독서
-마지막 페이지(본문 5줄, 박스 height=2,876,621)에서 이 나눗셈이 실제보다 작은 line_height를
-만들어 종료 텍스트박스가 본문과 약 640,000 EMU 겹쳤다. 줄 수 추정(`_wrap_line_count`)·검증
-함수는 이 겹침을 잡지 못했고(줄 수는 정확했으므로), 실사용자 육안 검수로 발견됐다.
+**발견 경위 (2026-09-02):** `_reposition_merged_ending_shapes()`의
+`line_height = content_shape.height // 9` 나눗셈으로 재현, 실사용자 육안 검수로 발견(상세:
+`docs/ooxml-pitfalls-log.md`).
 
 ## 한글 줄 수 계산: TTC 폰트 인덱스와 Pillow 커닝 한계
 
@@ -220,15 +231,15 @@ lnSpc(spcPct) 배율을 곱한다(`_content_line_height_emu()`). Pillow/폰트 �
 추정한다. 여기서 두 가지를 주의한다.
 
 1. **TTC(트루타입 컬렉션) 인덱스는 실제 파일에서 직접 확인한다.** `batang.ttc`/`gulim.ttc`처럼
-   한 파일에 여러 서체가 들어 있는 경우, "Batang이 index 0일 것"이라고 가정하지 말고
-   `ImageFont.truetype(path, size, index=N).getname()`으로 실제 순서를 확인한다. 이 환경에서는
-   0=Batang, 1=BatangChe / 0=Gulim, 1=GulimChe였다(반대로 가정했다가 폭을 과대평가해 줄 수
-   계산이 틀렸음).
+   한 파일에 여러 서체가 들어 있는 경우, 인덱스를 추측하지 말고
+   `ImageFont.truetype(path, size, index=N).getname()`으로 실제 순서를 확인한다.
 2. **이 환경의 Pillow는 `libraqm`(커닝) 미지원이라 텍스트 폭을 실제보다 넓게 계산한다.**
    `_RENDER_WIDTH_CALIBRATION`(현재 1.03)으로 보정한다. 폰트나 크기 조합이 바뀌면
    `test_missa_regression.py`의 `test_no_reading_slide_line_overflow`로 재검증하고,
-   필요하면 실측 기반으로 재보정한다. `libraqm` 설치는 이 환경(Windows Store Python + pip,
-   conda 없음)에서 비공식 바이너리가 필요해 권장하지 않는다.
+   필요하면 실측 기반으로 재보정한다.
+
+**발견 경위:** TTC 인덱스를 추측(반대로 가정)했다가 줄 수 계산이 틀림, Pillow 폭 과대평가를
+실측으로 확인해 보정치 도입(상세: `docs/ooxml-pitfalls-log.md`).
 
 ## 단락 분리·병합 함수는 run 개수를 2개로 가정하지 않는다
 
@@ -240,11 +251,9 @@ lnSpc(spcPct) 배율을 곱한다(`_content_line_height_emu()`). Pillow/폰트 �
 run만 남기고 나머지 삭제" 같은 방식은 텍스트는 보존해도 중간 run의 색상(서식)을 조용히
 잃어버린다 — 예외 없이 실행되므로 육안 검수 전까지 발견되지 않는다.
 
-**발견 경위 (2026-07-26):** `_split_para_at_lines()`가 앞부분은 `runs[0]`(절 번호)+`runs[1]`
-(본문)만 남기고 `runs[2:]`를 삭제, 뒷부분은 마지막 run만 남기고 나머지를 삭제하는 방식이었다.
-51절과 52절이 continuation으로 병합된 단락(런: [51-오렌지][본문][52-오렌지][본문])이 슬라이드
-경계에서 분리되면서, 중간의 52절 오렌지 run이 흰색 본문 run에 흡수되어 텍스트("52")는 남았지만
-색이 사라졌다. `_missing_orange_verse_numbers()`(§검증) 추가로 이런 사례를 자동으로 잡는다.
+**발견 경위 (2026-07-26):** `_split_para_at_lines()`의 인덱스 고정 삭제 방식이 51/52절 병합
+단락에서 52절 오렌지 run의 색을 지움(상세: `docs/ooxml-pitfalls-log.md`).
+`_missing_orange_verse_numbers()`(§검증) 추가로 이런 사례를 자동으로 잡는다.
 
 ## run별 텍스트를 재작성할 때 옛 run 길이로 통짜 재배치하지 말고 의미 단위 경계로 나눈다
 
@@ -261,16 +270,11 @@ run만 남기고 나머지 삭제" 같은 방식은 텍스트는 보존해도 �
 흡수되어야 하고, 다른 구간이 점유하던 run에 절대 닿으면 안 된다. `_update_prefix_in_runs()`는
 `segments=[(old_text, new_text), ...]`를 받아 세그먼트별로 독립 재배치한다.
 
-**발견 경위 (2026-09-02):** `_update_성가_header()`가 성가 456의 라벨 `2차봉헌`(4자)을
-`CANONICAL_LABEL`로 `2차 봉헌`(5자, 공백 추가)으로 정규화하면서, `_update_prefix_in_runs()`가
-라벨+구분자+숫자를 하나의 문자 스트림으로 통짜 재배치했다. 라벨이 1글자 늘어 문자 위치가 한 칸
-밀리자, 라벨 마지막 글자 `헌`이 원래 구분자 공백 run(소스 제작자가 실수로 회색 bg2 lumMod75000
-으로 칠해둔 run)의 슬롯으로 밀려 그 회색을 물려받아, 20260906 출력의 129~134쪽에서 `헌`만 회색
-으로 렌더링됐다. 정규식 그룹 경계(라벨 vs 구분자+숫자)를 세그먼트로 끊어 각각 독립 재배치하도록
-고쳐, 라벨 길이 변화가 숫자 쪽 run 색상을(또는 반대 방향으로) 침범하지 못하게 했다. 이는 위
-"단락 분리·병합 함수는 run 개수를 2개로 가정하지 않는다"와 같은 계열의 함정이다 — "run 서식을
-보존한다"는 목적은 같아도 "어느 run이 어느 새 글자를 받는가"의 배정 규칙이 부정확하면 색이
-조용히 샌다.
+**발견 경위 (2026-09-02):** `_update_성가_header()`가 라벨 `2차봉헌`→`2차 봉헌`(1자 증가)
+정규화 시 통짜 재배치를 해서, 라벨 마지막 글자가 옆 구분자 run의 회색을 물려받음(상세:
+`docs/ooxml-pitfalls-log.md`). "단락 분리·병합 함수는 run 개수를 2개로 가정하지 않는다"와
+같은 계열의 함정이다 — "run 서식을 보존한다"는 목적은 같아도 "어느 run이 어느 새 글자를
+받는가"의 배정 규칙이 부정확하면 색이 조용히 샌다.
 
 ## 검증: 텍스트 존재가 아니라 절 번호별 오렌지색 렌더링을 확인
 
@@ -279,6 +283,22 @@ run만 남기고 나머지 삭제" 같은 방식은 텍스트는 보존해도 �
 범위 안에서 실제로 오렌지색 run으로 렌더링됐는지 절 번호 단위로 대조한다
 (`_missing_orange_verse_numbers()`). 텍스트만 남고 색이 사라지는 위 버그처럼, "텍스트 존재
 여부"만 보는 검증은 이런 회귀를 통과시킨다.
+
+## 이미지에서 여러 그룹을 크롭할 때는 전역 경계가 아니라 그룹별 경계를 쓴다
+
+한 이미지(페이지 스캔본 등) 안에 여러 그룹(예: 악보 시스템 묶음)을 순서대로 잘라낼 때,
+`detect_content_bounds()`류의 **전역** 좌우 경계를 모든 그룹에 공통으로 쓰면 안 된다. 그 이미지
+안에 그룹과 무관한 다른 줄(제목·저작권 표기 등)이 그룹보다 더 넓게 뻗어 있으면, 전역 경계가 그
+넓은 줄에 맞춰지고 모든 그룹의 크롭이 실제 내용보다 불필요하게 넓어져(그 그룹 우측에 흰 여백이
+남아) 크롭이 "타이트하지 않게" 된다. 그룹별로 잘라야 하는 코드는 반드시 **그 그룹 자신의 행/열
+범위 안에서만** 잉크(내용) 경계를 다시 계산해야 한다(예: `_group_content_bbox(gray, group)` —
+그룹의 top..bottom 행 범위 안의 잉크 열 min/max로 left/right 산출).
+
+**발견 경위 (2026-09-11):** `_content_crop_box`가 전역 `detect_content_bounds(gray)`로 447번
+악보를 크롭하면서, 페이지 맨 아래 저작권 줄이 전역 우측 경계를 오염시켜 모든 시스템 묶음
+크롭이 ~10% 더 넓게 잘림(상세: `docs/ooxml-pitfalls-log.md`). `_group_content_bbox`로 해결,
+`pack_systems`의 fit 판정도 이 헬퍼를 공유해야 했다(전역 경계를 쓰면 종횡비 과소평가로 오판
+가능).
 
 ## 회귀 테스트
 

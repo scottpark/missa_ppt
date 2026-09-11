@@ -5,6 +5,9 @@ build/
 missa_to_ppt.exe
 .claude/settings.local.json
 
+# tools/build_dist_zip.py 산출물(exe+assets 배포 zip) — 빌드 결과물, 커밋 대상 아님
+missa_to_ppt.zip
+
 # 날짜별 미사 작업 폴더(output/YYYYMMDD/)는 입력/출력 산출물이라 매번 커밋할 필요가 없다.
 # 회귀 테스트 픽스처로 쓰이는 3개(20260624 평일·20260705 성수축복·20260712 주일)만 추적한다.
 /output/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
@@ -19,3 +22,13 @@ _workspace_*/
 # 리팩토링 골든 마스터 diff 도구(tools/golden_diff.py) 산출물 — 로컬 전용
 _golden/
 _golden_check_tmp/
+
+# reference/ 전체 — 참조용 원본 자료(PDF 성가집, 화답송 악보 사진/PPT 등)는 로컬 전용으로
+# 두고 git에 커밋하지 않는다(대용량·저작권 자료 포함). 관련 스크립트/테스트는 파일이 없으면
+# skip하도록 작성한다(예: test_missa_progression.py의 _YOUTH_PDFS_AVAILABLE 가드).
+/reference/
+
+# 나주노 Copyright OCR 캐시 생성(tools/build_나주노_copyright_cache.py) 전용 개발 도구 자산.
+# 런타임/exe는 assets/나주노_copyright_bbox_cache.json만 읽고 Tesseract를 호출하지 않으므로
+# 최종 사용자에게는 불필요 — 개발 PC에 Tesseract 설치 시 kor+eng traineddata를 직접 받는다.
+/assets/tessdata/

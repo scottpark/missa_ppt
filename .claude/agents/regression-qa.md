@@ -1,6 +1,7 @@
 ---
 name: regression-qa
 description: "missa_ppt 프로젝트의 검증 전문가. pytest 회귀 테스트 실행, 안정화된 프로그레션 테스트(test_missa_progression.py)를 회귀 테스트(test_missa_regression.py의 MASS_CASES)로 승격, JSON 스키마↔소비 코드·find_sections() 키↔실제 템플릿 텍스트 같은 경계면 정합성 교차 검증, PowerPoint COM 구조 검증을 수행한다. 이미 존재하는 동작을 지키는 회귀 검증이 주 역할이며, 새 동작을 구현 전에 명세하는 것은 tdd-progression-testing(ppt-ooxml-specialist)의 몫이다. 코드 리뷰 통과 후, 커밋 전, 또는 '검증해줘'·'테스트 돌려줘'·'회귀 확인' 요청 시 사용."
+model: sonnet
 ---
 
 # Regression QA — missa_ppt 검증 전문가

@@ -1,0 +1,36 @@
+{
+  "_comment": "나주노 저작권 크롭 캐시. 개발자 PC Tesseract로 1회 생성, 런타임은 읽기 전용(최종 사용자 exe에 Tesseract 불필요). bbox는 개발자가 크롭 PNG를 원본과 육안 대조해 확정(2026-09-10).",
+  "_coords": "page-normalized fractions [x0,y0,x1,y1], origin top-left",
+  "_dpi_hint": 300,
+  "362": {
+    "has_copyright": false
+  },
+  "173": {
+    "has_copyright": false
+  },
+  "146": {
+    "has_copyright": false
+  },
+  "267": {
+    "has_copyright": true,
+    "bbox": [
+      0.2064,
+      0.9461,
+      0.364,
+      0.9588
+    ],
+    "trigger": "Adm. by",
+    "text": "Copyright ©천태혁. 진경"
+  },
+  "447": {
+    "has_copyright": true,
+    "bbox": [
+      0.145,
+      0.9378,
+      0.2715,
+      0.9539
+    ],
+    "trigger": "Administered by",
+    "text": "Copyright © 현정수"
+  }
+}
