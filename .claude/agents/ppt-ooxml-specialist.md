@@ -79,9 +79,22 @@ lxml로 직접 조작하는 부분이 많고, 여기서 발생한 실제 버그�
 - 작업 요청: 공유 작업 목록에서 "구현" 유형 작업을 요청(claim), 설계 작업(architect)에
   의존(depends_on)하는 작업만 시작
 
+## 테스트 실행 범위 (2026-09-24 정책)
+
+`test_missa_regression.py`는 `TestIsSundayMass`/`TestWrapLineCount`/`TestSplitAndAdjustViaCom`/
+`TestComVerify` 등 기능별 클래스로 이미 나뉘어 있고, OneDrive/GUI-OneDrive/COM검증/업데이터는
+별도 파일(`test_missa_onedrive.py`/`test_missa_gui_onedrive.py`/`test_ppt_com_verify.py`/
+`test_missa_updater.py`)로 분리돼 있다. **TDD 루프 도중에는 지금 건드리는 항목과 직접·간접
+관련된 클래스/파일만** `-k`나 `::클래스명`으로 좁혀 돌린다 — 예: GUI 팝업만 바꿨으면
+`pytest tests/test_missa_gui_onedrive.py -v`, 줄 수 계산 로직을 바꿨으면
+`pytest tests/test_missa_regression.py -k "WrapLineCount or SplitAndAdjustViaCom" -v`. 관련 없는
+도메인(예: UI 문구만 바꿨는데 PowerPoint COM을 띄우는 `TestComVerify`)까지 매번 돌리지 않는다
+— 느리기만 하고 실제로 걸릴 가능성이 없다. **전체 스위트는 ooxml-code-reviewer에게 리뷰 요청을
+보내기 직전, 딱 한 번만** 돌려 최종 확인한다(그 이후 전체 재확인은 regression-qa의 몫).
+
 ## 에러 핸들링
 
-- `pytest test_missa_regression.py`가 기존 케이스(20260712, 20260624)를 깨뜨리면, 새 기능이
+- `pytest tests/test_missa_regression.py`가 기존 케이스(20260712, 20260624)를 깨뜨리면, 새 기능이
   기존 동작을 침범했다는 뜻이다 — 롤백하고 원인을 찾는다. 새 기능이 기존 회귀를 희생시켜서는
   안 된다
 - pywin32/PowerPoint COM을 쓸 수 없는 환경에서는 COM 실측 코드가 자동 폴백하는지 확인만 하고,

@@ -159,12 +159,27 @@ def parse_section(soup, section_name: str):
 
 def extract_liturgy_name(soup) -> str:
     meta = soup.find("meta", attrs={"name": "title"})
+    name = ""
     if meta and meta.get("content"):
         # "2026.06.14 [녹] 연중 제11주일" → "연중 제11주일"
         parts = meta["content"].split("]")
         if len(parts) > 1:
-            return parts[-1].strip()
-    return ""
+            name = parts[-1].strip()
+
+    # §J8 — <h3 id="missa_title"> 안에 부제가 <sub> 태그로 별도로 들어갈 때가 있다
+    # (예: "(세계 이주민과 난민의 날)"). meta 태그 파싱(위)은 그대로 두고 — 기존 회귀
+    # 픽스처(20260624/20260705/20260712)가 이 함수에 의존하므로 기존 동작 보존이
+    # 최우선 — <sub> 텍스트가 있으면 공백 하나를 두고 결과에 덧붙인다.
+    if name:
+        h3 = soup.find("h3", id="missa_title")
+        if h3:
+            sub = h3.find("sub")
+            if sub:
+                sub_text = sub.get_text(strip=True)
+                if sub_text:
+                    name = f"{name} {sub_text}"
+
+    return name
 
 
 def parse_missa(html: str, date_str: str) -> dict:

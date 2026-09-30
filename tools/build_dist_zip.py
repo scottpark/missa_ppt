@@ -18,9 +18,10 @@ BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 from missa_psalm_score_image import ASSET_TEMPLATE  # noqa: E402  (assets 경로 단일 출처)
 
-EXE = BASE / "missa_to_ppt.exe"
+DIST_DIR = BASE / "dist"
+EXE = DIST_DIR / "missa_to_ppt.exe"
 ASSETS_DIR = BASE / "assets"
-DEST_ZIP = BASE / "missa_to_ppt.zip"
+DEST_ZIP = DIST_DIR / "missa_to_ppt.zip"
 
 
 def build() -> Path:

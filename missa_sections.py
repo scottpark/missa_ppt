@@ -11,10 +11,21 @@ import io
 import re
 from pathlib import Path
 
+from pptx.enum.shapes import MSO_SHAPE_TYPE
+
 from missa_ooxml_utils import (
-    _slide_text, all_slide_texts, find_slide_with_text, find_shape_exact_text,
+    HYMN_TYPES, _slide_text, all_slide_texts, find_slide_with_text, find_shape_exact_text,
 )
 from missa_reading_layout import ORANGE, parse_into_verse_units
+
+
+# 성가 5종의 라벨 키워드(슬라이드 텍스트 매칭용). missa_content_updaters.py의 title/헤더
+# 재구성 함수들도 같은 매핑을 써야 하므로 모듈 상수로 노출한다(사본을 따로 두면 한쪽만
+# 갱신되는 드리프트 위험).
+HYMN_LABEL_KW = {
+    '입당': '입 당', '봉헌': '봉 헌', '성체': '성 체',
+    '2차봉헌': '2차 봉헌', '파견': '파 견',
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -97,9 +108,102 @@ def find_복음_content_range(prs, title_idx: int) -> tuple:
 
 
 
-def find_sections(prs) -> dict:
+def _find_youth_title_shape(slide, type_kw: str):
+    """청년미사용 성가 title(구 코드의 'divider') 도형을 반환(없으면 None).
 
-    """PPT 내 모든 섹션 위치를 찾아 dict로 반환."""
+    기존 `_is_hymn_divider()`는 "라벨+순수숫자" 2단락을 기대하지만, 청년 템플릿은
+    "라벨+제목+출처문장" 3단락(번호가 다른 텍스트와 섞임)이라 매칭되지 않는다(실측).
+    번호 조건을 빼고 라벨 텍스트만 보면, 114번("파 견" 인사말, PLACEHOLDER 도형)이 116번
+    (진짜 파견 title, AUTO_SHAPE 도형)보다 먼저 매칭되는 충돌이 생긴다 — 실측 결과 진짜
+    title 6장(12/65/103/106/109/116)은 전부 AUTO_SHAPE 도형 안에 라벨이 있어, shape 타입으로
+    충돌 없이 구분할 수 있다(CLAUDE.md "텍스트 키워드로 도형을 식별할 때 부분 문자열 충돌
+    주의"와 같은 계열의 함정 — 여기서는 shape 타입을 부가 신호로 좁혀 회피)."""
+    for shape in slide.shapes:
+        if not shape.has_text_frame:
+            continue
+        if shape.shape_type != MSO_SHAPE_TYPE.AUTO_SHAPE:
+            continue
+        for para in shape.text_frame.paragraphs:
+            t = para.text.strip()
+            if t == type_kw or t == type_kw.replace(' ', ''):
+                return shape
+    return None
+
+
+def _is_hymn_title_youth(slide, type_kw: str) -> bool:
+    return _find_youth_title_shape(slide, type_kw) is not None
+
+
+def _slide_has_picture(slide) -> bool:
+    return any(shape.shape_type == MSO_SHAPE_TYPE.PICTURE for shape in slide.shapes)
+
+
+def _find_hymn_songs_youth(prs, kw: str) -> list:
+    """청년미사 성가 title~content 범위를 곡 단위 리스트로 반환.
+
+    콘텐츠 범위는 "빈 슬라이드까지" 대신 "PICTURE 도형이 있는 슬라이드까지"로 판정한다
+    (실측: 입당 content 13-16은 전부 악보 Picture가 있고, 뒤이은 구분 슬라이드 17은
+    "▶" 텍스트만 있는 AUTO_SHAPE라 비어있지 않지만 Picture는 없다 — 텍스트 유무 기준으로는
+    17번이 콘텐츠로 잘못 흡수된다).
+
+    성체처럼 두 번째 곡이 구분 슬라이드 없이 바로 이어지는 경우(103→104,105→106)에만
+    다음 곡을 계속 찾는다 — 두 번째 title이 첫 곡의 content_end 바로 그 자리에 있을 때만
+    "같은 페이지에 이어지는 곡"으로 보고, 그렇지 않으면(다른 htype 라벨이 우연히 뒷부분에
+    다시 나타나는 경우 등) 확장하지 않는다.
+
+    **알려진 제약 (독립 리뷰에서 발견, 02b_review_report.md §의심 1)**: "기타" 출처 콘텐츠
+    슬라이드(예: 107번)는 가사 placeholder뿐이라 원래 악보 Picture가 없어야 정상이지만,
+    참조 PPT의 107번은 우연히 작은 저작권 워터마크 Picture(104/105와 동일 위치·크기)가
+    남아 있어 이 PICTURE 기준을 통과한다. 향후 누군가 그 잔여 이미지를 정리하거나, 다른
+    본당 템플릿의 "기타" 콘텐츠 슬라이드가 정말로 Picture 없이 텍스트만 있으면
+    `content_end == content_start`(빈 범위)가 되어 `_replace_one_youth_song`의 기타 헤더
+    갱신 게이트(`if cs < ce:`)가 조용히 스킵된다(예외 없음). 새 템플릿을 붙일 때는 이
+    가정이 여전히 성립하는지 먼저 실측 확인할 것."""
+    n = len(prs.slides)
+    songs = []
+    search_from = 0
+    while True:
+        title_idx = -1
+        for i in range(search_from, n):
+            if _is_hymn_title_youth(prs.slides[i], kw):
+                title_idx = i
+                break
+        if title_idx == -1:
+            break
+        cs = title_idx + 1
+        ce = cs
+        j = cs
+        while j < n and _slide_has_picture(prs.slides[j]):
+            ce = j + 1
+            j += 1
+        songs.append({'title_idx': title_idx, 'content_start': cs, 'content_end': ce})
+        search_from = ce
+        if not (search_from < n and _is_hymn_title_youth(prs.slides[search_from], kw)):
+            break
+    return songs
+
+
+def _find_복음환호송_middle(texts) -> int:
+    """'복음 환호송' 라벨이 붙은 연속 슬라이드 블록 중, 그날 구절(○로 시작)이 있는
+    가운데 슬라이드만 반환. 앞/뒤 고정 슬라이드는 라벨은 같아도 '○'가 없다(실측: 48/50은
+    고정 알렐루야뿐, 49만 '○ 너는 베드로이다...'로 시작). 성인 템플릿(복음환호송이 1장뿐,
+    라벨+○가 같은 슬라이드에 공존)에서도 참이라 mass_type 분기 없이 공용으로 쓴다."""
+    for i, t in enumerate(texts):
+        if '복음 환호송' not in t and '복음환호송' not in t:
+            continue
+        if '○' in t:
+            return i
+    return -1
+
+
+def find_sections(prs, mass_type: str = 'adult') -> dict:
+
+    """PPT 내 모든 섹션 위치를 찾아 dict로 반환.
+
+    mass_type='adult'(기본값)는 기존 동작을 100% 보존한다. mass_type='youth'는 성가 5종의
+    title/content 탐지를 `_find_hymn_songs_youth()`로 교체하고 `{htype}_songs` 리스트를
+    추가로 채운다(기존 flat 키 `{htype}_divider`/`_content_start`/`_content_end`는 첫 곡을
+    가리키는 alias로 그대로 유지 — `insert_공지사항()` 등 기존 호출부 하위 호환)."""
 
     sections = {'title': 0}
 
@@ -221,17 +325,13 @@ def find_sections(prs) -> dict:
 
 
 
-    # 복음환호송
+    # 복음환호송 (가운데 슬라이드: '○'로 시작하는 그날 구절이 있는 슬라이드)
 
-    for i in range(n):
+    idx = _find_복음환호송_middle(texts)
 
-        t = texts[i]
+    if idx >= 0:
 
-        if '복음 환호송' in t or '복음환호송' in t:
-
-            sections['복음환호송'] = i
-
-            break
+        sections['복음환호송'] = idx
 
 
 
@@ -267,41 +367,58 @@ def find_sections(prs) -> dict:
 
     # 성가 섹션 (divider + content)
 
-    HYMN_KEYWORDS = {
+    HYMN_KEYWORDS = HYMN_LABEL_KW
 
-        '입당': '입 당', '봉헌': '봉 헌', '성체': '성 체',
+    if mass_type == 'youth':
 
-        '2차봉헌': '2차 봉헌', '파견': '파 견',
+        for htype, kw in HYMN_KEYWORDS.items():
 
-    }
+            songs = _find_hymn_songs_youth(prs, kw)
 
-    for htype, kw in HYMN_KEYWORDS.items():
+            if not songs:
 
-        for i in range(n):
+                continue
 
-            slide = prs.slides[i]
+            sections[f'{htype}_songs'] = songs
 
-            if _is_hymn_divider(slide, kw):
+            # 하위 호환 alias: 기존 flat 키는 첫 곡을 가리킨다(insert_공지사항() 등 재사용)
+            first = songs[0]
 
-                sections[f'{htype}_divider'] = i
+            sections[f'{htype}_divider'] = first['title_idx']
 
-                cs = i + 1
+            sections[f'{htype}_content_start'] = first['content_start']
 
-                ce = cs
+            sections[f'{htype}_content_end'] = first['content_end']
 
-                for j in range(cs, n):
+    else:
 
-                    if not texts[j].strip():
+        for htype, kw in HYMN_KEYWORDS.items():
 
-                        break
+            for i in range(n):
 
-                    ce = j + 1
+                slide = prs.slides[i]
 
-                sections[f'{htype}_content_start'] = cs
+                if _is_hymn_divider(slide, kw):
 
-                sections[f'{htype}_content_end'] = ce
+                    sections[f'{htype}_divider'] = i
 
-                break
+                    cs = i + 1
+
+                    ce = cs
+
+                    for j in range(cs, n):
+
+                        if not texts[j].strip():
+
+                            break
+
+                        ce = j + 1
+
+                    sections[f'{htype}_content_start'] = cs
+
+                    sections[f'{htype}_content_end'] = ce
+
+                    break
 
 
 
@@ -338,10 +455,6 @@ def _is_hymn_divider(slide, type_kw: str) -> bool:
                 has_number = True
 
     return has_type and has_number
-
-
-
-
 
 
 
@@ -441,7 +554,13 @@ def _missing_orange_verse_numbers(prs, start: int, end: int, content: str) -> li
     return sorted(expected - found, key=lambda v: [int(x) for x in v.split(',')])
 
 
-def validate(prs, json_data: dict, is_sunday: bool = True) -> bool:
+def validate(prs, json_data: dict) -> bool:
+    # (2026-09-17) 화답송 라벨 체크가 항상 실행되도록 단순화되면서(§4.3/§8.6) 이 함수
+    # 본문 어디에서도 "주일/평일" 축을 더 이상 참조하지 않는다. 예전엔 is_sunday 매개변수를
+    # 받았는데, 남겨두면 호출부가 이름과 반대 의미의 값을 넘겨도(실제로 그랬었다 — 독립
+    # 리뷰에서 발견) 아무 문제가 드러나지 않아 조용한 함정이 된다. 파라미터 자체를 제거해
+    # 그 함정을 구조적으로 없앴다(CLAUDE.md 계열 원칙: 안 쓰는 파라미터를 "혹시 몰라서"
+    # 남기지 않는다).
 
     texts = all_slide_texts(prs)
 
@@ -459,15 +578,22 @@ def validate(prs, json_data: dict, is_sunday: bool = True) -> bool:
 
 
 
+    # 화답송 라벨은 평일 포맷에서도 존재한다(실측 확인) — is_sunday로 게이팅할 근거가 없어
+    # 항상 체크하도록 단순화했다(청년미사 2단계 설계 §4.3/§8.6, 애매한 축을 표시형식 플래그에
+    # 얹는 다섯 번째 암묵적 결합을 만들지 않기 위함). 평일 템플릿 라벨은 "화 답 송"(공백 포함)
+    # 형식이라(실측: 20260624), 주일 템플릿의 공백 없는 "화답송"과 두 변형 모두 확인해야
+    # 오탐 경고가 나지 않는다(find_sections()의 화답송 탐지와 동일한 OR 패턴).
     check_kws = ['입당송', '영성체송']
-    if is_sunday:
-        check_kws.append('화답송')
 
     for kw in check_kws:
 
         if not any(kw in t for t in texts):
 
             warnings.append(f'{kw} 슬라이드 없음')
+
+    if not any('화답송' in t or '화 답 송' in t for t in texts):
+
+        warnings.append('화답송 슬라이드 없음')
 
 
 

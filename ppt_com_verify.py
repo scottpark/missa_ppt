@@ -25,7 +25,14 @@ PowerPoint 렌더링과 대조하는 보조 수단이다.
   PowerPoint를 띄우면 이미 감수하기로 한 실행당 10~80초 오버헤드가 분 단위로
   불어난다.
 - `app.Visible = True`로 둔다 — PowerPoint COM 자동화는 모든 버전에서
-  안정적으로 완전히 숨겨서 돌릴 수 없다(버그가 아니라 받아들인 제약).
+  안정적으로 완전히 숨겨서 돌릴 수 없다(버그가 아니라 받아들인 제약). 다만
+  이건 **Application 자체**의 얘기고, **개별 프레젠테이션 창**은 별개다 —
+  `Presentations.Add`/`Presentations.Open` 둘 다 `WithWindow=False`로 열어서
+  검증 대상 프레젠테이션마다 창이 뜨고 닫히는 것(사용자 보고: 화면이 떴다
+  닫혔다 반복되는 플리커, 2026-09-18)을 막는다. `Application.Visible=True`는
+  유지되므로 최초 Dispatch 시점에 PowerPoint 프로세스/작업표시줄 아이콘이
+  나타날 수 있다 — 그래서 `_ensure_app()`이 최초 1회 콘솔에 안내 메시지를
+  출력해, 처음 쓰는 사용자가 놀라지 않게 한다.
 - 여는 프레젠테이션은 항상 읽기 전용으로 열고(`ReadOnly=True`), 저장은 절대
   하지 않는다.
 - `Presentations.Open(...)`으로 연 프레젠테이션은 측정 성공/실패와 무관하게
@@ -75,12 +82,23 @@ def _ensure_app():
         _com_initialized = True
 
     if _app is None:
+        # §J7(2026-09-26) 실측: EnumWindows로 PP12FrameClass 프레임 창을 직접 찾아
+        # GetForegroundWindow()와 비교(Dispatch 직후·Presentations.Open() 측정 도중 각각
+        # 2회 반복) — Application.Visible=True로 프레임 창이 실제로 IsWindowVisible=1
+        # (작업표시줄에 나타남) 상태가 되지만, 두 시점 모두 포그라운드는 바뀌지 않았다.
+        # 창이 전혀 뜨지 않는다는 예전 주장은 이 실측과 어긋나므로 쓰지 않는다 — 창은
+        # 실제로 나타나지만 지금 쓰고 있는 창의 포커스를 가져가지는 않는다는 사실만 말한다.
+        print('  [알림] 줄 수를 정확히 확인하려고 PowerPoint를 백그라운드에서 실행합니다 '
+              '(작업표시줄에 잠깐 나타날 수 있지만, 지금 쓰고 있는 창의 포커스를 '
+              '가져가지는 않습니다).')
         app = win32com.client.Dispatch("PowerPoint.Application")
         app.Visible = True
         _app = app
 
     if _keepalive_presentation is None:
-        _keepalive_presentation = _app.Presentations.Add()
+        # WithWindow=False — 프레임을 살려두는 용도일 뿐 사용자에게 보여줄 필요가
+        # 없다(위 "설계 제약" 참고, 2026-09-18 플리커 수정).
+        _keepalive_presentation = _app.Presentations.Add(WithWindow=False)
 
     return _app
 
@@ -110,7 +128,7 @@ def _open_and_measure(temp_pptx_path: str, shape_index: int) -> int:
         temp_pptx_path,
         ReadOnly=True,
         Untitled=False,
-        WithWindow=True,
+        WithWindow=False,
     )
     try:
         shape = presentation.Slides(1).Shapes(shape_index)

@@ -5,3 +5,4 @@ Pillow
 pywin32
 pytest
 requests
+msal

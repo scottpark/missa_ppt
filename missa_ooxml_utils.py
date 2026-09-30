@@ -294,9 +294,15 @@ def duplicate_slide(prs, src_idx: int) -> int:
 
     src_slide = prs.slides[src_idx]
 
-    blank_layout = _blank_layout(prs)
-
-    new_slide = prs.slides.add_slide(blank_layout)
+    # 같은 프레젠테이션 안의 복제이므로 src_slide.slide_layout이 항상 존재·유효하다 —
+    # _blank_layout(prs)("Blank"/"빈 화면"/"blank" 중 slide_layouts를 순회해 첫 매칭)로
+    # 대체하면 안 된다. 한 프레젠테이션에 이름이 다른 두 "빈" 레이아웃이 공존할 때(예:
+    # 청년미사 성가 템플릿은 슬라이드 0이 '빈 화면'을 쓰는데 레이아웃 목록에는 'Blank'가
+    # '빈 화면'보다 먼저 나온다) _blank_layout()이 원본과 다른 레이아웃을 골라, 복제된
+    # 슬라이드들끼리 레이아웃이 갈라진다(2026-09-24 실사용자 보고 — 나주노 151 슬라이드
+    # 14='빈 화면', 15~17='Blank'). "슬라이드 복사 시 배경/서식 재설정 금지" 원칙(CLAUDE.md)이
+    # p:bg/showMasterSp뿐 아니라 레이아웃 자체에도 적용돼야 한다는 사례.
+    new_slide = prs.slides.add_slide(src_slide.slide_layout)
 
 
 

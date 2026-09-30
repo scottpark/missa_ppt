@@ -44,7 +44,16 @@ _INK = 128
 # 텍스트(≤0.346) 사이 안전한 중앙이다.
 _STAFF_ROW_FILL = 0.40
 _BLANK_ROW_FILL = 0.005       # 이 비율 미만 잉크 행 = 공백(콘텐츠 폭 기준)
-_MIN_STAFF_ROWS = 3           # 세그먼트에 오선행이 이만큼 있으면 '시스템'(5선 중 일부라도)
+# 151번은 위 5곡 실측 범위를 벗어난다: 저작권 두 줄(영문, 글자가 조밀)의 row_fill이 최대
+# 0.438까지 올라가 _STAFF_ROW_FILL(0.40)을 5개 행에서 넘는다 — _MIN_STAFF_ROWS=3이면 이
+# 저작권 줄이 그대로 '시스템'으로 오검출돼 스퓨리어스 그룹(=슬라이드)이 생긴다(2026-09-24
+# 실사용자 보고, output/20260919 산출물 슬라이드 17이 악보 대신 저작권 텍스트를 보여줌).
+# _STAFF_ROW_FILL 자체를 올리는 방법(예: 0.5)은 362/447처럼 약한 진짜 시스템(오선이 얇거나
+# 스캔이 흐려 max_fill이 0.5~0.56에 불과한 시스템)을 탈락시키는 회귀를 실측으로 확인해
+# 채택하지 않았다. 대신 "행 개수" 축으로 분리한다 — 7개 곡 40개 실제 시스템 밴드를 전수
+# 조사한 결과 row_fill>0.40인 행이 가장 적은 시스템도 12개였고(447), 151 저작권 줄은 5개뿐
+# 이었다(margin 12 vs 5, _STAFF_ROW_FILL의 margin 0.5 vs 0.438보다 훨씬 넓어 더 안전).
+_MIN_STAFF_ROWS = 8           # 세그먼트에 오선행이 이만큼 있으면 '시스템'(5선 중 일부라도)
 # 시스템 사이 여백은 시스템 내부 여백(코드/오선/가사 간)보다 크다. 이 값보다 짧은 공백은
 # 한 시스템 내부로 보고 병합한다. 페이지 높이 비례(스캔 해상도 불변) + 하한.
 _SYSTEM_GAP_RATIO = 0.017
@@ -53,12 +62,31 @@ _SYSTEM_GAP_MIN = 20
 # 실행 파일 옆 자산 폴더(missa_psalm_score_image._BASE와 동일 관용, PyInstaller onefile 회피).
 _BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 
+# 배포 zip이 원본 PDF 2개를 이 경로에 그대로 포함해 배포한다(tools/build_youth_dist_zip.py).
+# 개발 PC에서도 같은 경로(cache/청년미사_성가원본/)에 원본을 두고 쓴다 — reference/나
+# OneDrive 조회 폴백은 없다(2026-09-27, "성가 원본은 매번 OneDrive에서 곡 단위로 받아오는
+# 것이 아니라 배포 시점에 통째로 포함한다"는 결정 — 상세는 CLAUDE.md 참고).
+_CACHE_DIR = _BASE / "cache" / "청년미사_성가원본"
+
 SOURCES = {
-    "나주노": {"pdf": str(_BASE / "reference" / "청년미사" / "N Hymns_Songs 나는 주님께 노래하리라.pdf"),
-              "kind": "scan"},
-    "야훼 이레": {"pdf": str(_BASE / "reference" / "청년미사" / "Y Hymns_Songs 야훼이레.pdf"),
-                "kind": "text"},
+    "나주노": {"pdf": str(_CACHE_DIR / "N Hymns_Songs 나는 주님께 노래하리라.pdf"),
+              "kind": "scan", "onedrive_subfolder": "나주노 성가"},
+    "야훼 이레": {"pdf": str(_CACHE_DIR / "Y Hymns_Songs 야훼이레.pdf"),
+                "kind": "text", "onedrive_subfolder": "야훼이레 성가"},
 }
+
+
+def _resolve_pdf_path(source: str) -> Path:
+    """SOURCES[source]의 PDF 원본 경로를 반환한다 — 항상 `_CACHE_DIR`(배포 zip이 원본을
+    미리 담아두는 고정 위치) 하나만 확인한다. 없으면 배포가 잘못된 것이므로 즉시 명확한
+    오류로 중단한다(조용한 OneDrive 폴백 없음)."""
+    pdf_path = Path(SOURCES[source]["pdf"])
+    if not pdf_path.exists():
+        raise FileNotFoundError(
+            f"{source} 성가집 PDF를 찾을 수 없습니다: {pdf_path}\n"
+            "배포 zip에 원본 PDF가 빠졌거나 삭제된 것 같습니다 — 개발 담당자에게 문의해 주세요."
+        )
+    return pdf_path
 
 # 헤더 표시명 매핑: SOURCES 키/CLI/find_song_* 내부 조회는 원본 키("야훼 이레")를 유지하되
 # 헤더에 렌더되는 문자열만 공백 없는 표시명으로 바꾼다(요청 항목 3). SOURCES 키를 바꾸면
@@ -95,7 +123,7 @@ _EMU_PER_PT = 12700
 def _open(source: str) -> fitz.Document:
     if source not in SOURCES:
         raise ValueError(f"알 수 없는 출처: {source!r} (지원: {list(SOURCES)})")
-    return fitz.open(SOURCES[source]["pdf"])
+    return fitz.open(str(_resolve_pdf_path(source)))
 
 
 def _naju_toc_entry(number: int):
@@ -713,7 +741,7 @@ def build_hymn_pptx(구분: str, 출처: str, number: int, title: str = None) ->
         title = find_song_title(출처, number)
 
     pi = find_song_page(출처, number)
-    doc = fitz.open(SOURCES[출처]["pdf"])
+    doc = fitz.open(str(_resolve_pdf_path(출처)))
     try:
         page = doc[pi]
         y_range = None if SOURCES[출처]["kind"] == "scan" else find_song_y_range(page, 출처, number)

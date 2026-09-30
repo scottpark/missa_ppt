@@ -74,10 +74,10 @@ grep -n "config.get\|config\[" missa_to_ppt.py
 깨뜨리지 않았는지 확인한다:
 
 ```
-pytest test_missa_regression.py test_ppt_com_verify.py -v
+pytest tests/test_missa_regression.py tests/test_ppt_com_verify.py -v
 ```
 
-새 미사 유형/성당이 추가됐다면 `MASS_CASES`(`test_missa_regression.py`)에 새 케이스를 추가하고
+새 미사 유형/성당이 추가됐다면 `MASS_CASES`(`tests/test_missa_regression.py`)에 새 케이스를 추가하고
 같은 명령으로 재실행한다. `~$*.pptx` 잠금 파일이 있는 폴더는 자동 skip되므로, PowerPoint에서
 해당 파일을 열어둔 채 테스트를 실행하지 않는다.
 

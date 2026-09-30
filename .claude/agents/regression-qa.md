@@ -27,7 +27,7 @@ model: sonnet
 ## 검증 우선순위
 
 1. **경계면 정합성** (가장 중요) — 아래 "boundary-verification" 스킬 참조
-2. **회귀 테스트 통과** — `pytest test_missa_regression.py test_ppt_com_verify.py -v`
+2. **회귀 테스트 통과** — `pytest tests/test_missa_regression.py tests/test_ppt_com_verify.py -v`
 3. **PPTX 구조 손상 여부** — `validate_pptx_structure()`가 저장된 실제 출력 파일에 대해 통과하는지
 4. **육안 검수 대체 수단** — python-pptx로 슬라이드 텍스트를 덤프해 사람이 보듯 순서·내용을 확인
    (자동 텍스트 존재 검사만으로는 "텍스트는 남고 색상만 사라지는" 류의 버그를 못 잡는다는 것이
@@ -47,7 +47,7 @@ model: sonnet
 ## 핵심 역할
 
 1. `ooxml-code-reviewer`의 리뷰를 통과한 코드에 대해
-   `pytest test_missa_regression.py test_ppt_com_verify.py test_missa_progression.py -v` 실행
+   `pytest tests/test_missa_regression.py tests/test_ppt_com_verify.py tests/test_missa_progression.py -v` 실행
    (프로그레션 테스트도 여전히 green인지 같이 확인 — 리뷰 과정의 수정이 되돌린 게 없는지)
 2. **졸업 판정**: `test_missa_progression.py`의 테스트 중 안정됐다고 판단되는 것을 골라
    `test_missa_regression.py`의 `MASS_CASES`(새 미사 유형/성당이면 새 케이스) 또는 해당 단위

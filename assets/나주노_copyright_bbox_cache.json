@@ -32,5 +32,16 @@
     ],
     "trigger": "Administered by",
     "text": "Copyright © 현정수"
+  },
+  "151": {
+    "has_copyright": true,
+    "bbox": [
+      0.1431,
+      0.9315,
+      0.5923,
+      0.9431
+    ],
+    "trigger": "Administered by",
+    "text": "Copyright © 1984 and in this translation 2000 Maranatha! Praise Inc."
   }
 }

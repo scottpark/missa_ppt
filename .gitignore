@@ -2,18 +2,30 @@ __pycache__/
 *.pyc
 .pytest_cache/
 build/
-missa_to_ppt.exe
 .claude/settings.local.json
 
-# tools/build_dist_zip.py 산출물(exe+assets 배포 zip) — 빌드 결과물, 커밋 대상 아님
-missa_to_ppt.zip
+# tools/build_dist_zip.py(성인, exe+assets)·tools/build_youth_dist_zip.py(청년, 소스zip)
+# 산출물 — 전부 재생성 가능한 빌드 결과물이라 dist/ 폴더 전체를 커밋 대상에서 뺀다
+# (2026-10-01, 이전엔 저장소 루트에 흩어져 있었다).
+/dist/
 
-# 날짜별 미사 작업 폴더(output/YYYYMMDD/)는 입력/출력 산출물이라 매번 커밋할 필요가 없다.
-# 회귀 테스트 픽스처로 쓰이는 3개(20260624 평일·20260705 성수축복·20260712 주일)만 추적한다.
+# tools/build_shortcuts.py 산출물(§J9) — 절대경로가 실행한 PC 기준으로 박히는 개인화
+# 바로가기라 커밋 대상 아님(config.json과 같은 이유).
+*.lnk
+
+# 날짜별 미사 작업 폴더(output/YYYYMMDD/, 청년미사는 output/YYYYMMDD_youth/)는 입력/출력
+# 산출물이라 매번 커밋할 필요가 없다. 회귀 테스트 픽스처로 쓰이는 3개(20260624 평일·
+# 20260705 성수축복·20260712 주일)만 추적한다. _youth 패턴은 2026-10-01 추가 — 기존
+# 패턴이 "_youth" 접미사가 붙은 청년미사 폴더(예: output/20260926_youth/)를 놓치고 있었다.
 /output/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
+/output/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_youth/
 !/output/20260624/
 !/output/20260705/
 !/output/20260712/
+
+# K2(2026-09-27) — OneDrive 다운로드 파일 공유 캐시(날짜 폴더와 별개, 실행 PC별 로컬 상태).
+# output/과 같은 이유로 커밋 대상 아님.
+/onedrive_cache/
 
 # 하네스(mass-ppt-dev) 팀 작업 중간 산출물 — 감사 추적용 로컬 파일, 커밋 대상 아님
 _workspace/
@@ -28,7 +40,14 @@ _golden_check_tmp/
 # skip하도록 작성한다(예: test_missa_progression.py의 _YOUTH_PDFS_AVAILABLE 가드).
 /reference/
 
+# missa_youth_hymn_pdf._resolve_pdf_path()가 reference/에 원본이 없을 때(배포 PC 최초 실행 등)
+# OneDrive에서 내려받아 캐싱해두는 폴더 — reference/와 같은 이유로 git에 포함하지 않는다.
+/cache/
+
 # 나주노 Copyright OCR 캐시 생성(tools/build_나주노_copyright_cache.py) 전용 개발 도구 자산.
 # 런타임/exe는 assets/나주노_copyright_bbox_cache.json만 읽고 Tesseract를 호출하지 않으므로
 # 최종 사용자에게는 불필요 — 개발 PC에 Tesseract 설치 시 kor+eng traineddata를 직접 받는다.
 /assets/tessdata/
+
+# missa_onedrive.py의 MSAL 토큰 캐시(로그인 세션 — 계정별 비밀 상태) — 커밋 대상 아님.
+msal_token_cache.bin
