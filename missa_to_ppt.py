@@ -50,15 +50,14 @@ from pptx import Presentation
 from missa_ooxml_utils import HYMN_TYPES, _slide_text, delete_slide
 import missa_youth_gospel
 from missa_gui import (
-    OUTPUT_ROOT, _last_output_path, _last_date_str, _last_output_key, _preloaded_inputs,
+    OUTPUT_ROOT, _last_output_path, _last_date_str, _last_output_key, _last_output_mass, _preloaded_inputs,
     output_folder_key, get_onedrive_hymn_folder, is_sunday_mass, _ask_numbers_popup,
     _ask_date_popup, _ask_input_files_popup, _ask_combined_input_popup,
     _ask_youth_hymn_popup, _report_progress, _run_with_progress_window, _show_result_window,
-    ensure_onedrive_login,
+    ensure_onedrive_login, get_youth_ppt_mode, get_adult_ppt_folder,
 )
 from missa_reading_layout import (
-    parse_into_verse_units, layout_units_on_slides, layout_units_on_slides_pil,
-    _get_slide_render_params, _verify_and_rebalance_pages,
+    parse_into_verse_units,
     replace_reading_slides, _align_ending_slides_to_제2독서, _reposition_merged_ending_shapes,
 )
 from missa_sections import find_sections, validate_pptx_structure, validate, strip_ppt2007_incompatible
@@ -602,42 +601,6 @@ def apply_화답송_override(files: dict, override_path_str: str) -> None:
 
 
 
-def _upload_youth_output_to_onedrive(output_path: Path, output_name: str, date_str: str) -> None:
-    """청년미사 결과 PPT를 성당 공용 OneDrive의 'PPT 문서/20.청년 미사/{연도}'에도 업로드한다
-    (2026-09-26 후속 요청 — 지금까지는 로컬(`output/{폴더키}/`) 저장까지만 하고 있었다).
-
-    로컬 저장(`output_path`)은 이미 끝난 뒤 호출되므로, 업로드 실패는 예외를 삼키고 경고만
-    출력한다 — `resolve_youth_hymn_pptx()`의 나주노/야훼이레 성가 PPT 업로드-백과 동일한
-    관례다(missa_content_updaters.py). 로컬 사본이 이미 있으므로 업로드가 실패해도 작업
-    결과 자체(로컬 파일)는 보존된다.
-
-    연도는 사용자가 입력한 토요일 `date_str`(YYYYMMDD, +1일 콘텐츠 조회일이 아니라 원래
-    입력값)의 앞 4자리로 뽑는다 — 제목 슬라이드 표시 날짜(§E2)와 동일한 원칙."""
-
-    연도 = date_str[:4]
-    remote_folder = f'PPT 문서/20.청년 미사/{연도}'
-    remote_path = f'{remote_folder}/{output_name}'
-
-    try:
-
-        import missa_onedrive as od
-
-        od.ensure_folder(remote_folder)
-        od.upload_file(remote_path, output_path)
-        print(f'  [OneDrive] {output_name}을(를) OneDrive에 업로드했습니다.')
-
-    except Exception as e:
-
-        print(f'  [경고] OneDrive 업로드 실패({e}) — 로컬에는 저장되어 있습니다: {output_path}')
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-
-# JSON 생성
-
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 
 def get_json_data(content_date_str: str, mass_type: str = 'adult', input_date_str: str = None) -> dict:
 
@@ -903,6 +866,7 @@ def main():
 
     _last_date_str[0] = date_str
     _last_output_key[0] = output_folder_key(date_str, mass_type)
+    _last_output_mass[0] = mass_type
 
     # 1. 파일 확인
 
@@ -1066,19 +1030,15 @@ def main():
 
         units = parse_into_verse_units(json_data['제1독서']['content'])
 
-        pages = layout_units_on_slides(units)
-
-        pages = _verify_and_rebalance_pages(pages, '제1독서')
-
         shift = replace_reading_slides(
 
             prs, sec['제1독서_start'], sec['제1독서_end'],
 
-            pages, sec['제1독서_start'], line_spacing=1.1, label='제1독서'
+            units, sec['제1독서_start'], line_spacing=1.1, label='제1독서'
 
         )
 
-        print(f'    {len(pages)}개 슬라이드 (변화: {shift:+d})')
+        print(f'    슬라이드 수 변화: {shift:+d}')
 
 
     # 섹션 재탐색
@@ -1128,19 +1088,15 @@ def main():
 
             units = parse_into_verse_units(json_data['제2독서']['content'])
 
-            pages = layout_units_on_slides(units)
-
-            pages = _verify_and_rebalance_pages(pages, '제2독서')
-
             shift = replace_reading_slides(
 
                 prs, sec['제2독서_start'], sec['제2독서_end'],
 
-                pages, sec['제2독서_start'], label='제2독서'
+                units, sec['제2독서_start'], label='제2독서'
 
             )
 
-            print(f'    {len(pages)}개 슬라이드 (변화: {shift:+d})')
+            print(f'    슬라이드 수 변화: {shift:+d}')
 
         else:
 
@@ -1185,24 +1141,6 @@ def main():
 
         units = parse_into_verse_units(json_data['복음']['content'])
 
-        if mass_type == 'youth':
-
-            # 영문 본문은 한글 CHARS_PER_LINE(32pt 바탕체 전각 문자 기준) 추정을 쓰면 슬라이드
-            # 수를 과대추정한다(§7.2) — Pillow 실측 word-wrap 전용 함수로 초기 분배한다.
-            # pil_font가 없는 환경(Pillow/폰트 미존재)에서는 layout_units_on_slides_pil() 자체가
-            # 내부적으로 layout_units_on_slides()로 폴백하므로 여기서 따로 분기하지 않는다.
-            content_slide = prs.slides[sec['복음_start']]
-
-            pil_font, box_px = _get_slide_render_params(content_slide)
-
-            pages = layout_units_on_slides_pil(units, pil_font, box_px)
-
-        else:
-
-            pages = layout_units_on_slides(units)
-
-        pages = _verify_and_rebalance_pages(pages, '복음')
-
         # normalize_page_size는 청년 경로에서만 켠다 — 청년 템플릿의 영문 복음 콘텐츠
         # 페이지는 제작자가 샘플 분량에 맞춰 박스 크기를 손으로 다르게 잡아놔 재사용 시
         # 마지막 줄이 잘리는 문제가 있었지만(D2), 성인 한글 독서 경로에는 이 문제가
@@ -1218,7 +1156,7 @@ def main():
 
             prs, sec['복음_start'], sec['복음_end'],
 
-            pages, sec['복음_start'], label='복음',
+            units, sec['복음_start'], label='복음',
 
             align=None,
 
@@ -1226,7 +1164,7 @@ def main():
 
         )
 
-        print(f'    {len(pages)}개 슬라이드 (변화: {shift:+d})')
+        print(f'    슬라이드 수 변화: {shift:+d}')
 
 
     # 종료 슬라이드 텍스트박스 위치 정렬 (제1독서·복음 → 제2독서 기준)
@@ -1379,14 +1317,6 @@ def main():
 
     validate(prs2, json_data)
 
-    if mass_type == 'youth':
-
-        _report_progress(99, 'OneDrive 업로드 중...')
-
-        print('\n[8.5] OneDrive 업로드...')
-
-        _upload_youth_output_to_onedrive(output_path, output_name, date_str)
-
 
 
     _last_output_path[0] = output_path
@@ -1409,33 +1339,6 @@ def _show_children_mass_not_supported_message() -> None:
     _root.destroy()
 
 
-def _show_powerpoint_background_notice() -> None:
-    """§J7 — `ppt_com_verify.py`의 안내 `print()`는 콘솔에만 찍혀서, GUI 모드(진행률
-    창)에서는 처리 도중 실시간으로 보이지 않는다(stdout이 진행률 창의 로그 버퍼로만
-    쌓였다가 처리 완료 후에야 결과 창에 표시됨). 사용자가 처리 도중 작업표시줄에 잠깐
-    나타나는 PowerPoint 아이콘을 미리 알지 못하면 놀랄 수 있으므로, 실제 처리 시작 직전에
-    한 번만 안내한다(성인/청년 동일 — `_run_gui_mode()`가 mass_type 분기가 합쳐진 뒤
-    호출하므로 별도 문구를 두지 않는다).
-
-    문구는 실측(§J7, 2026-09-26 — EnumWindows로 PP12FrameClass 프레임 창을 찾아
-    GetForegroundWindow()와 비교, Dispatch 직후·실제 측정 도중 각 2회 반복 확인)을
-    근거로 정확하게 쓴다: Application.Visible=True로 프레임 창이 실제로
-    visible(작업표시줄에 나타남) 상태가 되지만, 두 시점 모두 포그라운드는 바뀌지
-    않았다. 창이 전혀 뜨지 않는다는 취지의 예전 주장(사실과 다름)은 쓰지 않고, 포커스를
-    가져가지 않는다(실측으로 확인된 사실)는 것만 말한다."""
-    import tkinter as tk
-    from tkinter import messagebox
-    _root = tk.Tk()
-    _root.withdraw()
-    messagebox.showinfo(
-        'PowerPoint 백그라운드 실행 안내',
-        '처리 중 슬라이드 줄 수를 정확히 확인하려고 PowerPoint가 백그라운드에서 '
-        '실행됩니다.\n작업표시줄에 PowerPoint 아이콘이 잠깐 나타날 수 있지만, 지금 '
-        '쓰고 있는 창의 포커스를 가져가지는 않습니다.',
-    )
-    _root.destroy()
-
-
 def _run_gui_mode(mass_type_kr: str) -> None:
     """CLI에서 date 없이 실행됐을 때(§J3) GUI 입력 흐름 전체를 담당한다. 원래는 `__main__`
     이 먼저 `_ask_mass_type_popup()`으로 미사 유형을 물은 뒤 이 흐름을 이어갔는데, 그
@@ -1451,7 +1354,7 @@ def _run_gui_mode(mass_type_kr: str) -> None:
     # 로그인 안 된 상태로 '찾아보기'를 누르게 된다(청년미사 성가 자료 조회와 별개로,
     # 파일 브라우저도 같은 access token을 쓰므로 이 시점에 한 번만 끝내면 아래
     # ensure_onedrive_login() 재호출은 캐시 히트로 조용히 통과한다).
-    if _mass_type == 'youth':
+    if _mass_type == 'youth' and get_youth_ppt_mode(ask_if_missing=True) == 'fallback':
 
         try:
 
@@ -1472,6 +1375,12 @@ def _run_gui_mode(mass_type_kr: str) -> None:
             _err_root.destroy()
 
             sys.exit(0)
+
+    if _mass_type == 'adult':
+
+        # 최초 1회 'PPT 문서' 폴더 선택(취소해도 기존 방식으로 진행). 첫 화면 시작 폴더·결과 복사에 쓰인다.
+
+        get_adult_ppt_folder(ask_if_missing=True)
 
     try:
 
@@ -1517,8 +1426,6 @@ def _run_gui_mode(mass_type_kr: str) -> None:
     # 끝냈다 — 캐시된 토큰이 있으므로 워커 스레드 안에서 다시 필요해져도 조용히
     # 통과한다(2026-09-19 "성가 교체..." 88% 무한 대기 버그 수정 원칙 유지, §A5로 로그인
     # 시점만 더 앞으로 당김).
-
-    _show_powerpoint_background_notice()
 
     _out_text, _err_text = _run_with_progress_window(main)
 

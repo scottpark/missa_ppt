@@ -17,8 +17,8 @@ CLI 인자 파싱(`parse_args`)·파일 탐색(`find_files`)·JSON 로드(`get_j
 `if __name__ == '__main__':`은 `_dispatch_cli_or_gui()`(2026-09-26) 하나만 부른다 — 미사
 유형 선택 팝업은 삭제됐고, `--미사유형`(기본 '성인', '어린이'는 미지원 안내 후 종료) CLI
 플래그로만 정해진다. date가 있으면 `main()`(CLI), 없으면 `_run_gui_mode()`(GUI 입력 흐름,
-처리 시작 직전 `_show_powerpoint_background_notice()`로 PowerPoint 백그라운드 실행을
-안내)로 간다. `_build_arg_parser()`가 인자 정의를 `parse_args()`와 공유한다(상세는
+성인은 최초 1회 'PPT 문서' 폴더 선택 `get_adult_ppt_folder(True)`; PowerPoint 백그라운드 실행 안내는
+진행 창 첫머리 5초 라벨)로 간다. `_build_arg_parser()`가 인자 정의를 `parse_args()`와 공유한다(상세는
 `docs/missa_to_ppt 구현 계획.md` §1).
 
 ## `missa_ooxml_utils.py` — OOXML 저수준 프리미티브
@@ -81,9 +81,9 @@ youth_hymn_remote_path()`는 이 전환 이후 프로덕션 코드에서 더 이
 
 ## `missa_reading_layout.py` — 독서·복음 레이아웃 엔진
 
-절 파싱(`parse_into_verse_units`)부터 슬라이드 분배(`layout_units_on_slides`), Pillow
-추정 + PowerPoint COM 실측 줄 수 계산, 기록 후 재조정까지 독서/복음 처리 파이프라인
-전체.
+절 파싱(`parse_into_verse_units`)부터, PowerPoint COM 줄 실측으로 슬라이드마다 정확히
+9줄을 채우는 슬라이드 단위 분배(`replace_reading_slides` — COM 불가 시 Pillow word-wrap 폴백),
+종료 텍스트 병합까지 독서/복음 처리 파이프라인 전체.
 
 ## `missa_sections.py` — 섹션 탐색·검증
 

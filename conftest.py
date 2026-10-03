@@ -11,3 +11,23 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _youth_ppt_mode_isolated():
+    """청년미사 OneDrive 접속 모드(`missa_gui._YOUTH_PPT_STATE`)는 프로세스 전역 상태다.
+    모든 테스트를 실제 config.json과 무관하게 '폴백'(기존 Graph 동작)으로 시작시키고, 끝나면
+    비워서 한 테스트의 로컬 모드 설정이 다른 테스트로 새지 않게 한다. 로컬 모드를 검증하는
+    테스트는 이 상태를 직접 덮어쓴다."""
+    import missa_gui
+    missa_gui._YOUTH_PPT_STATE['mode'] = 'fallback'
+    missa_gui._YOUTH_PPT_STATE['folder'] = None
+    missa_gui._reset_adult_ppt_folder()
+    missa_gui._last_output_mass[0] = None
+    yield
+    missa_gui._reset_youth_ppt_mode()
+    missa_gui._reset_adult_ppt_folder()
+    missa_gui._last_output_mass[0] = None

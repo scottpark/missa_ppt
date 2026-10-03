@@ -77,3 +77,39 @@ OneDrive 인증·전체 파이프라인 통합) (2026-10-01 통합 전 원문).m
 
 부록 B(재발 방지 규칙 요약, `CLAUDE.md` 상세)는 그대로 `CLAUDE.md`를 단일 출처로 유지하고
 이 문서에서는 중복하지 않는다.
+
+## 2026-10-02 — 청년미사 접속 모드(로컬 폴더 우선/로그인 폴백) 설계·구현 완료
+
+`docs/missa_to_ppt 구현 계획.md` §3.4.1 신설: 모드 판정 단일 지점(`get_youth_ppt_mode()` +
+`_YOUTH_PPT_FOLDER`), 변경 대상 코드 전수 조사 표(`_run_gui_mode`, `_ask_combined_input_popup`,
+`find_youth_onedrive_hymn_file`, `resolve_youth_hymn_pptx`, `_upload_youth_output_to_onedrive`),
+로컬 모드에서 `missa_onedrive`/`msal` 미import 제약, 기존 테스트 모킹 갱신(규칙 20) 계획.
+사용자 리뷰 후 같은 날 구현했다(`missa_gui.py`·`missa_to_ppt.py`·`missa_content_updaters.py`, 신규 테스트 14개).
+
+## 2026-10-03 — `_prevent_widow_tails()` 추가 (post-write 재조정 끝)
+
+원인: `_split_and_adjust_via_com()`이 9줄 달성만 성공 조건으로 삼고 꼬리 줄 길이를 보지 않음. 수정: 모든
+스윕·병합 후 1회 widow 방지(COM 줄 텍스트 `measure_line_texts()`, 오버플로 롤백, 후행 공백 rstrip 통일).
+`_split_para_at_lines()`에서 `_wrap_word_buckets()`/`_split_runs_at()`를 동작 불변으로 추출. 테스트는
+`tests/test_missa_progression.py`의 W그룹(`test_w0`~`test_w11`, 14개). CLAUDE.md 규칙 25 추가.
+
+## 2026-10-03 — 슬라이드 단위 채우기로 독서·복음 배분 구조 교체 (위 `_prevent_widow_tails` 항목을 대체)
+
+`replace_reading_slides(prs, s, e, units, template_idx, ...)`가 units를 받아 슬라이드마다 COM 실측
+(`ppt_com_verify.measure_line_starts`)으로 정확히 9줄을 확정(`_measure_slide_cut`, 폴백 `_pil_line_starts`).
+제거: `layout_units_on_slides(_pil)`, `_verify_and_rebalance_pages`, `_rebalance_reading_slides_post_write`,
+`_try_absorb_underfull`, `_split_and_adjust_via_com`, `_split_para_at_lines`, `_prevent_widow_tails`,
+`_count_slide_lines(_verified/_rendered)`, `_rendered_wrap_count`, `_PIL_WRAP_SAFETY` 등. 종료 병합 판정을
+마지막 슬라이드의 실측 줄 수로 변경. 실측(실제 PowerPoint): 성인 20261004 복음 줄 수 9,9,8,6→9,9,9,5
+(9.6초/COM 14회 → 6.1초/4회), 청년 20260913 영문 복음 9,9,8,9,4→9,9,9,9,4(11.3초/19회 → 7.3초/5회).
+테스트는 SF그룹(가짜 COM + 실제 COM)으로 이전·재작성(상세 표는
+`_workspace/refactor_슬라이드단위_채우기/impl_notes.md`). CLAUDE.md 규칙 25를 이 구조 규칙으로 교체.
+
+## 2026-10-03 — 'PPT 문서' 루트·찾아보기 시작 폴더·결과창 복사 버튼 구현 (§3.4.2)
+
+`missa_gui.py`에 성인 루트(`get_adult_ppt_folder`)·`get_ppt_root`·시작 폴더 해석(`browse_initial_dir` 등)·화답송 폴더
+기억·결과 복사(`copy_result_to_onedrive`, `_copy_result_with_ui`) 추가, `_show_result_window`에 버튼 추가,
+`_run_with_progress_window`에 5초 안내 라벨 추가, Graph 브라우저 `start_subpath`. `missa_to_ppt.py`에서
+`_upload_youth_output_to_onedrive`·`[8.5]` 호출·`_show_powerpoint_background_notice` 삭제, `_last_output_mass` 기록,
+성인 루트 선택 호출 추가. 테스트: `test_missa_youth_local_mode.py` 확장, `j7a~c`·`e1` 갱신, e_full_output 픽스처의
+스텁 복구 시점을 yield 이전으로 이동(k2g/k2h·g2 순서 오염 해소), conftest에 성인 상태 격리.

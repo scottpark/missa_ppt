@@ -114,190 +114,56 @@ class TestParseIntoVerseUnits:
 
 
 class TestSplitParaPreservesVerseColors:
-    """2026-07-26 발견: 여러 절이 하나의 논리 단락으로 병합된 경우(예: continuation
-    절), _split_para_at_lines()가 문단을 두 슬라이드로 분리하면서 단락 중간에 있는
-    절 번호 run의 오렌지색이 사라지는 회귀를 방지한다. 당시 원인은 이 함수가 단락에
-    run이 정확히 2개(절 번호+본문)라고 가정하고 3개 이상이면 뒤쪽 run들의 서식을
-    버렸기 때문이다."""
+    """2026-07-26 발견(규칙 13·14·15): 여러 절이 하나의 논리 단락으로 병합된 경우(continuation 절) 문단을
+    두 슬라이드로 분리할 때 단락 중간 절 번호의 오렌지색이 사라지는 회귀를 방지한다. 2026-10-03 슬라이드
+    단위 채우기부터 문단 분할은 `_split_paras_at`(오렌지 구간을 문단 오프셋으로 보관해 잘라 옮김)가 맡는다.
+    구 TestSplitAndAdjustViaCom(_split_and_adjust_via_com의 keep ±1 재시도·롤백)은 그 함수와 함께 삭제됐다 —
+    "오버플로를 성공으로 보고하지 않는다"·"재시도 후에도 절 번호 색 유지" 요구사항은 정확히 9줄만 확정하는
+    구조(test_missa_progression.py SF그룹)와 아래 테스트가 지킨다."""
 
     @staticmethod
-    def _build_two_verse_para():
-        from PIL import ImageFont
-        from pptx.oxml import parse_xml as pptx_parse_xml
-
-        A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
-        xml = (
-            f'<a:p xmlns:a="{A}">'
-            f'<a:r><a:rPr sz="3200"><a:solidFill><a:srgbClr val="FFC000"/></a:solidFill></a:rPr><a:t>51 </a:t></a:r>'
-            f'<a:r><a:rPr sz="3200"><a:solidFill><a:schemeClr val="bg1"/></a:solidFill></a:rPr><a:t>many words here for wrapping test purposes today </a:t></a:r>'
-            f'<a:r><a:rPr sz="3200"><a:solidFill><a:srgbClr val="FFC000"/></a:solidFill></a:rPr><a:t>52 </a:t></a:r>'
-            f'<a:r><a:rPr sz="3200"><a:solidFill><a:schemeClr val="bg1"/></a:solidFill></a:rPr><a:t>more words after the second verse marker appear here</a:t></a:r>'
-            f'</a:p>'
-        )
-        p_elem = pptx_parse_xml(xml)
-        font = ImageFont.truetype(r'C:\Windows\Fonts\arial.ttf', 32)
-        return p_elem, font
+    def _two_verse_paras():
+        return rl._reading_paras_from_units([
+            {'text': '51 many words here for wrapping test purposes today', 'verse_num': '51',
+             'is_continuation': False},
+            {'text': '52 more words after the second verse marker appear here', 'verse_num': '52',
+             'is_continuation': True},
+        ])
 
     @staticmethod
-    def _orange_texts(p_elem):
-        A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+    def _render_orange(paras):
+        """paras를 실제 텍스트 프레임에 기록(_set_reading_text)해 오렌지 run의 텍스트를 읽는다."""
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        box = slide.shapes.add_textbox(0, 0, 5_000_000, 3_000_000)
+        box.text_frame.text = '샘플'
+        rl._set_reading_text(box.text_frame, rl._paras_to_units(paras))
         out = []
-        for r in p_elem.findall(f'{{{A}}}r'):
-            rPr = r.find(f'{{{A}}}rPr')
-            t = r.find(f'{{{A}}}t')
-            if rPr is None or t is None:
-                continue
-            sf = rPr.find(f'{{{A}}}solidFill')
-            if sf is None:
-                continue
-            sc = sf.find(f'{{{A}}}srgbClr')
-            if sc is not None and sc.get('val', '').upper() == 'FFC000':
-                out.append((t.text or '').strip())
+        for p in box.text_frame.paragraphs:
+            for r in p.runs:
+                try:
+                    if r.font.color.rgb == rl.ORANGE:
+                        out.append(r.text.strip())
+                except AttributeError:
+                    continue
         return out
 
-    def test_verse_numbers_survive_paragraph_split(self):
-        p_elem, font = self._build_two_verse_para()
-        box_px = 220  # 좁게 잡아 여러 줄로 강제 wrap
-        rest_p = rl._split_para_at_lines(p_elem, keep_lines=1, pil_font=font, box_px=box_px)
-        assert rest_p is not None, "테스트 문단이 1줄에 다 들어가 분리가 일어나지 않음 — box_px를 줄일 것"
-        combined = set(self._orange_texts(p_elem)) | set(self._orange_texts(rest_p))
-        assert combined == {"51", "52"}, f"절 번호 오렌지색 유실: {combined}"
+    def test_verse_numbers_survive_paragraph_split_at_every_word_boundary(self):
+        paras = self._two_verse_paras()
+        assert len(paras) == 1
+        text = paras[0]['text']
+        cuts = [m.end() for m in re.finditer(' ', text)]
+        assert len(cuts) > 8
+        for cut_at in cuts:
+            front, rest = rl._split_paras_at(paras, 0, cut_at)
+            combined = self._render_orange(front) + self._render_orange(rest)
+            assert combined == ['51', '52'], f"절 번호 오렌지색 유실(cut={cut_at}): {combined}"
+            assert (front[-1]['text'] + ' ' + rest[0]['text']) == text
 
-
-class TestSplitAndAdjustViaCom:
-    """_split_and_adjust_via_com()이 COM 실측과 Pillow 추정이 어긋날 때
-    분리 지점(keep)을 올바른 방향으로 조정하는지, 최대 조정 횟수를 지키는지,
-    조정 과정에서도 run 서식(오렌지 절 번호 등)이 유지되는지 확인한다.
-    _split_para_at_lines() 자체는 "몇 줄인지 판단"에만 관여하고 분리 지점
-    계산은 여전히 Pillow 기반이므로, COM이 최종 결과가 어긋났다고 보고하면
-    keep을 ±1 조정해 재분리해야 한다(2026-08-04 발견: COM 검증이 도입된 뒤에도
-    분리 지점 계산 자체는 Pillow 편향을 그대로 물려받아 재시도 캡 내에서
-    수렴하지 못하는 사례가 실측으로 확인됨)."""
-
-    @staticmethod
-    def _build_para(text, sz=3200):
-        from pptx.oxml import parse_xml as pptx_parse_xml
-        A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
-        xml = f'<a:p xmlns:a="{A}"><a:r><a:rPr sz="{sz}"/><a:t>{text}</a:t></a:r></a:p>'
-        return pptx_parse_xml(xml)
-
-    @staticmethod
-    def _text(p_elem):
-        A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
-        return ''.join(
-            (r.find(f'{{{A}}}t').text or '') for r in p_elem.findall(f'{{{A}}}r')
-        )
-
-    @staticmethod
-    def _font():
-        from PIL import ImageFont
-        return ImageFont.truetype(r'C:\Windows\Fonts\arial.ttf', 32)
-
-    def _long_text(self):
-        return (
-            "alpha beta gamma delta epsilon zeta eta theta iota kappa "
-            "lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega"
-        )
-
-    def test_restore_para_from_backup_reverts_split(self):
-        p = self._build_para(self._long_text())
-        backup = copy.deepcopy(p)
-        rest = rl._split_para_at_lines(p, keep_lines=1, pil_font=self._font(), box_px=150)
-        assert rest is not None, "테스트 문단이 1줄에 다 들어가 분리가 일어나지 않음"
-        assert self._text(p) != self._text(backup)
-        rl._restore_para_from_backup(p, backup)
-        assert self._text(p) == self._text(backup)
-
-    def _run_adjust(self, monkeypatch, responses, **kwargs):
-        calls = []
-
-        def fake_verified(prs, slide):
-            val = responses[len(calls)] if len(calls) < len(responses) else responses[-1]
-            calls.append(val)
-            return val
-
-        monkeypatch.setattr(rl, "_count_slide_lines_verified", fake_verified)
-        placed = []
-
-        def place_rest(rp):
-            placed.append(rp)
-
-        def remove_rest(rp):
-            placed.remove(rp)
-
-        defaults = dict(
-            prs=None, cur_slide=object(), pil_font=self._font(), box_px=150,
-            place_rest=place_rest, remove_rest=remove_rest, max_adjust=2,
-        )
-        defaults.update(kwargs)
-        result = rl._split_and_adjust_via_com(**defaults)
-        return result, calls, placed
-
-    def test_keep_increases_when_cur_slide_too_short(self, monkeypatch):
-        p = self._build_para(self._long_text())
-        (rest_p, final_lines), calls, placed = self._run_adjust(
-            monkeypatch,
-            responses=[rl.LINES_PER_SLIDE - 1, rl.LINES_PER_SLIDE],
-            p_elem=p, keep=2,
-        )
-        assert final_lines == rl.LINES_PER_SLIDE
-        assert len(calls) == 2
-        assert len(placed) == 1  # 마지막으로 배치된 rest_p 하나만 남아 있어야 함
-
-    def test_keep_decreases_when_cur_slide_too_long(self, monkeypatch):
-        p = self._build_para(self._long_text())
-        (rest_p, final_lines), calls, placed = self._run_adjust(
-            monkeypatch,
-            responses=[rl.LINES_PER_SLIDE + 1, rl.LINES_PER_SLIDE],
-            p_elem=p, keep=3,
-        )
-        assert final_lines == rl.LINES_PER_SLIDE
-        assert len(calls) == 2
-        assert len(placed) == 1
-
-    def test_gives_up_after_max_adjust_without_crashing(self, monkeypatch):
-        p = self._build_para(self._long_text())
-        original_text = self._text(p)
-        (rest_p, final_lines), calls, placed = self._run_adjust(
-            monkeypatch,
-            responses=[rl.LINES_PER_SLIDE + 1] * 5,  # 절대 수렴하지 않는 상황(항상 초과)
-            p_elem=p, keep=3, max_adjust=2,
-        )
-        # 초기 1회 + 조정 최대 2회 = 최대 3회 호출로 멈춰야 함(무한 루프 금지)
-        assert len(calls) <= 3
-        # 2026-08-04 발견 버그의 회귀 방지: 재시도 캡을 다 써도 여전히
-        # LINES_PER_SLIDE를 초과하면(오버플로가 남으면) 이 시도를 통째로
-        # 되돌려야 한다 — "일부만 고쳐진 채로 오버플로가 남은" 상태를
-        # 성공(rest_p is not None)으로 잘못 보고하면 안 된다.
-        assert rest_p is None
-        assert len(placed) == 0
-        assert self._text(p) == original_text
-
-    def test_never_reports_success_while_still_overflowing(self, monkeypatch):
-        """조정을 거듭해도 실측이 계속 LINES_PER_SLIDE를 넘으면(수렴 실패),
-        절대 rest_p를 성공으로 반환하면 안 된다 — 반환하면 호출부가 "고쳐졌다"고
-        오인해 실제로는 넘치는 슬라이드를 그대로 최종본에 남기게 된다."""
-        p = self._build_para(self._long_text())
-        (rest_p, final_lines), calls, placed = self._run_adjust(
-            monkeypatch,
-            responses=[rl.LINES_PER_SLIDE + 1, rl.LINES_PER_SLIDE + 1],
-            p_elem=p, keep=2, max_adjust=1,
-        )
-        assert rest_p is None
-        assert len(placed) == 0
-
-    def test_verse_colors_survive_adjustment_retry(self, monkeypatch):
-        p_elem, font = TestSplitParaPreservesVerseColors._build_two_verse_para()
-        (rest_p, final_lines), calls, placed = self._run_adjust(
-            monkeypatch,
-            responses=[rl.LINES_PER_SLIDE - 1, rl.LINES_PER_SLIDE],
-            p_elem=p_elem, keep=1, pil_font=font, box_px=220,
-        )
-        assert rest_p is not None
-        combined = set(TestSplitParaPreservesVerseColors._orange_texts(p_elem)) | set(
-            TestSplitParaPreservesVerseColors._orange_texts(rest_p)
-        )
-        assert combined == {"51", "52"}, f"조정 재시도 후 절 번호 오렌지색 유실: {combined}"
+    def test_split_at_paragraph_start_keeps_whole_paragraphs_and_orange(self):
+        paras = rl._reading_paras_from_units(rl.parse_into_verse_units('1 가나다.\n2 라마바.\n3 사아자.'))
+        front, rest = rl._split_paras_at(paras, 1, 0)
+        assert self._render_orange(front) + self._render_orange(rest) == ['1', '2', '3']
 
 
 class TestComVerificationEnabledConfig:
@@ -312,7 +178,9 @@ class TestComVerificationEnabledConfig:
             json.dumps(config_dict, ensure_ascii=False), encoding="utf-8"
         )
         monkeypatch.setattr(gui, "CONFIG_FILE", config_path)
-        gui._COM_VERIFY_ENABLED_CACHE[0] = None
+        # 전역 리스트를 직접 고치면(`[0] = None`) 이 테스트가 채운 False가 뒤따르는 테스트로
+        # 새어, COM 재조정이 꺼진 채로 도는 test_y2_G2가 전체 실행에서만 실패한다.
+        monkeypatch.setattr(gui, "_COM_VERIFY_ENABLED_CACHE", [None])
 
     def test_true_when_explicitly_enabled(self, monkeypatch, tmp_path):
         self._reset_cache_and_point_config(
@@ -340,127 +208,6 @@ class TestComVerificationEnabledConfig:
             json.dumps({"com_verification_enabled": True}), encoding="utf-8"
         )
         assert gui._com_verification_enabled() is False
-
-
-class TestCountSlideLinesVerified:
-    """_count_slide_lines_verified()의 제어 흐름(경계값 최적화, COM 값 채택,
-    실패 시 영구 비활성화, config opt-out)을 실제 PowerPoint COM 없이
-    monkeypatch로 결정적으로 검증한다."""
-
-    class _FakeSlide:
-        def __init__(self, slide_id):
-            self.slide_id = slide_id
-
-    @pytest.fixture(autouse=True)
-    def _reset_state(self, monkeypatch):
-        monkeypatch.setattr(rl, "_COM_DISABLED", [False], raising=False)
-        monkeypatch.setattr(rl, "_COM_MISMATCH_COUNT", {}, raising=False)
-        monkeypatch.setattr(gui, "_COM_VERIFY_ENABLED_CACHE", [True], raising=False)
-        monkeypatch.setattr(rl, "_build_com_probe_pptx", lambda prs, slide: (Path("dummy.pptx"), 1), raising=False)
-        monkeypatch.setattr(rl, "_COM_ATEXIT_REGISTERED", [False], raising=False)
-
-    @staticmethod
-    def _install_fake_com(monkeypatch, real_lines=None, raises=False):
-        fake = types.ModuleType("ppt_com_verify")
-
-        class _FakeComUnavailable(Exception):
-            pass
-
-        fake.ComVerificationUnavailable = _FakeComUnavailable
-        calls = []
-
-        def _count_slide_lines(path, shape_index):
-            calls.append((path, shape_index))
-            if raises:
-                raise _FakeComUnavailable("simulated COM failure")
-            return real_lines
-
-        fake.count_slide_lines = _count_slide_lines
-        fake.shutdown = lambda: None
-        monkeypatch.setitem(sys.modules, "ppt_com_verify", fake)
-        return calls
-
-    def test_com_not_called_when_pillow_estimate_is_not_boundary(self, monkeypatch):
-        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: 8)
-        calls = self._install_fake_com(monkeypatch, real_lines=10)
-        result = rl._count_slide_lines_verified(object(), self._FakeSlide(1))
-        assert result == 8
-        assert calls == []
-
-    def test_com_confirms_boundary_estimate(self, monkeypatch, capsys):
-        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: rl.LINES_PER_SLIDE)
-        calls = self._install_fake_com(monkeypatch, real_lines=rl.LINES_PER_SLIDE)
-        result = rl._count_slide_lines_verified(object(), self._FakeSlide(2))
-        assert result == rl.LINES_PER_SLIDE
-        assert len(calls) == 1
-        assert "불일치" not in capsys.readouterr().out
-
-    def test_com_mismatch_is_adopted_and_logged(self, monkeypatch, capsys):
-        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: rl.LINES_PER_SLIDE)
-        self._install_fake_com(monkeypatch, real_lines=rl.LINES_PER_SLIDE + 1)
-        result = rl._count_slide_lines_verified(object(), self._FakeSlide(3))
-        assert result == rl.LINES_PER_SLIDE + 1
-        assert "불일치" in capsys.readouterr().out
-        assert rl._COM_MISMATCH_COUNT[3] == 1
-
-    def test_com_is_always_consulted_even_after_repeated_mismatches(self, monkeypatch):
-        """2026-08-04 발견 버그의 회귀 방지: 예전에는 같은 슬라이드에 대해 불일치가
-        누적되면(예전 캡=3회) 그 슬라이드에 한해 이후 영구히 COM을 건너뛰고 Pillow
-        값을 실측인 것처럼 반환했다. 이로 인해 실제로는 여전히 오버플로인 슬라이드가
-        "성공"으로 잘못 보고된 사례(제1독서 슬라이드 19, 실제 10줄인데 9줄로 보고)가
-        실측으로 확인됐다. 이제는 슬라이드별 이력과 무관하게 경계값(9)일 때마다
-        매번 실제로 COM에 묻어야 한다."""
-        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: rl.LINES_PER_SLIDE)
-        calls = self._install_fake_com(monkeypatch, real_lines=rl.LINES_PER_SLIDE + 1)
-        slide = self._FakeSlide(4)
-        for _ in range(5):
-            result = rl._count_slide_lines_verified(object(), slide)
-            assert result == rl.LINES_PER_SLIDE + 1  # 매번 실제 COM 값을 그대로 반환
-        assert len(calls) == 5  # 호출 이력과 무관하게 COM이 매번 실제로 호출됨
-
-    def test_com_failure_permanently_disables_for_rest_of_run(self, monkeypatch, capsys):
-        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: rl.LINES_PER_SLIDE)
-        calls = self._install_fake_com(monkeypatch, raises=True)
-        result_1 = rl._count_slide_lines_verified(object(), self._FakeSlide(5))
-        assert result_1 == rl.LINES_PER_SLIDE
-        assert rl._COM_DISABLED[0] is True
-        assert "[경고]" in capsys.readouterr().out
-
-        # 이후 같은 프로세스 내에서는(경계값이어도) COM을 다시 시도하지 않는다
-        result_2 = rl._count_slide_lines_verified(object(), self._FakeSlide(6))
-        assert result_2 == rl.LINES_PER_SLIDE
-        assert len(calls) == 1
-
-    def test_config_disabled_skips_com_entirely(self, monkeypatch):
-        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: rl.LINES_PER_SLIDE)
-        monkeypatch.setattr(gui, "_COM_VERIFY_ENABLED_CACHE", [False])
-        calls = self._install_fake_com(monkeypatch, real_lines=rl.LINES_PER_SLIDE + 1)
-        result = rl._count_slide_lines_verified(object(), self._FakeSlide(7))
-        assert result == rl.LINES_PER_SLIDE
-        assert calls == []
-
-    def test_probe_build_failure_falls_back_without_disabling_com_globally(self, monkeypatch, capsys):
-        """코드 리뷰 발견: _build_com_probe_pptx()는 python-pptx만 쓰는 순수
-        파이썬 코드라 ComVerificationUnavailable이 아닌 예외(예: content shape가
-        없어 ValueError)를 낼 수 있다. 예전에는 이 예외가 try 블록을 빠져나가
-        함수 자체가 통째로 실패했다 — "어떤 실패 경로도 예외를 밖으로 내보내지
-        않는다"는 문서화된 계약을 어겼다. 이제는 이 슬라이드만 Pillow로
-        폴백하고, COM 자체는 다른 슬라이드에 대해 계속 사용 가능해야 한다
-        (probe 생성 실패는 COM 전체의 문제가 아니라 그 슬라이드만의 문제)."""
-        monkeypatch.setattr(rl, "_count_slide_lines_rendered", lambda slide: rl.LINES_PER_SLIDE)
-
-        def _raise_probe_build(prs, slide):
-            raise ValueError("simulated: content shape 없음")
-
-        monkeypatch.setattr(rl, "_build_com_probe_pptx", _raise_probe_build)
-        calls = self._install_fake_com(monkeypatch, real_lines=rl.LINES_PER_SLIDE)
-
-        result = rl._count_slide_lines_verified(object(), self._FakeSlide(8))
-
-        assert result == rl.LINES_PER_SLIDE  # 예외 없이 Pillow 값으로 폴백
-        assert calls == []  # COM 자체는 호출되지도 않음(probe 생성 단계에서 실패)
-        assert rl._COM_DISABLED[0] is False  # COM을 전역적으로 비활성화하지 않음
-        assert "[경고]" in capsys.readouterr().out
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -596,7 +343,13 @@ def test_no_reading_slide_line_overflow(generated_case):
             continue
         s, e = sections[start_key], sections[end_key]
         for idx in range(s, e):
-            lines = rl._count_slide_lines_rendered(prs.slides[idx])
+            shape = ou._find_content_shape(prs.slides[idx])
+            font, box_px = rl._get_slide_render_params(prs.slides[idx])
+            if shape is None or font is None:
+                continue
+            paras = [{'text': para.text, 'orange': []}
+                     for para in shape.text_frame.paragraphs if para.text.strip()]
+            lines = len(rl._pil_line_starts(paras, font, box_px))
             if lines > rl.LINES_PER_SLIDE:
                 problems.append(f"{start_key} 슬라이드 {idx + 1}: {lines}줄 (>{rl.LINES_PER_SLIDE})")
     assert not problems, "\n".join(problems)
@@ -629,10 +382,10 @@ def test_no_missing_orange_verse_numbers(generated_case):
 
 
 def test_reading_verse_numbers_appear_in_ascending_order(generated_case):
-    """2026-08-04 발견 회귀 방지: _rebalance_reading_slides_post_write()의
-    COM 조정 give-up 롤백 경로 중 일부가 되돌릴 위치를 잘못 계산해(맨 앞이
-    아니라 append) 다음 슬라이드에 이미 남아 있던 뒤쪽 단락보다 앞에 있어야 할
-    단락이 뒤로 밀려 절 순서가 뒤바뀌는 버그가 있었다. 오렌지색 절 번호가
+    """2026-08-04 발견 회귀 방지: (구)사후 재조정의 give-up 롤백 경로가 되돌릴 위치를 잘못 계산해
+    (맨 앞이 아니라 append) 다음 슬라이드에 이미 남아 있던 뒤쪽 단락보다 앞에 있어야 할
+    단락이 뒤로 밀려 절 순서가 뒤바뀌는 버그가 있었다. 슬라이드 단위 채우기(2026-10-03)는 앞에서부터
+    순서대로 확정하므로 구조적으로 재발하지 않지만 실제 산출물로 계속 지킨다. 오렌지색 절 번호가
     슬라이드/단락 순서대로 오름차순으로 나타나는지 확인해 이런 단락 순서
     뒤바뀜을 감지한다(존재 여부만 확인하는 test_no_missing_orange_verse_numbers
     와 달리 순서 자체를 확인)."""
@@ -837,6 +590,89 @@ def _rep_find_ending_shapes(slide):
 def _rep_font_metrics_available(slide):
     pil, _ = rl._get_slide_render_params(slide)
     return pil is not None
+
+
+class TestMergedEndingBodyMetrics:
+    """_merged_ending_body_metrics()가 char-count/Pillow 추정이 실제 PowerPoint
+    줄바꿈과 다를 때 COM 실측값(줄 수 + BoundHeight)을 우선 채택하는지 PowerPoint
+    없이 monkeypatch로 결정적으로 검증한다.
+
+    실사용 버그(2026-10-03, 청년미사 제2독서 종료 통합 슬라이드): char-count 근사
+    (`_wrap_line_count`)와 Pillow word-wrap 둘 다 실제 5줄인 문단을 4줄로 오산해,
+    종료 텍스트박스가 본문 마지막 줄과 거의 겹치는 자리(GAP≈0.09인치)에 배치됐다
+    (상세: docs/ooxml-pitfalls-log.md "여러 곳에서 재사용하는 fit-보정 함수" 절
+    근방, `_merged_ending_body_metrics` docstring)."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_state(self, monkeypatch):
+        monkeypatch.setattr(rl, "_COM_DISABLED", [False], raising=False)
+        monkeypatch.setattr(gui, "_COM_VERIFY_ENABLED_CACHE", [True], raising=False)
+        monkeypatch.setattr(rl, "_build_com_probe_pptx", lambda prs, slide: (Path("dummy.pptx"), 1), raising=False)
+        monkeypatch.setattr(rl, "_COM_ATEXIT_REGISTERED", [False], raising=False)
+
+    @staticmethod
+    def _install_fake_com(monkeypatch, lines=None, bound_height_pt=None, raises=False):
+        fake = types.ModuleType("ppt_com_verify")
+
+        class _FakeComUnavailable(Exception):
+            pass
+
+        fake.ComVerificationUnavailable = _FakeComUnavailable
+        calls = []
+
+        def _measure(path, shape_index):
+            calls.append((path, shape_index))
+            if raises:
+                raise _FakeComUnavailable("simulated COM failure")
+            return {"lines": lines, "bound_height_pt": bound_height_pt}
+
+        fake.measure_text_metrics = _measure
+        fake.shutdown = lambda: None
+        monkeypatch.setitem(sys.modules, "ppt_com_verify", fake)
+        return calls
+
+    def test_com_value_overrides_undercounted_estimate(self, monkeypatch):
+        prs = _rep_mk_prs()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        content = _rep_add_reading_box(slide, ["본문 문장"], top=0, height=2_000_000)
+        calls = self._install_fake_com(monkeypatch, lines=5, bound_height_pt=42.0)
+
+        line_count, line_height = rl._merged_ending_body_metrics(prs, slide, content)
+
+        assert len(calls) == 1
+        assert line_count == 5
+        assert line_height == round(42.0 * 12700 / 5)
+
+    def test_falls_back_to_estimate_when_com_unavailable(self, monkeypatch):
+        prs = _rep_mk_prs()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        content = _rep_add_reading_box(slide, ["본문 문장"], top=0, height=2_000_000)
+        calls = self._install_fake_com(monkeypatch, raises=True)
+
+        line_count, line_height = rl._merged_ending_body_metrics(prs, slide, content)
+
+        assert len(calls) == 1
+        assert line_count == rl._wrap_line_count("본문 문장")
+        assert rl._COM_DISABLED[0] is True
+
+    def test_end_to_end_reposition_uses_com_verified_gap(self, monkeypatch):
+        """COM이 '추정과 다른' 줄 수/높이를 돌려주면, 종료 텍스트박스는 추정값이
+        아니라 COM 값 기준(line_count+GAP)×line_height 위치에 배치된다."""
+        prs = _rep_mk_prs()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        content = _rep_add_reading_box(slide, ["본문 문장"], top=0, height=3_000_000)
+        ending = _rep_add_reading_box(
+            slide, _ENDING_TEXT.split("\n"), top=500_000, height=1_300_000, ending=True)
+
+        bound_height_pt = 5 * 100_000 / 12700  # 5줄 × 100,000 EMU/줄이 되도록 역산
+        self._install_fake_com(monkeypatch, lines=5, bound_height_pt=bound_height_pt)
+
+        sections = {"제1독서_start": 0, "제1독서_end": 1}
+        rl._reposition_merged_ending_shapes(prs, sections)
+
+        line_height = round(bound_height_pt * 12700 / 5)
+        GAP = 2  # _reposition_merged_ending_shapes()의 로컬 상수와 동일 값
+        assert ending.top == content.top + (5 + GAP) * line_height
 
 
 class TestRepositionMergedEndingShapes:
@@ -1439,9 +1275,47 @@ def _y2_load_en_gospel_content():
     return data["Gospel"]["content"]
 
 
+_G1B_GOSPEL_20260926 = (
+    'Jesus said to the chief priests and elders of the people, ‘What is your opinion? '
+    'A man had two sons. He went and said to the first, “My boy, you go and work in the '
+    'vineyard today.” He answered, “I will not go,” but afterwards thought better '
+    'of it and went. The man then went and said the same thing to the second who answered, '
+    '“Certainly, sir,” but did not go. Which of the two did the father’s will?’ '
+    '‘The first’ they said. Jesus said to them, ‘I tell you solemnly, tax collectors '
+    'and prostitutes are making their way into the kingdom of God before you. For John came to '
+    'you, a pattern of true righteousness, but you did not believe him, and yet the tax '
+    'collectors and prostitutes did. Even after seeing that, you refused to think better of it '
+    'and believe in him.’'
+)
+
+
+def test_y2_G1b_20260926_father_fits_first_page(y2_prs):
+    """G1b(2026-10-03 회귀 승격, 같은 날 슬라이드 단위 채우기에 맞춰 재작성): 실사용자 20260926 청년미사
+    슬라이드 54 재현. 분할(줄 시작 계산)이 검증과 같은 박스 폭을 써야 한다 — 과거 `_PIL_WRAP_SAFETY=0.97`이
+    페이지네이션만 3% 좁혀 실제로는 그 줄에 들어가는 "father's"를 다음 슬라이드로 밀어냈다. 그 실행이 실제로
+    만든 영문 복음 상자 폭 949.98px는 실제 PowerPoint COM 실측으로 "...did the father's will?'"까지 들어간다고
+    확인된 사실이다(docs/ooxml-pitfalls-log.md). gitignore된 output/ 산출물에 기대지 않도록 본문과 폭을
+    상수로 고정하고, Pillow 폰트만 청년 참조 템플릿의 복음 슬라이드에서 얻는다(실 COM 대응 테스트:
+    test_missa_progression.py test_sf_real4)."""
+    sections = sec2.find_sections(y2_prs, mass_type='youth')
+    pil_font, _template_box_px = rl2._get_slide_render_params(y2_prs.slides[sections['복음_start']])
+    if pil_font is None:
+        pytest.skip("Pillow 또는 폰트 파일(batang.ttc)을 찾을 수 없는 환경")
+
+    paras = rl2._reading_paras_from_units(rl2.parse_into_verse_units(_G1B_GOSPEL_20260926))
+    starts = rl2._pil_line_starts(paras, pil_font, 949.98)
+    assert len(starts) > rl2.LINES_PER_SLIDE, "본문이 한 슬라이드에 다 들어가 절단점이 없음"
+    ninth_pi, ninth_off = starts[rl2.LINES_PER_SLIDE - 1]
+    tenth_pi, tenth_off = starts[rl2.LINES_PER_SLIDE]
+    assert ninth_pi == tenth_pi == 0
+    last_line = paras[0]['text'][ninth_off:tenth_off]
+    assert 'father' in last_line, f"첫 슬라이드 마지막 줄이 'father's' 앞에서 끊김: {last_line!r}"
+
+
 def test_y2_G1_pil_estimate_not_worse_than_char_based(y2_prs):
-    """G1: 영문 복음 콘텐츠에 대해 layout_units_on_slides_pil()이 CHARS_PER_LINE 기반
-    layout_units_on_slides()보다 슬라이드 수가 적거나 같아야 한다(과대추정 완화)."""
+    """G1: 영문 복음 콘텐츠에 대해 Pillow 폭 기반 줄 수가 CHARS_PER_LINE 기반 줄 수보다 적거나 같아야 한다
+    (영문에 한글 전각 기준 27자/줄을 쓰면 슬라이드 수를 과대추정하는 문제의 회귀 방지 — 구
+    layout_units_on_slides_pil vs layout_units_on_slides 비교를 줄 시작 계산 비교로 이전)."""
     content = _y2_load_en_gospel_content()
     units = rl2.parse_into_verse_units(content)
 
@@ -1451,9 +1325,8 @@ def test_y2_G1_pil_estimate_not_worse_than_char_based(y2_prs):
     if pil_font is None:
         pytest.skip("Pillow 또는 폰트 파일(batang.ttc)을 찾을 수 없는 환경")
 
-    pages_char = rl2.layout_units_on_slides(units)
-    pages_pil = rl2.layout_units_on_slides_pil(units, pil_font, box_px)
-    assert len(pages_pil) <= len(pages_char)
+    paras = rl2._reading_paras_from_units(units)
+    assert len(rl2._pil_line_starts(paras, pil_font, box_px)) <= len(rl2._char_line_starts(paras))
 
 
 def test_y2_G3_G4_no_orange_runs_and_korean_closing_preserved(y2_prs):
@@ -1468,14 +1341,12 @@ def test_y2_G3_G4_no_orange_runs_and_korean_closing_preserved(y2_prs):
     if pil_font is None:
         pytest.skip("Pillow 또는 폰트 파일(batang.ttc)을 찾을 수 없는 환경")
 
-    pages = rl2.layout_units_on_slides_pil(units, pil_font, box_px)
-
     closing_text_before = _y2_shape_text(y2_prs.slides[56], 'TextBox 3')
     assert closing_text_before is not None and '주님의 말씀입니다' in closing_text_before
 
     rl2.replace_reading_slides(
         y2_prs, sections['복음_start'], sections['복음_end'],
-        pages, sections['복음_start'], label='복음_영문',
+        units, sections['복음_start'], label='복음_영문',
     )
 
     sections2 = sec2.find_sections(y2_prs, mass_type='youth')
@@ -1518,8 +1389,9 @@ def test_y2_G6_title_stays_korean_after_content_merge():
 
 @pytest.mark.skipif(not gui2._com_verification_enabled(), reason="config.json: com_verification_enabled=false")
 def test_y2_G2_com_confirms_convergence_to_lines_per_slide(y2_prs):
-    """G2: post-write 재조정까지 거친 뒤 실제 PowerPoint COM 실측으로 마지막을 제외한
-    모든 복음 슬라이드가 LINES_PER_SLIDE(9)줄 이하로 수렴하는지 확인."""
+    """G2: 슬라이드 단위 채우기 후 실제 PowerPoint COM 실측으로 마지막을 제외한 모든 복음 슬라이드가 정확히
+    LINES_PER_SLIDE(9)줄이고 마지막은 그 이하인지 확인한다(구 구조는 "9줄 이하"까지만 보장 — 추정 오차를 이웃
+    이동으로 메우던 사후 재조정의 한계였다)."""
     try:
         import ppt_com_verify as com2
     except ImportError:
@@ -1530,30 +1402,27 @@ def test_y2_G2_com_confirms_convergence_to_lines_per_slide(y2_prs):
     content = _y2_load_en_gospel_content()
     units = rl2.parse_into_verse_units(content)
     sections = sec2.find_sections(y2_prs, mass_type='youth')
-    content_slide = y2_prs.slides[sections['복음_start']]
-    pil_font, box_px = rl2._get_slide_render_params(content_slide)
-    if pil_font is None:
-        pytest.skip("Pillow 또는 폰트 파일(batang.ttc)을 찾을 수 없는 환경")
-
-    pages = rl2.layout_units_on_slides_pil(units, pil_font, box_px)
     rl2.replace_reading_slides(
         y2_prs, sections['복음_start'], sections['복음_end'],
-        pages, sections['복음_start'], label='복음_영문',
+        units, sections['복음_start'], label='복음_영문',
     )
 
     sections2 = sec2.find_sections(y2_prs, mass_type='youth')
     s, e = sections2['복음_start'], sections2['복음_end']
-    problems = []
+    from missa_ooxml_utils import _find_content_shape as _y2_find_content_shape
+    from missa_ooxml_utils import _build_com_probe_pptx as _y2_build_probe
+    counts = []
     for idx in range(s, e):
         slide = y2_prs.slides[idx]
-        from missa_ooxml_utils import _find_content_shape as _y2_find_content_shape
         if _y2_find_content_shape(slide) is None:
             continue
-        from missa_ooxml_utils import _build_com_probe_pptx as _y2_build_probe
         probe_path, shape_idx = _y2_build_probe(y2_prs, slide)
-        real_lines = com2.count_slide_lines(str(probe_path), shape_idx)
-        if real_lines > rl2.LINES_PER_SLIDE:
-            problems.append(f"슬라이드 {idx}: COM 실측 {real_lines}줄 (>{rl2.LINES_PER_SLIDE})")
+        counts.append(com2.count_slide_lines(str(probe_path), shape_idx))
+    assert counts, "복음 본문 슬라이드가 없음"
+    problems = [f"본문 슬라이드 {i + 1}: COM 실측 {c}줄 (기대 {rl2.LINES_PER_SLIDE}줄)"
+                for i, c in enumerate(counts[:-1]) if c != rl2.LINES_PER_SLIDE]
+    if counts[-1] > rl2.LINES_PER_SLIDE:
+        problems.append(f"마지막 슬라이드 COM 실측 {counts[-1]}줄 (>{rl2.LINES_PER_SLIDE})")
     assert not problems, "\n".join(problems)
 
 
@@ -1619,14 +1488,9 @@ def test_y2_C1_real_combo_full_pipeline_structure_valid(y2_prs, monkeypatch, tmp
     units = rl2.parse_into_verse_units(content)
     sections = sec2.find_sections(y2_prs, mass_type='youth')
     content_slide = y2_prs.slides[sections['복음_start']]
-    pil_font, box_px = rl2._get_slide_render_params(content_slide)
-    if pil_font is not None:
-        pages = rl2.layout_units_on_slides_pil(units, pil_font, box_px)
-    else:
-        pages = rl2.layout_units_on_slides(units)
     rl2.replace_reading_slides(
         y2_prs, sections['복음_start'], sections['복음_end'],
-        pages, sections['복음_start'], label='복음_영문',
+        units, sections['복음_start'], label='복음_영문',
     )
 
     out_path = tmp_path / "y2_c1_check.pptx"
@@ -1842,15 +1706,11 @@ def _y2m_stub_all_mass_calls(monkeypatch, calls):
         'update_복음_title_slide', 'update_화답송', 'update_복음환호송', 'update_영성체송',
         'replace_시작기도문', 'replace_미사후기도', 'insert_공지사항',
         '_align_ending_slides_to_제2독서', '_reposition_merged_ending_shapes',
-        '_verify_and_rebalance_pages', 'strip_ppt2007_incompatible', 'validate',
+        'strip_ppt2007_incompatible', 'validate',
     ]:
         def _make(n):
             def _f(*a, **k):
                 calls.append((n, a, k))
-                # _verify_and_rebalance_pages/replace_reading_slides류는 반환값이 뒤에서 쓰이므로
-                # 합리적인 기본값을 돌려준다.
-                if n == '_verify_and_rebalance_pages':
-                    return a[0]
                 return None
             return _f
         monkeypatch.setattr(mtp, name, _make(name))
@@ -2348,12 +2208,10 @@ def test_b_youth_preload_pipeline_saves_under_suffixed_folder(monkeypatch, tmp_p
         'update_복음_title_slide', 'update_화답송', 'update_복음환호송', 'update_영성체송',
         'replace_시작기도문', 'replace_미사후기도', 'insert_공지사항', 'replace_성가_youth',
         '_align_ending_slides_to_제2독서', '_reposition_merged_ending_shapes',
-        '_verify_and_rebalance_pages', 'strip_ppt2007_incompatible', 'validate',
+        'strip_ppt2007_incompatible', 'validate',
     ]:
         def _make(n):
             def _f(*a, **k):
-                if n == '_verify_and_rebalance_pages':
-                    return a[0]
                 return None
             return _f
         monkeypatch.setattr(mtp, name, _make(name))
@@ -2894,6 +2752,46 @@ def test_c1_known_good_songs_system_counts_unaffected_by_fix():
         assert len(bands) == exp, (num, bands)
 
 
+@pytest.mark.skipif(not _YOUTH_PDFS_AVAILABLE, reason=_YOUTH_SKIP_REASON)
+def test_c1_naju_172_system_band_splits_merged_systems():
+    """detect_system_bands()가 172번("나의 고백") 페이지에서 공백행 연속 길이 기반 1차
+    분할이 시스템 2~9를 세그먼트 하나로 합쳐버리는 버그를 가진다 — 시스템 2~9 사이
+    여백 구간에 가사 꼬리 등 미세한 잉크가 산발적으로 섞여 있어, 공백행(row_fill<0.005)
+    연속 런이 전부 _SYSTEM_GAP_MIN 기반 임계값(이 페이지 기준 45px) 밑으로 끊긴다(실측
+    최대 36px) — 그 결과 수정 전에는 총 2개 밴드(피크업 시스템 1개 + 시스템 2~9가
+    뭉친 거대 밴드 1개)만 나와, 생성된 PPT가 슬라이드 1장에 시스템 1개(정상), 슬라이드
+    2장째에 8개를 욱여넣은(가독 불가) 결과를 냈다.
+
+    _split_merged_systems()가 오선행(row_fill>_STAFF_ROW_FILL) 밀도 군집으로 2차 분할을
+    적용해 바로잡는다: 시스템 내부 오선행 간격(최대 21px, 151 실측)과 시스템 사이 간격
+    (최소 60px, 362 실측 — 단 이 60px 자체는 362의 1px짜리 잉크 노이즈였고 실제 안전
+    여백은 더 크다) 사이 _SYSTEM_LINE_MERGE_GAP=40을 기준으로 군집을 나누고,
+    _MIN_STAFF_ROWS(8, 151 저작권 줄 오검출 방지용으로 이미 확립된 값)로 노이즈 군집을
+    버린다. 172 페이지 전체를 오선행 군집으로 직접 재측정하면 9개 군집 사이 8개의 큰
+    간격(167~190px, 전부 40보다 월등히 큼)이 뚜렷이 분리되어 나타난다."""
+    import numpy as _np
+    pi = hp.find_song_page("나주노", 172)
+    d = _fitz.open(hp.SOURCES["나주노"]["pdf"])
+    try:
+        page = d[pi]
+        img = hp.render_region(page, None, hp.RENDER_DPI)
+        gray = _np.asarray(img.convert("L"))
+        bands = hp.detect_system_bands(gray)
+    finally:
+        d.close()
+    assert len(bands) == 9, bands
+    for top, bot in bands:
+        assert (bot - top) > 20, (
+            "시스템 밴드가 비정상적으로 얇음(분할 경계 계산 오류 가능성)", bands
+        )
+    # 밴드는 페이지 순서대로 겹치지 않고 나열돼야 한다(분할 후 재조립 과정에서
+    # 중간점 계산이 역전되거나 트림이 다음 밴드를 침범하지 않았는지 확인). 두 밴드가
+    # 같은 ink 행에서 맞닿는 것(next_top == prev_bot)은 트림 경계가 정확히 인접
+    # 시스템의 마지막/첫 ink row를 공유하는 정상 케이스라 겹침으로 보지 않는다.
+    for (_, prev_bot), (next_top, _) in zip(bands, bands[1:]):
+        assert next_top >= prev_bot, bands
+
+
 def test_c1_naju_151_copyright_crop_resolves():
     """캐시에 151 항목을 추가한 뒤 resolve_copyright_crop()이 None이 아닌 이미지를
     반환해야 한다(요구사항: 정상은 매 슬라이드 우하단 반복 표시).
@@ -3216,14 +3114,16 @@ def test_d1_복음환호송_adult_default_mass_type_signature_backward_compatibl
 # 나오는데, 요구사항은 중앙 정렬이다.
 # ---------------------------------------------------------------------------
 
-def _d2_units_page(text):
-    return [{'text': text, 'verse_num': '', 'extra_verses': [], 'new_para': True}]
+def _d2_units(text, n=3):
+    """9줄 분량 텍스트 n개를 이어 붙인 units(parse_into_verse_units 결과) — 슬라이드 단위 채우기가
+    (9줄 + 9줄 + 나머지)로 최소 n장을 채우도록 한다."""
+    import missa_reading_layout as rl_d
+    return rl_d.parse_into_verse_units('\n'.join([text] * n))
 
 
 def _d2_nine_line_text(pil_font, box_px):
-    """LINES_PER_SLIDE(9)에 딱 맞는 워드랩 텍스트를 실측으로 만든다 — 너무 짧은
-    텍스트를 쓰면 _rebalance_reading_slides_post_write()의 underfull 병합 로직이
-    페이지를 흡수·삭제해버려(실제 결함과 무관한 이유로) 페이지 수가 어긋난다."""
+    """LINES_PER_SLIDE(9)에 딱 맞는 워드랩 텍스트를 실측으로 만든다 — 너무 짧은 텍스트를 쓰면 필요한
+    슬라이드 수가 3장 미만이 되어 3개 슬라이드 박스를 검증하는 이 테스트들의 전제가 어긋난다."""
     import missa_reading_layout as rl_d
     words = ('lorem ipsum dolor sit amet consectetur adipiscing elit sed do '
               'eiusmod tempor incididunt ut labore et dolore magna aliqua ' * 10).split()
@@ -3241,7 +3141,7 @@ def _d2_nine_line_text(pil_font, box_px):
     if len(lines) < 9 and line:
         lines.append(line)
     text = ' '.join(lines)
-    assert rl_d._rendered_wrap_count(text, pil_font, box_px) == 9
+    assert len(rl_d._pil_line_starts([{'text': text, 'orange': []}], pil_font, box_px)) == 9
     return text
 
 
@@ -3262,8 +3162,8 @@ def test_d2_replace_reading_slides_normalizes_page_height_to_template(y2_prs2):
     assert template_height == 4809458  # 실측 고정값(위 주석 근거)
     pil_font, box_px = rl_d._get_slide_render_params(y2_prs2.slides[cs])
 
-    units_pages = [_d2_units_page(_d2_nine_line_text(pil_font, box_px)) for _ in range(3)]
-    rl_d.replace_reading_slides(y2_prs2, cs, ce, units_pages, cs, label='복음',
+    units = _d2_units(_d2_nine_line_text(pil_font, box_px))
+    rl_d.replace_reading_slides(y2_prs2, cs, ce, units, cs, label='복음',
                                  normalize_page_size=True)
 
     for page_i in range(3):
@@ -3286,8 +3186,8 @@ def test_d2_replace_reading_slides_normalize_page_size_default_off(y2_prs2):
     ]
     assert len(set(before_heights)) > 1, before_heights  # 전제: 실제로 서로 다름(53/54 vs 55)
 
-    units_pages = [_d2_units_page(_d2_nine_line_text(pil_font, box_px)) for _ in range(3)]
-    rl_d.replace_reading_slides(y2_prs2, cs, ce, units_pages, cs, label='복음')
+    units = _d2_units(_d2_nine_line_text(pil_font, box_px))
+    rl_d.replace_reading_slides(y2_prs2, cs, ce, units, cs, label='복음')
 
     after_heights = [
         rl_d._find_content_shape(y2_prs2.slides[cs + i]).height for i in range(3)
@@ -3299,8 +3199,7 @@ def test_d2_replace_reading_slides_adult_fixture_geometry_untouched_by_default()
     """리뷰가 실측 확인한 실제 성인 회귀 픽스처(20260712 Template, 제2독서 콘텐츠
     슬라이드 62/63)로, normalize_page_size 기본값이 이 픽스처의 기존 박스 크기 차이를
     절대 건드리지 않음을 직접 검증한다. 실제 파이프라인과 동일하게(단편 필러 텍스트가
-    아니라) 그날 실제 JSON 제2독서 콘텐츠로 페이지를 분배해, post-write 재조정까지
-    포함한 실제 경로 그대로 재현한다."""
+    아니라) 그날 실제 JSON 제2독서 콘텐츠로 슬라이드 단위 채우기를 돌려 실제 경로 그대로 재현한다."""
     import json as _json
     import missa_reading_layout as rl_d
     import missa_sections as sec_d
@@ -3323,8 +3222,7 @@ def test_d2_replace_reading_slides_adult_fixture_geometry_untouched_by_default()
 
     content = _json.loads(json_path.read_text(encoding='utf-8'))['제2독서']['content']
     units = rl_d.parse_into_verse_units(content)
-    units_pages = rl_d.layout_units_on_slides(units)
-    rl_d.replace_reading_slides(prs, cs, ce, units_pages, cs, line_spacing=1.1, label='제2독서')
+    rl_d.replace_reading_slides(prs, cs, ce, units, cs, line_spacing=1.1, label='제2독서')
 
     after = [rl_d._find_content_shape(prs.slides[cs + i]).height for i in range(2)]
     assert after == before, (before, after)
@@ -3340,8 +3238,8 @@ def test_d2_replace_reading_slides_center_aligns_when_requested(y2_prs2):
     sections = sec_d.find_sections(y2_prs2, mass_type='youth')
     cs, ce = sections['복음_start'], sections['복음_end']
     pil_font, box_px = rl_d._get_slide_render_params(y2_prs2.slides[cs])
-    units_pages = [_d2_units_page(_d2_nine_line_text(pil_font, box_px)) for _ in range(3)]
-    rl_d.replace_reading_slides(y2_prs2, cs, ce, units_pages, cs, label='복음', align='ctr')
+    units = _d2_units(_d2_nine_line_text(pil_font, box_px))
+    rl_d.replace_reading_slides(y2_prs2, cs, ce, units, cs, label='복음', align='ctr')
 
     for page_i in range(3):
         shape = rl_d._find_content_shape(y2_prs2.slides[cs + page_i])
@@ -3361,8 +3259,8 @@ def test_d2_replace_reading_slides_align_default_none_backward_compatible(y2_prs
     sections = sec_d.find_sections(y2_prs2, mass_type='youth')
     cs, ce = sections['복음_start'], sections['복음_end']
     pil_font, box_px = rl_d._get_slide_render_params(y2_prs2.slides[cs])
-    units_pages = [_d2_units_page(_d2_nine_line_text(pil_font, box_px)) for _ in range(3)]
-    rl_d.replace_reading_slides(y2_prs2, cs, ce, units_pages, cs, label='복음')
+    units = _d2_units(_d2_nine_line_text(pil_font, box_px))
+    rl_d.replace_reading_slides(y2_prs2, cs, ce, units, cs, label='복음')
 
     shape = rl_d._find_content_shape(y2_prs2.slides[cs])
     for para in shape.text_frame.paragraphs:
@@ -3431,3 +3329,866 @@ def test_d3_영성체송_youth_short_content_unaffected(y2_prs2):
     )
     spc_pct = cu_d._shape_first_para_line_spacing_pct(shape)
     assert spc_pct == 160000, spc_pct  # 템플릿 원본 줄간격 그대로 유지
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# [승격 2026-10-03] SF그룹 — 독서/복음 "슬라이드 단위 정확히 9줄 채우기"(replace_reading_slides) 회귀
+#
+# test_missa_progression.py에서 승격. 가짜 COM(결정적) 테스트 sf1~sf31과 실제 PowerPoint COM 테스트
+# sf_real1~6(pywin32/PowerPoint 부재 시 자체 skip). 아래 상수·헬퍼는 SF그룹 전용이다.
+# 의존 산출물: output/20260705·20260712 템플릿은 git 추적됨. 청년 템플릿(reference/, gitignore)과
+# 영문 복음 픽스처(_workspace/, gitignore)는 없으면 해당 테스트가 skip 된다.
+# ═══════════════════════════════════════════════════════════════════════════
+BASE = REPO_ROOT
+_E_BASE = REPO_ROOT
+_E_YOUTH_TEMPLATE = (
+    _E_BASE / "reference" / "청년미사"
+    / "Template_토요일 저녁 청년 주일미사_20260822_연중 제21주일.pptx"
+)
+_E_EN_GOSPEL_FIXTURE = (
+    _E_BASE / "_workspace" / "청년미사_1단계" / "verify_20260913" / "missa_en_20260913.json"
+)
+
+# 로마서 8,31-39 제2독서 재현 상수 — SF-real3(test_sf_real3_*)이 사용한다.
+# 구 TestSplitAndAdjustViaComKeepsBestPartialResult / test_second_reading_rebalance_converges_without_
+# large_deficit(2026-09-20 제2독서 6줄/4줄 미달 버그)는 2026-10-03 슬라이드 단위 채우기로 사후 재조정이 사라져
+# 삭제됐고, 그 요구사항(대량 미달 금지)은 비마지막 슬라이드 "정확히 9줄"로 강화돼 SF1/SF-real3이 지킨다.
+import types as _b_types
+
+import missa_reading_layout as rl_b
+import missa_sections as sec_b
+from pptx import Presentation as _BPresentation
+
+_B_TEMPLATE = (
+    BASE / "output" / "20260712"
+    / "Template_20260628_연중 제13주일 (교황주일).pptx"
+)
+
+# 2026-08-23자 실사용자 로마서 8,31-39 본문 그대로(20260920 주일 제2독서 재현에 쓰인 실측값).
+_B_CONTENT_ROM_8_31_39 = (
+    "형제 여러분, 31 하느님께서 우리 편이신데 누가 우리를 대적하겠습니까? "
+    "32 당신의 친아드님마저 아끼지 않으시고 우리 모두를 위하여 내어 주신 분께서, "
+    "어찌 그 아드님과 함께 모든 것을 우리에게 베풀어 주지 않으시겠습니까? "
+    "33 하느님께 선택된 이들을 누가 고발할 수 있겠습니까? 그들을 의롭게 해 주시는 분은 "
+    "하느님이십니다. 34 누가 그들을 단죄할 수 있겠습니까? 돌아가셨다가 참으로 되살아나신 분, "
+    "또 하느님의 오른쪽에 앉아 계신 분, 그리고 우리를 위하여 간구해 주시는 분이 바로 "
+    "그리스도 예수님이십니다. 35 무엇이 우리를 그리스도의 사랑에서 갈라놓을 수 있겠습니까? "
+    "환난입니까? 역경입니까? 박해입니까? 굶주림입니까? 헐벗음입니까? 위험입니까? 칼입니까? "
+    "36 이는 성경에 기록된 그대로입니다. \"저희는 온종일 당신 때문에 살해되며 도살될 양처럼 "
+    "여겨집니다.\" 37 그러나 우리는 우리를 사랑해 주신 분의 도움에 힘입어 이 모든 것을 이겨 "
+    "내고도 남습니다. 38 나는 확신합니다. 죽음도, 삶도, 천사도, 권세도, 현재의 것도, "
+    "미래의 것도, 권능도, 39 저 높은 곳도, 저 깊은 곳도, 그 밖의 어떠한 피조물도 우리 주 "
+    "그리스도 예수님에게서 드러난 하느님의 사랑에서 우리를 떼어 놓을 수 없습니다."
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# W그룹(이력) — 2026-10-03 복음 슬라이드 꼬리 줄 widow('짓는' 두 글자만 마지막 줄) 방지
+#
+# 구 _prevent_widow_tails 후처리 테스트(w0~w11)는 2026-10-03 슬라이드 단위 채우기로 후처리 자체가 사라져
+# 삭제됐다. 요구사항 이전: 줄 경계에서 자르므로 꼬리가 구조적으로 안 생김 → test_sf21(결정적)·
+# test_sf_real2(20261004 실 COM, 비마지막 정확히 9줄). 아래는 SF그룹이 쓰는 헬퍼/상수만 남긴 것이다.
+# ═══════════════════════════════════════════════════════════════════════════
+
+import sys as _w_sys
+from pptx.dml.color import RGBColor as _WRGB
+from pptx.util import Emu as _WEmu, Pt as _WPt
+
+
+def _w_mk_prs():
+    from pptx import Presentation as _P
+    return _P()
+
+
+def _w_add_slide(prs, paras):
+    """paras: [[(text, orange_bool), ...], ...] — 한 단락 = run 목록."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    box = slide.shapes.add_textbox(_WEmu(1_000_000), _WEmu(500_000), _WEmu(7_000_000), _WEmu(5_000_000))
+    tf = box.text_frame
+    tf.word_wrap = True
+    for i, runs in enumerate(paras):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        for text, orange in runs:
+            r = p.add_run()
+            r.text = text
+            r.font.size = _WPt(32)
+            if orange:
+                r.font.color.rgb = _WRGB(0xFF, 0xC0, 0x00)
+    return slide
+
+
+_W_GOSPEL_20261004_TITLE = '마태오가 전한 거룩한 복음입니다.'
+_W_GOSPEL_20261004 = (
+    '그때에 예수님께서 수석 사제들과 백성의 원로들에게 말씀하셨다. 33 “다른 비유를 들어 보아라. 어떤 밭 임자가 ‘포도밭을 '
+    '일구어 울타리를 둘러치고 포도 확을 파고 탑을 세웠다.’ 그리고 소작인들에게 내주고 멀리 떠났다. 34 포도 철이 가까워지자 '
+    '그는 자기 몫의 소출을 받아 오라고 소작인들에게 종들을 보냈다. 35 그런데 소작인들은 그들을 붙잡아 하나는 매질하고 하나는 '
+    '죽이고 하나는 돌을 던져 죽이기까지 하였다. 36 주인이 다시 처음보다 더 많은 종을 보냈지만, 소작인들은 그들에게도 같은 '
+    '짓을 하였다. 37 주인은 마침내 ‘내 아들이야 존중해 주겠지.’ 하며 그들에게 아들을 보냈다. 38 그러나 소작인들은 아들을'
+    ' 보자, ‘저자가 상속자다. 자, 저자를 죽여 버리고 우리가 그의 상속 재산을 차지하자.’ 하고 저희끼리 말하면서, 39 그를'
+    ' 붙잡아 포도밭 밖으로 던져 죽여 버렸다. 40 그러니 포도밭 주인이 와서 그 소작인들을 어떻게 하겠느냐?” 41 “그렇게 '
+    '악한 자들은 가차 없이 없애 버리고, 제때에 소출을 바치는 다른 소작인들에게 포도밭을 내줄 것입니다.” 하고 그들이 대답하자,'
+    ' 42 예수님께서 그들에게 말씀하셨다. “너희는 성경에서 이 말씀을 읽어 본 적이 없느냐? ‘집 짓는 이들이 내버린 돌, 그 '
+    '돌이 모퉁이의 머릿돌이 되었네. 이는 주님께서 이루신 일, 우리 눈에 놀랍기만 하네.’ 43 그러므로 내가 너희에게 말한다. '
+    '하느님께서는 너희에게서 하느님의 나라를 빼앗아, 그 소출을 내는 민족에게 주실 것이다.”'
+)
+_W_GOSPEL_TEMPLATE = BASE / 'output' / '20260705' / 'Template_성수축복_20260614_연중 제11주일.pptx'
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SF그룹 — 2026-10-03 독서/복음 "슬라이드 바이 슬라이드 정확히 채우기" 구조 교체
+#
+# 설계: _workspace/refactor_슬라이드단위_채우기/design.md. 전체 추정 분할(layout_units_on_slides*)
+# 후 사후 보정(_rebalance_reading_slides_post_write 등)하던 구조를, 각 슬라이드의 실제 본문 상자에서
+# 줄 시작 오프셋을 실측(COM, 불가 시 Pillow)해 정확히 첫 9줄만 확정하고 나머지로 다음 슬라이드를
+# 같은 방식으로 채우는 구조로 바꿨다. 불변조건: 비마지막 슬라이드 정확히 9줄 / 마지막 <= 9줄 /
+# 텍스트 무손실 / 절 번호 오렌지 / 오버플로 없음.
+#
+# 테스트 도구: 가짜 COM(고정폭 글자 10px, 슬라이드 상자 폭으로 줄 수 결정 — 구현과 독립된 줄바꿈
+# 구현)과 Pillow 폴백(_SFFont). 전역 상태는 monkeypatch.setattr로 새 객체로 교체한다.
+# ═══════════════════════════════════════════════════════════════════════════
+import re as _sf_re
+
+_SF_PX = 10.0                      # 글자당 폭(px)
+_SF_BOX_EMU = 2_400_000            # 기본 상자 폭 → 252px → 25자/줄
+_SF_A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+
+
+class _SFFont:
+    def getlength(self, s):
+        return len(s) * _SF_PX
+
+
+def _sf_max_chars(shape):
+    return int((shape.width / 9525.0) // _SF_PX)
+
+
+def _sf_line_starts(par_texts, max_chars):
+    """고정폭 그리디 word-wrap — 구현(_pil_wrap_spans)과 독립된 테스트용 구현.
+    각 문단의 첫 줄은 문단 시작, 이후 줄은 단어(비공백) 시작. 반환: 전체 텍스트('\\r' 결합) 기준 줄 시작 오프셋."""
+    starts, base = [], 0
+    for t in par_texts:
+        toks = [(m.start(), m.end()) for m in _sf_re.finditer(r'\S+', t)]
+        if toks:
+            line_start = 0
+            starts.append(base)
+            for ts, te in toks:
+                if te - line_start > max_chars and ts > line_start:
+                    line_start = ts
+                    starts.append(base + ts)
+        base += len(t) + 1
+    return starts
+
+
+def _sf_slide_paras(slide):
+    shape = rl_b._find_content_shape(slide)
+    return [p for p in shape.text_frame.paragraphs if p.text.strip()] if shape else []
+
+
+def _sf_slide_lines(slide):
+    shape = rl_b._find_content_shape(slide)
+    return len(_sf_line_starts([p.text for p in _sf_slide_paras(slide)], _sf_max_chars(shape)))
+
+
+def _sf_fake_com(raises=False, corrupt=False):
+    fake = _b_types.ModuleType('ppt_com_verify')
+
+    class _Unavail(Exception):
+        pass
+
+    fake.ComVerificationUnavailable = _Unavail
+    fake.calls = []
+    fake.registry = {}
+    fake.shutdown = lambda: None
+
+    def measure_line_starts(path, shape_index, max_lines=None):
+        fake.calls.append(path)
+        if raises:
+            raise _Unavail('simulated')
+        slide = fake.registry[path]
+        shape = rl_b._find_content_shape(slide)
+        texts = [p.text for p in shape.text_frame.paragraphs]
+        full = '\r'.join(texts)
+        starts = _sf_line_starts(texts, _sf_max_chars(shape))
+        ends = starts[1:] + [len(full)]
+        line_texts = [full[s:e] for s, e in zip(starts, ends)]
+        if corrupt:
+            line_texts = ['@@@' + t for t in line_texts]   # 오프셋과 텍스트가 어긋난 이상 응답
+        n = len(starts)
+        k = n if max_lines is None else min(n, max_lines)
+        return {'lines': n, 'starts': starts[:k], 'texts': line_texts[:k]}
+
+    fake.measure_line_starts = measure_line_starts
+    return fake
+
+
+def _sf_install(monkeypatch, com='fake', box_px=None):
+    """com='fake'(기본): 가짜 COM / None: COM 비활성(Pillow 폴백) / 모듈 객체: 그대로 사용."""
+    font = _SFFont()
+    monkeypatch.setattr(
+        rl_b, '_get_slide_render_params',
+        lambda slide: (font, box_px if box_px is not None
+                       else rl_b._find_content_shape(slide).width / 9525.0),
+    )
+    monkeypatch.setattr(rl_b, '_COM_DISABLED', [False], raising=False)
+    monkeypatch.setattr(rl_b, '_COM_MISMATCH_COUNT', {}, raising=False)
+    monkeypatch.setattr(rl_b, '_COM_ATEXIT_REGISTERED', [False], raising=False)
+    if com is None:
+        monkeypatch.setattr(rl_b, '_com_verification_enabled', lambda: False)
+        return None
+    if com == 'fake':
+        com = _sf_fake_com()
+    monkeypatch.setattr(rl_b, '_com_verification_enabled', lambda: True)
+
+    def _probe(prs, slide):
+        key = f'probe-{id(slide)}-{len(com.registry)}'
+        com.registry[key] = slide
+        return key, 1
+
+    monkeypatch.setattr(rl_b, '_build_com_probe_pptx', _probe, raising=False)
+    monkeypatch.setitem(_w_sys.modules, 'ppt_com_verify', com)
+    return com
+
+
+def _sf_add_body_slide(prs, width=_SF_BOX_EMU, text='샘플 본문'):
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    box = slide.shapes.add_textbox(_WEmu(500_000), _WEmu(300_000), _WEmu(width), _WEmu(5_000_000))
+    tf = box.text_frame
+    tf.word_wrap = True
+    r = tf.paragraphs[0].add_run()
+    r.text = '1 ' + text
+    r.font.size = _WPt(32)
+    return slide
+
+
+def _sf_add_ending_slide(prs):
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    box = slide.shapes.add_textbox(_WEmu(500_000), _WEmu(300_000), _WEmu(2_000_000), _WEmu(500_000))
+    box.text_frame.text = '주님의 말씀입니다.'
+    return slide
+
+
+def _sf_prs(n_body=1, n_ending=0, widths=None):
+    prs = _w_mk_prs()
+    for i in range(n_body):
+        _sf_add_body_slide(prs, width=(widths[i] if widths else _SF_BOX_EMU))
+    for _ in range(n_ending):
+        _sf_add_ending_slide(prs)
+    return prs
+
+
+def _sf_fill(prs, text, n_body=None, n_ending=0, **kw):
+    units = rl_b.parse_into_verse_units(text)
+    n_body = n_body if n_body is not None else len(prs.slides) - n_ending
+    return rl_b.replace_reading_slides(prs, 0, n_body + n_ending, units, 0, label='T', **kw)
+
+
+def _sf_body_slides(prs):
+    """본문 상자가 있는 슬라이드(종료 전용 슬라이드는 _find_content_shape가 None; 종료 병합 슬라이드는 포함)."""
+    return [s for s in prs.slides if rl_b._find_content_shape(s) is not None]
+
+
+def _sf_all_text(prs):
+    return ''.join(p.text for s in _sf_body_slides(prs) for p in _sf_slide_paras(s))
+
+
+def _sf_nospace(s):
+    return _sf_re.sub(r'\s+', '', s)
+
+
+def _sf_assert_invariants(prs, text):
+    """비마지막 슬라이드 정확히 9줄, 마지막 <= 9줄, 텍스트 무손실, 절 번호 오렌지(규칙 15)."""
+    slides = _sf_body_slides(prs)
+    assert slides
+    counts = [_sf_slide_lines(s) for s in slides]
+    assert all(c == rl_b.LINES_PER_SLIDE for c in counts[:-1]), counts
+    assert 1 <= counts[-1] <= rl_b.LINES_PER_SLIDE, counts
+    units = rl_b.parse_into_verse_units(text)
+    expected = ''.join(u['text'] for u in units)
+    assert _sf_nospace(_sf_all_text(prs)) == _sf_nospace(expected)
+    if any(u['verse_num'] for u in units):
+        assert sec_b._missing_orange_verse_numbers(prs, 0, len(prs.slides), text) == []
+    return counts
+
+
+def _sf_run_orange(r):
+    clr = r.find(f'{{{_SF_A}}}rPr/{{{_SF_A}}}solidFill/{{{_SF_A}}}srgbClr')
+    return clr is not None and clr.get('val', '').upper() == 'FFC000'
+
+
+def _sf_orange_texts(slide):
+    return [r.find(f'{{{_SF_A}}}t').text
+            for p in _sf_slide_paras(slide) for r in p._p.findall(f'{{{_SF_A}}}r') if _sf_run_orange(r)]
+
+
+# 문장이 끝나지 않고 이어지는 continuation 절과 절 중간 분할을 모두 만드는 한글 본문(20261004 복음 상수 재사용)
+_SF_GOSPEL = _W_GOSPEL_20261004
+_SF_LINE = ' '.join(['가나다라마'] * 4) + '.'   # 24자 — 25자/줄 상자에서 정확히 1줄
+
+
+def test_sf1_com_measured_every_nonlast_slide_exactly_nine_lines(monkeypatch):
+    """SF1: 한 슬라이드만 있는 템플릿에서 시작해도 슬라이드를 늘려가며 비마지막 슬라이드를
+    정확히 9줄로 채운다(실측=가짜 COM 기준). Pillow 추정 폭을 일부러 크게 틀리게 줘도(과거
+    'Pillow=9줄, COM=10줄' 상황) 수렴은 COM 실측이 결정한다."""
+    com = _sf_install(monkeypatch, box_px=400.0)   # Pillow 추정 폭 400px vs 실제(COM) 252px
+    prs = _sf_prs(1)
+    _sf_fill(prs, _SF_GOSPEL)
+    counts = _sf_assert_invariants(prs, _SF_GOSPEL)
+    assert len(counts) >= 3
+    assert com.calls, 'COM 실측을 한 번도 쓰지 않음'
+
+
+def test_sf2_slide_count_is_driven_by_measurement_not_template_count(monkeypatch):
+    """SF2: 템플릿 본문 슬라이드가 필요한 수보다 많으면 남는 슬라이드를 삭제하고, 적으면 복제해 늘린다.
+    반환값은 순삽입 슬라이드 수(종료 슬라이드 위치 계산이 의존)."""
+    _sf_install(monkeypatch)
+    prs_few = _sf_prs(1)
+    shift_few = _sf_fill(prs_few, _SF_GOSPEL)
+    n = len(prs_few.slides)
+    assert shift_few == n - 1 and n >= 3
+
+    prs_many = _sf_prs(8)
+    shift_many = _sf_fill(prs_many, _SF_GOSPEL)
+    assert len(prs_many.slides) == n
+    assert shift_many == n - 8
+
+
+def test_sf3_per_slide_geometry_is_measured_in_each_slides_own_box(monkeypatch):
+    """SF3: 기존 슬라이드 박스 폭이 서로 달라도(성인 템플릿 62/63 같은 사례) 각 슬라이드를 그 슬라이드의 실제
+    상자에서 측정해 정확히 9줄로 채운다."""
+    _sf_install(monkeypatch)
+    prs = _sf_prs(4, widths=[2_400_000, 3_000_000, 2_000_000, 2_600_000])
+    _sf_fill(prs, _SF_GOSPEL)
+    slides = _sf_body_slides(prs)
+    counts = [_sf_slide_lines(s) for s in slides]
+    assert all(c == 9 for c in counts[:-1]) and counts[-1] <= 9, counts
+    widths = {rl_b._find_content_shape(s).width for s in slides}
+    assert len(widths) > 1, '전제: 박스 폭이 실제로 다름'
+
+
+def test_sf4_verse_numbers_orange_and_continuation_fragments_not_orange(monkeypatch):
+    """SF4: 절 번호는 오렌지 run으로 렌더링되고(규칙 15), 슬라이드 경계에서 잘려 이어지는 조각의 본문
+    run은 오렌지가 아니다. 오렌지 run은 절 번호 텍스트뿐이다."""
+    _sf_install(monkeypatch)
+    prs = _sf_prs(1)
+    _sf_fill(prs, _SF_GOSPEL)
+    _sf_assert_invariants(prs, _SF_GOSPEL)
+    for s in _sf_body_slides(prs):
+        for t in _sf_orange_texts(s):
+            assert _sf_re.fullmatch(r'\d+(,\d+)?\s*', t), f'오렌지 run에 절 번호가 아닌 텍스트: {t!r}'
+
+
+def test_sf5_cut_inside_paragraph_keeps_formats_and_a_p_child_order(monkeypatch):
+    """SF5: 문단 중간에서 잘린 조각의 a:p 자식 순서(pPr? → r* → endParaRPr?)와 본문 run 서식(sz)이 유지된다
+    (규칙 1·2·13·14). 이어지는 조각은 새 슬라이드 첫 문단이며 절 번호(오렌지)로 시작하지 않는다."""
+    _sf_install(monkeypatch)
+    prs = _sf_prs(1)
+    _sf_fill(prs, _SF_GOSPEL, line_spacing=1.1)
+    order = {'pPr': 0, 'r': 1, 'endParaRPr': 2}
+    cut_found = False
+    for i, s in enumerate(_sf_body_slides(prs)):
+        for p in _sf_slide_paras(s):
+            tags = [c.tag.split('}')[1] for c in p._p]
+            assert tags == sorted(tags, key=lambda t: order[t]), tags
+            for r in p._p.findall(f'{{{_SF_A}}}r'):
+                assert r.find(f'{{{_SF_A}}}rPr').get('sz') == '3200'
+        first = _sf_slide_paras(s)[0]
+        if i > 0 and not _sf_re.match(r'^\d', first.text):
+            cut_found = True
+            assert not _sf_run_orange(first._p.findall(f'{{{_SF_A}}}r')[0])
+    assert cut_found, '전제: 이 본문은 문단 중간에서 잘린다'
+
+
+def test_sf6_no_overflow_when_com_real_wrap_differs_from_pillow_in_both_directions(monkeypatch):
+    """SF6: Pillow 추정이 COM보다 넓거나 좁게 틀려도 결과는 COM 실측 기준으로 정확히 9줄이다."""
+    for est in (150.0, 252.0, 900.0):
+        _sf_install(monkeypatch, box_px=est)
+        prs = _sf_prs(2)
+        _sf_fill(prs, _SF_GOSPEL)
+        _sf_assert_invariants(prs, _SF_GOSPEL)
+
+
+def test_sf7_exact_multiple_of_nine_lines_makes_no_extra_empty_slide(monkeypatch):
+    """SF7: 본문이 정확히 18줄이면 슬라이드 2장(9+9) — 빈 3번째 슬라이드를 만들지 않는다."""
+    _sf_install(monkeypatch)
+    text = '\n'.join(_SF_LINE for _ in range(18))
+    prs = _sf_prs(1)
+    _sf_fill(prs, text)
+    counts = [_sf_slide_lines(s) for s in _sf_body_slides(prs)]
+    assert counts == [9, 9], counts
+
+
+def test_sf8_empty_units_leave_one_empty_slide_without_crash(monkeypatch):
+    """SF8: 본문이 비어 있어도 예외 없이 슬라이드 1장(빈 본문)이 남는다(과거 `[[]]` 동작 보존)."""
+    _sf_install(monkeypatch)
+    prs = _sf_prs(3)
+    shift = _sf_fill(prs, '')
+    assert len(prs.slides) == 1 and shift == -2
+
+
+def test_sf9_pillow_path_same_loop_when_com_disabled(monkeypatch):
+    """SF9: com_verification_enabled=false면 COM을 한 번도 호출하지 않고 같은 슬라이드 단위 루프를 Pillow
+    word-wrap(분할과 검증이 같은 박스 폭)으로 수행해 비마지막 슬라이드가 정확히 9줄이다."""
+    com = _sf_fake_com()
+    monkeypatch.setitem(_w_sys.modules, 'ppt_com_verify', com)
+    _sf_install(monkeypatch, com=None)
+    prs = _sf_prs(1)
+    _sf_fill(prs, _SF_GOSPEL)
+    _sf_assert_invariants(prs, _SF_GOSPEL)
+    assert com.calls == []
+
+
+def test_sf10_com_failure_switches_to_pillow_and_disables_com_permanently(monkeypatch, capsys):
+    """SF10: COM 호출이 ComVerificationUnavailable로 실패하면 _COM_DISABLED를 켜고 그 슬라이드부터 Pillow로
+    계속한다(예외 없음). 결과 불변조건은 동일."""
+    com = _sf_install(monkeypatch, com=_sf_fake_com(raises=True))
+    prs = _sf_prs(1)
+    _sf_fill(prs, _SF_GOSPEL)
+    _sf_assert_invariants(prs, _SF_GOSPEL)
+    assert rl_b._COM_DISABLED[0] is True
+    assert len(com.calls) == 1
+    assert '[경고]' in capsys.readouterr().out
+
+
+def test_sf11_inconsistent_com_answer_falls_back_for_that_slide_only(monkeypatch, capsys):
+    """SF11: 줄 시작 오프셋과 줄 텍스트가 어긋나는 이상 응답이면 그 슬라이드만 Pillow로 폴백하고
+    COM을 전역 비활성화하지 않는다."""
+    com = _sf_install(monkeypatch, com=_sf_fake_com(corrupt=True))
+    prs = _sf_prs(1)
+    _sf_fill(prs, _SF_GOSPEL)
+    _sf_assert_invariants(prs, _SF_GOSPEL)
+    assert rl_b._COM_DISABLED[0] is False
+    assert len(com.calls) >= 2          # 매 슬라이드 COM을 계속 시도
+    assert '[경고]' in capsys.readouterr().out
+
+
+def test_sf12_mismatch_between_pillow_and_com_is_counted_and_logged(monkeypatch, capsys):
+    """SF12: 같은 텍스트에 대해 Pillow 추정 줄 수와 COM 실측 줄 수가 다르면 `_COM_MISMATCH_COUNT`를 올리고
+    기존과 같은 '줄 수 불일치 감지' 경고를 출력한다(관측 가능한 동작 보존)."""
+    _sf_install(monkeypatch, box_px=400.0)
+    prs = _sf_prs(1)
+    _sf_fill(prs, _SF_GOSPEL)
+    assert sum(rl_b._COM_MISMATCH_COUNT.values()) >= 1
+    assert '줄 수 불일치 감지' in capsys.readouterr().out
+
+
+def test_sf13_prefix_grows_until_tenth_line_is_visible(monkeypatch):
+    """SF13: 측정용 프리픽스가 너무 짧아 10번째 줄이 안 보이면 프리픽스를 늘려 재측정해 같은 결과가 나온다."""
+    _sf_install(monkeypatch)
+    prs_ref = _sf_prs(1)
+    _sf_fill(prs_ref, _SF_GOSPEL)
+    ref = [[p.text for p in _sf_slide_paras(s)] for s in _sf_body_slides(prs_ref)]
+
+    com = _sf_install(monkeypatch)
+    monkeypatch.setattr(rl_b, '_MEASURE_PREFIX_CHARS', 60)
+    prs = _sf_prs(1)
+    _sf_fill(prs, _SF_GOSPEL)
+    got = [[p.text for p in _sf_slide_paras(s)] for s in _sf_body_slides(prs)]
+    assert got == ref
+    assert len(com.calls) > len(ref)      # 재측정이 일어났다
+
+
+def test_sf14_ending_merge_after_last_slide_is_confirmed(monkeypatch):
+    """SF14: 종료 텍스트 병합은 마지막 본문 슬라이드 확정 이후 기존 규칙(<=5줄이면 마지막 본문 슬라이드에
+    통합) 그대로 동작하고, 반환값은 실제 슬라이드 수 변화와 일치한다."""
+    _sf_install(monkeypatch)
+    text = '\n'.join(_SF_LINE for _ in range(11))   # 11줄 → 9 + 2
+    prs = _sf_prs(2, n_ending=1)
+    before = len(prs.slides)
+    shift = _sf_fill(prs, text, n_body=2, n_ending=1)
+    assert len(prs.slides) == before + shift == 2
+    last = prs.slides[1]
+    assert any('주님의 말씀입니다' in sh.text_frame.text for sh in last.shapes if sh.has_text_frame)
+
+
+def test_sf15_ending_slide_kept_when_last_slide_is_long(monkeypatch):
+    """SF15: 마지막 본문 슬라이드가 6줄 이상이면 종료 슬라이드는 별도로 남는다(종료 슬라이드가 본문 뒤에 위치)."""
+    _sf_install(monkeypatch)
+    text = '\n'.join(_SF_LINE for _ in range(15))   # 15줄 → 9 + 6
+    prs = _sf_prs(2, n_ending=1)
+    shift = _sf_fill(prs, text, n_body=2, n_ending=1)
+    assert len(prs.slides) == 3 and shift == 0
+    assert rl_b._has_ending_text(prs.slides[2]) and not rl_b._has_ending_text(prs.slides[1])
+    assert _sf_slide_lines(prs.slides[0]) == 9 and _sf_slide_lines(prs.slides[1]) == 6
+
+
+def test_sf16_ending_slide_pushed_when_more_body_slides_are_needed(monkeypatch):
+    """SF16: 필요한 본문 슬라이드 수가 기존보다 많으면 본문이 종료 슬라이드 앞에 삽입된다(종료는 항상 맨 뒤)."""
+    _sf_install(monkeypatch)
+    prs = _sf_prs(1, n_ending=1)
+    shift = _sf_fill(prs, _SF_GOSPEL, n_body=1, n_ending=1)
+    assert shift >= 2
+    last = prs.slides[len(prs.slides) - 1]
+    assert rl_b._has_ending_text(last)
+    slides = _sf_body_slides(prs)
+    assert [_sf_slide_lines(s) for s in slides[:-1]] == [9] * (len(slides) - 1)
+
+
+def test_sf17_align_and_line_spacing_applied_to_every_filled_slide(monkeypatch):
+    """SF17: align/line_spacing 인자는 모든 슬라이드(복제된 슬라이드 포함)의 모든 문단에 적용된다."""
+    _sf_install(monkeypatch)
+    prs = _sf_prs(1)
+    _sf_fill(prs, _SF_GOSPEL, align='ctr', line_spacing=1.1)
+    assert len(_sf_body_slides(prs)) >= 3
+    for s in _sf_body_slides(prs):
+        for p in _sf_slide_paras(s):
+            pPr = p._p.find(f'{{{_SF_A}}}pPr')
+            assert pPr.get('algn') == 'ctr'
+            assert pPr.find(f'{{{_SF_A}}}lnSpc/{{{_SF_A}}}spcPct').get('val') == '110000'
+
+
+def test_sf18_normalize_page_size_copies_template_box_before_measuring(monkeypatch):
+    """SF18: normalize_page_size=True면 각 슬라이드 상자를 template 슬라이드 크기로 맞춘 뒤 측정한다."""
+    _sf_install(monkeypatch)
+    prs = _sf_prs(3, widths=[2_400_000, 1_800_000, 2_000_000])
+    _sf_fill(prs, _SF_GOSPEL, normalize_page_size=True)
+    widths = {rl_b._find_content_shape(s).width for s in _sf_body_slides(prs)}
+    assert widths == {2_400_000}
+    counts = [_sf_slide_lines(s) for s in _sf_body_slides(prs)]
+    assert all(c == 9 for c in counts[:-1]) and counts[-1] <= 9
+
+
+def test_sf19_split_helpers_preserve_orange_ranges_and_text():
+    """SF19(규칙 13·14·15): 문단 분할 헬퍼가 run 개수를 가정하지 않고 오렌지 구간을 잘린 조각에 정확히 옮긴다.
+    continuation으로 병합된 여러 절 번호가 한 문단에 있는 경우도."""
+    merged = rl_b._reading_paras_from_units(
+        [{'text': '51 aaa bbb ccc', 'verse_num': '51', 'is_continuation': False},
+         {'text': '52 ddd eee', 'verse_num': '52', 'is_continuation': True}])
+    assert len(merged) == 1
+    text = merged[0]['text']
+    assert text == '51 aaa bbb ccc 52 ddd eee'
+    cut = text.index('ccc')
+    front, rest = rl_b._split_paras_at(merged, 0, cut)
+    f_units, r_units = rl_b._paras_to_units(front), rl_b._paras_to_units(rest)
+    assert f_units[-1]['text'] == '51 aaa bbb' and f_units[-1]['extra_verses'] == [(0, '51')]
+    assert r_units[0]['text'] == 'ccc 52 ddd eee' and r_units[0]['extra_verses'] == [(4, '52')]
+    # 두 번째 절 번호 바로 뒤에서 자르기 — 앞 조각의 오렌지 구간이 trailing space 제거 후에도 유지
+    cut2 = text.index('ddd')
+    front2, rest2 = rl_b._split_paras_at(merged, 0, cut2)
+    f2 = rl_b._paras_to_units(front2)[-1]
+    assert f2['text'] == '51 aaa bbb ccc 52' and f2['extra_verses'] == [(0, '51'), (15, '52')]
+    assert rl_b._paras_to_units(rest2)[0]['extra_verses'] == []
+
+
+def test_sf20_cut_at_paragraph_start_moves_whole_paragraphs():
+    """SF20: 절단점이 문단 시작이면 앞 조각엔 그 이전 문단만, 뒤 조각엔 그 문단부터 통째로 들어간다."""
+    paras = rl_b._reading_paras_from_units(rl_b.parse_into_verse_units('1 가나다.\n2 라마바.\n3 사아자.'))
+    front, rest = rl_b._split_paras_at(paras, 1, 0)
+    assert [p['text'] for p in front] == ['1 가나다.']
+    assert [p['text'] for p in rest] == ['2 라마바.', '3 사아자.']
+
+
+def test_sf21_gospel_20261004_cut_lines_are_exact_wrap_lines_no_two_char_tail(monkeypatch):
+    """SF21(구 W그룹 widow 요구사항 이전): 20261004 복음에서 문단 중간에서 잘린 비마지막 슬라이드의 마지막 줄은
+    줄바꿈의 정확한 한 줄이며(앞 슬라이드는 정확히 9줄), 그 줄에 뒤 조각의 첫 단어가 더 못 들어간다 —
+    '짓는' 두 글자만 남는 꼬리가 구조적으로 생기지 않는다."""
+    _sf_install(monkeypatch)
+    prs = _sf_prs(1)
+    _sf_fill(prs, _SF_GOSPEL)
+    slides = _sf_body_slides(prs)
+    checked = 0
+    for cur, nxt in zip(slides, slides[1:]):
+        shape = rl_b._find_content_shape(cur)
+        texts = [p.text for p in _sf_slide_paras(cur)]
+        starts = _sf_line_starts(texts, _sf_max_chars(shape))
+        assert len(starts) == 9
+        last_line = '\r'.join(texts)[starts[-1]:].strip()
+        nxt_first = _sf_slide_paras(nxt)[0].text
+        if not _sf_re.match(r'^\d', nxt_first) and texts[-1].rstrip()[-1] not in '.!?”’':
+            first_word = nxt_first.split(' ')[0]
+            assert len(last_line) + 1 + len(first_word) > _sf_max_chars(shape), (last_line, first_word)
+            checked += 1
+    assert checked >= 1
+
+
+def test_sf22_cut_never_exceeds_nine_lines_even_with_long_unbreakable_word(monkeypatch):
+    """SF22: 한 줄보다 긴 단어가 있어도 오버플로 없이 슬라이드를 구성한다(비마지막 슬라이드는 정확히 9줄)."""
+    _sf_install(monkeypatch)
+    text = '가나다 ' + '가' * 40 + ' 라마바' * 60
+    prs = _sf_prs(1)
+    _sf_fill(prs, text)
+    slides = _sf_body_slides(prs)
+    assert len(slides) >= 2
+    for s in slides[:-1]:
+        assert _sf_slide_lines(s) == 9
+
+
+# ---------------------------------------------------------------------------
+# SF-real: 실제 PowerPoint COM으로 모든 비마지막 슬라이드가 정확히 9줄인지 확인한다.
+# ---------------------------------------------------------------------------
+
+_SF_G_20260926_EN = (
+    'Jesus said to the chief priests and elders of the people, ‘What is your opinion? '
+    'A man had two sons. He went and said to the first, “My boy, you go and work in the '
+    'vineyard today.” He answered, “I will not go,” but afterwards thought better '
+    'of it and went. The man then went and said the same thing to the second who answered, '
+    '“Certainly, sir,” but did not go. Which of the two did the father’s will?’ '
+    '‘The first’ they said. Jesus said to them, ‘I tell you solemnly, tax collectors '
+    'and prostitutes are making their way into the kingdom of God before you. For John came to '
+    'you, a pattern of true righteousness, but you did not believe him, and yet the tax '
+    'collectors and prostitutes did. Even after seeing that, you refused to think better of it '
+    'and believe in him.’'
+)
+
+
+def _sf_real_com_or_skip():
+    try:
+        import ppt_com_verify as com
+    except ImportError:
+        pytest.skip('pywin32 미설치')
+    if not com.is_available():
+        pytest.skip('PowerPoint COM 연결 불가')
+    return com
+
+
+def _sf_real_assert_nine(prs, start, end, text):
+    """모든 본문 슬라이드를 실제 COM으로 재측정: 비마지막 == 9, 마지막 <= 9, 텍스트 보존, 오렌지."""
+    com = _sf_real_com_or_skip()
+    from missa_ooxml_utils import _build_com_probe_pptx as _probe
+    body = [prs.slides[i] for i in range(start, end) if rl_b._find_content_shape(prs.slides[i]) is not None]
+    counts = []
+    for slide in body:
+        path, idx = _probe(prs, slide)
+        counts.append(com.count_slide_lines(str(path), idx))
+    assert all(c == rl_b.LINES_PER_SLIDE for c in counts[:-1]), counts
+    assert counts[-1] <= rl_b.LINES_PER_SLIDE, counts
+    got = ''.join(p.text for s in body for p in rl_b._find_content_shape(s).text_frame.paragraphs)
+    expected = ''.join(u['text'] for u in rl_b.parse_into_verse_units(text))
+    assert _sf_nospace(got) == _sf_nospace(expected)
+    if any(u['verse_num'] for u in rl_b.parse_into_verse_units(text)):
+        assert sec_b._missing_orange_verse_numbers(prs, start, end, text) == []
+    return counts
+
+
+def test_sf_real1_measure_line_starts_partitions_text():
+    """SF-real1: ppt_com_verify.measure_line_starts가 줄 시작 오프셋(0-based)·줄 텍스트를 서로 일관되게 돌려준다."""
+    com = _sf_real_com_or_skip()
+    prs = _w_mk_prs()
+    _w_add_slide(prs, [[('1 ', True), ('태초에 하느님께서 하늘과 땅을 창조하셨다. 땅은 아직 모양을 갖추지 않고 비어 있었다. 어둠이 심연을 덮고 있었다.', False)],
+                       [('2 ', True), ('두번째 단락입니다 짧은 것. ', False)]])
+    from missa_ooxml_utils import _build_com_probe_pptx as _probe
+    slide = prs.slides[0]
+    path, idx = _probe(prs, slide)
+    full = '\r'.join(p.text for p in rl_b._find_content_shape(slide).text_frame.paragraphs)
+    n = com.count_slide_lines(str(path), idx)
+    info = com.measure_line_starts(str(path), idx, 3)
+    assert info['lines'] == n and n > 3
+    assert info['starts'][0] == 0 and info['starts'] == sorted(set(info['starts'])) and len(info['starts']) == 3
+    for s, t in zip(info['starts'], info['texts']):
+        assert full.startswith(t.rstrip('\r '), s)
+
+
+@pytest.mark.skipif(not _W_GOSPEL_TEMPLATE.is_file(), reason='성인 템플릿 픽스처 없음')
+def test_sf_real2_20261004_adult_gospel_all_nonlast_slides_exactly_nine(tmp_path):
+    """SF-real2(구 W9 이전): 20261004 성인 복음을 실제 COM으로 — 모든 비마지막 슬라이드 정확히 9줄(구 구조는 75번이 8줄)."""
+    _sf_real_com_or_skip()
+    from pptx import Presentation as _P
+    import shutil as _sh
+    import missa_content_updaters as cu
+    work = tmp_path / 't.pptx'
+    _sh.copy(_W_GOSPEL_TEMPLATE, work)
+    prs = _P(str(work))
+    sec = sec_b.find_sections(prs)
+    cu.update_복음_title_slide(prs, sec['복음_title'], _W_GOSPEL_20261004_TITLE)
+    rl_b.replace_reading_slides(prs, sec['복음_start'], sec['복음_end'],
+                                rl_b.parse_into_verse_units(_W_GOSPEL_20261004), sec['복음_start'], label='복음')
+    sec = sec_b.find_sections(prs)
+    counts = _sf_real_assert_nine(prs, sec['복음_start'], sec['복음_end'], _W_GOSPEL_20261004)
+    assert len(counts) >= 3
+
+
+@pytest.mark.skipif(not _B_TEMPLATE.is_file(), reason='제2독서 재현용 참조 PPT 없음')
+def test_sf_real3_second_reading_20260920_converges_to_nine():
+    """SF-real3(구 test_second_reading_rebalance_converges_without_large_deficit 이전): 로마서 8,31-39 제2독서가
+    '1줄 이내 미달 허용'이 아니라 비마지막 정확히 9줄."""
+    _sf_real_com_or_skip()
+    prs = _BPresentation(str(_B_TEMPLATE))
+    sections = sec_b.find_sections(prs)
+    rl_b.replace_reading_slides(prs, sections['제2독서_start'], sections['제2독서_end'],
+                                rl_b.parse_into_verse_units(_B_CONTENT_ROM_8_31_39), sections['제2독서_start'],
+                                label='제2독서')
+    s2 = sec_b.find_sections(prs)
+    _sf_real_assert_nine(prs, s2['제2독서_start'], s2['제2독서_end'], _B_CONTENT_ROM_8_31_39)
+
+
+@pytest.mark.skipif(not _E_YOUTH_TEMPLATE.is_file(), reason='청년 템플릿 없음')
+@pytest.mark.parametrize('which', ['20260913', '20260926'])
+def test_sf_real4_youth_english_gospel_exactly_nine(which):
+    """SF-real4(구 test_g1c / test_y2_G2 / test_y2_G1b 이전): 영문 복음이 추정 오차(Pillow=9줄, COM=10줄)에도
+    비마지막 슬라이드 정확히 9줄로 수렴하고, 20260926에서는 "father's"가 첫 슬라이드에 들어간다."""
+    _sf_real_com_or_skip()
+    if which == '20260913':
+        if not _E_EN_GOSPEL_FIXTURE.is_file():
+            pytest.skip('20260913 영문 복음 JSON 없음')
+        import json as _j
+        content = _j.loads(_E_EN_GOSPEL_FIXTURE.read_text(encoding='utf-8'))['Gospel']['content']
+    else:
+        content = _SF_G_20260926_EN
+    prs = _BPresentation(str(_E_YOUTH_TEMPLATE))
+    sections = sec_b.find_sections(prs, mass_type='youth')
+    rl_b.replace_reading_slides(prs, sections['복음_start'], sections['복음_end'],
+                                rl_b.parse_into_verse_units(content), sections['복음_start'], label='복음',
+                                normalize_page_size=True)
+    s2 = sec_b.find_sections(prs, mass_type='youth')
+    _sf_real_assert_nine(prs, s2['복음_start'], s2['복음_end'], content)
+    if which == '20260926':
+        first = rl_b._find_content_shape(prs.slides[s2['복음_start']]).text_frame.text
+        assert "father’s" in first, first
+
+
+
+# ---------------------------------------------------------------------------
+# SF 후속(2026-10-03, 독립 리뷰 반영): 종료 병합 판정을 실측 줄 수로 / 절 번호 단독 꼬리 / 예외 / 계측 초기화
+# ---------------------------------------------------------------------------
+
+_SF_WIDE_EMU = 6_000_000                       # 629px → 62자/줄
+_SF_L60 = ' '.join(['abcdefghi'] * 6) + '.'    # 60자: 넓은 상자에서 정확히 1줄, 27자/줄 추정으로는 3줄
+_SF_NARROW_EMU = 1_200_000                     # 125px → 12자/줄
+
+
+def _sf_merge_case(n_lines, width, line=_SF_L60, n_ending=1):
+    prs = _sf_prs(1, n_ending=n_ending, widths=[width])
+    text = '\n'.join([line] * n_lines)
+    _sf_fill(prs, text, n_body=1, n_ending=n_ending)
+    return prs
+
+
+@pytest.mark.parametrize('n_lines,merged', [(4, True), (5, True), (6, False), (7, False)])
+def test_sf23_ending_merge_uses_measured_line_count_com(monkeypatch, n_lines, merged):
+    """SF23(사용자 결정 2026-10-03): 종료 병합 판정은 27자/줄 추정이 아니라 마지막 슬라이드를 확정할 때 얻은
+    COM 실측 줄 수로 한다. 이 입력은 실측 n줄, 추정 3n줄이다 — 경계 정확히 5줄은 병합, 6줄은 미병합
+    (`<=`→`<` 변이 방지)."""
+    _sf_install(monkeypatch)
+    prs = _sf_merge_case(n_lines, _SF_WIDE_EMU)
+    assert _sf_slide_lines(prs.slides[0]) == n_lines
+    assert len(prs.slides) == (1 if merged else 2)
+
+
+@pytest.mark.parametrize('n_lines,merged', [(5, True), (6, False)])
+def test_sf24_ending_merge_uses_pillow_total_when_com_unavailable(monkeypatch, n_lines, merged):
+    """SF24: COM이 없으면 Pillow 줄 수로 판정한다(같은 경계)."""
+    _sf_install(monkeypatch, com=None)
+    prs = _sf_merge_case(n_lines, _SF_WIDE_EMU)
+    assert len(prs.slides) == (1 if merged else 2)
+
+
+@pytest.mark.parametrize('n_lines,merged', [(1, True), (2, False)])
+def test_sf25_ending_merge_falls_back_to_char_estimate_without_any_font(monkeypatch, n_lines, merged):
+    """SF25: 폰트도 없을 때만 27자 근사 줄 수로 판정한다(이 입력은 줄당 3줄 추정 → 1문단 3줄 병합, 2문단 6줄 미병합)."""
+    _sf_install(monkeypatch, com=None)
+    monkeypatch.setattr(rl_b, '_get_slide_render_params', lambda slide: (None, 0.0))
+    prs = _sf_merge_case(n_lines, _SF_WIDE_EMU)
+    assert len(prs.slides) == (1 if merged else 2)
+
+
+def test_sf26_ending_not_merged_when_estimate_underestimates_actual_lines(monkeypatch):
+    """SF26: 반대 방향 — 좁은 상자에서 각 문단이 실측 2줄(추정 1줄)이라 3문단=실측 6줄이면, 구 추정(3줄)은
+    병합했지만 실측 기준으로는 병합하지 않는다."""
+    _sf_install(monkeypatch)
+    prs = _sf_merge_case(3, _SF_NARROW_EMU, line='abcdefghi jklmnopqr.')
+    assert _sf_slide_lines(prs.slides[0]) == 6
+    assert len(prs.slides) == 2
+
+
+def test_sf27_mismatch_counter_is_reset_per_section_call(monkeypatch):
+    """SF27(리뷰 변이검사): `_COM_MISMATCH_COUNT`는 섹션(제1독서→제2독서→복음)마다 새로 시작한다 — 이전
+    섹션의 슬라이드별 누적이 다음 섹션 경고에 섞이면 안 된다."""
+    _sf_install(monkeypatch)
+    monkeypatch.setattr(rl_b, '_COM_MISMATCH_COUNT', {999: 5}, raising=False)
+    prs = _sf_prs(1)
+    _sf_fill(prs, _SF_GOSPEL)
+    assert 999 not in rl_b._COM_MISMATCH_COUNT
+
+
+def test_sf28_missing_body_box_on_cloned_slide_raises_with_label_and_slide(monkeypatch):
+    """SF28: 복제한 슬라이드에서 본문 상자를 못 찾으면 남은 본문을 조용히 버리지 말고 RuntimeError로 중단한다
+    (라벨·슬라이드 번호 포함)."""
+    _sf_install(monkeypatch)
+    orig = rl_b.insert_slide_copy
+
+    def _bad_copy(prs, pos, src):
+        orig(prs, pos, src)
+        for sh in prs.slides[pos].shapes:
+            if sh.has_text_frame:
+                sh.text_frame.text = ''
+
+    monkeypatch.setattr(rl_b, 'insert_slide_copy', _bad_copy)
+    prs = _sf_prs(1)
+    with pytest.raises(RuntimeError) as ei:
+        rl_b.replace_reading_slides(prs, 0, 1, rl_b.parse_into_verse_units(_SF_GOSPEL), 0, label='복음')
+    assert '복음' in str(ei.value) and '슬라이드 2' in str(ei.value)
+
+
+def test_sf31_non_last_slides_are_exactly_nine_lines(monkeypatch):
+    """SF31: 비마지막 슬라이드는 정확히 9줄이다."""
+    _sf_install(monkeypatch)
+    prs = _sf_prs(1)
+    _sf_fill(prs, _SF_GOSPEL)
+    counts = [_sf_slide_lines(s) for s in _sf_body_slides(prs)]
+    assert counts[:-1] == [9] * (len(counts) - 1)
+
+
+def test_sf_real5_ending_merge_decided_by_real_com_line_count():
+    """SF-real5(사용자 결정): 청년 템플릿 영문 복음에서 마지막 슬라이드의 실제 COM 줄 수가 5 이하일 때만 종료
+    텍스트가 본문 슬라이드에 병합된다(구 27자 추정은 라틴 본문을 2배 가까이 과대 추정해 실측 4~5줄도 미병합)."""
+    com = _sf_real_com_or_skip()
+    if not _E_YOUTH_TEMPLATE.is_file():
+        pytest.skip('청년 템플릿 없음')
+    from missa_ooxml_utils import _build_com_probe_pptx as _probe
+    words = ('lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt '
+             'ut labore et dolore magna aliqua').split()
+    checked = set()
+    for n in (90, 110, 190, 215, 235):
+        text = ' '.join(words[i % len(words)] for i in range(n))
+        prs = _BPresentation(str(_E_YOUTH_TEMPLATE))
+        sections = sec_b.find_sections(prs, mass_type='youth')
+        rl_b.replace_reading_slides(prs, sections['복음_start'], sections['복음_end'],
+                                    rl_b.parse_into_verse_units(text), sections['복음_start'], label='복음',
+                                    normalize_page_size=True)
+        s2 = sec_b.find_sections(prs, mass_type='youth')
+        body = [prs.slides[i] for i in range(s2['복음_start'], s2['복음_end'])
+                if rl_b._find_content_shape(prs.slides[i]) is not None]
+        last = body[-1]
+        path, idx = _probe(prs, last)
+        actual = com.count_slide_lines(str(path), idx)
+        merged = any(sh.has_text_frame and '주님의 말씀입니다' in sh.text_frame.text for sh in last.shapes)
+        assert merged == (actual <= 5), (n, actual, merged)
+        checked.add(merged)
+    assert checked == {True, False}, '전제: 병합/미병합 두 경우가 모두 검증돼야 함'
+
+
+@pytest.mark.skipif(not _W_GOSPEL_TEMPLATE.is_file(), reason='성인 템플릿 픽스처 없음')
+def test_sf_real6_probe_line_breaks_equal_final_slide_line_breaks(tmp_path, monkeypatch):
+    """SF-real6: 프로브(임시 기록) 단계에서 측정한 첫 9줄이 확정 후 실제 슬라이드의 줄바꿈과 동일하고 줄 시작이
+    단어 경계다(템플릿은 한글을 단어 단위로 줄바꿈한다). 프로브 상자와 실제 상자가 같은 설정이라 절단 오프셋이
+    실제 렌더링과 어긋나지 않는다는 확인."""
+    com = _sf_real_com_or_skip()
+    from pptx import Presentation as _P
+    import shutil as _sh
+    from missa_ooxml_utils import _build_com_probe_pptx as _probe
+    work = tmp_path / 't.pptx'
+    _sh.copy(_W_GOSPEL_TEMPLATE, work)
+    prs = _P(str(work))
+    sec = sec_b.find_sections(prs)
+    recorded = []
+    orig = com.measure_line_starts
+
+    def _spy(path, idx, max_lines=10):
+        info = orig(path, idx, max_lines)
+        recorded.append(info)
+        return info
+
+    monkeypatch.setattr(com, 'measure_line_starts', _spy)
+    rl_b.replace_reading_slides(prs, sec['복음_start'], sec['복음_end'],
+                                rl_b.parse_into_verse_units(_W_GOSPEL_20261004), sec['복음_start'], label='복음')
+    monkeypatch.setattr(com, 'measure_line_starts', orig)
+    sec = sec_b.find_sections(prs)
+    body = [prs.slides[i] for i in range(sec['복음_start'], sec['복음_end'])
+            if rl_b._find_content_shape(prs.slides[i]) is not None]
+    assert len(recorded) == len(body) >= 3
+    for slide, rec in zip(body[:-1], recorded):
+        shape = rl_b._find_content_shape(slide)
+        path, idx = _probe(prs, slide)
+        fin = com.measure_line_starts(str(path), idx, 40)
+        full = '\r'.join(p.text for p in shape.text_frame.paragraphs)
+        assert [t.rstrip() for t in fin['texts']][:9] == [t.rstrip() for t in rec['texts']][:9]
+        assert all(full[s - 1] in ' \r' for s in fin['starts'][1:]), '단어 중간에서 시작하는 줄'

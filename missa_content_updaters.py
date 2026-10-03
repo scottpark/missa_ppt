@@ -1642,7 +1642,7 @@ def resolve_youth_hymn_pptx(entry: dict, htype: str):
         raise ValueError(f"{출처} 출처는 번호가 필수입니다.")
 
     from missa_gui import (
-        find_youth_onedrive_hymn_file, _youth_onedrive_local_sync_dir,
+        find_youth_onedrive_hymn_file, get_youth_ppt_mode, youth_local_subdir,
         _DEFAULT_ONEDRIVE_HYMN_PATH, _DEFAULT_ONEDRIVE_YOUTH_HYMN_PATH, _load_config,
     )
 
@@ -1651,7 +1651,7 @@ def resolve_youth_hymn_pptx(entry: dict, htype: str):
         found = find_youth_onedrive_hymn_file(
             remote_path_key='onedrive_hymn_path',
             default_remote_path=_DEFAULT_ONEDRIVE_HYMN_PATH, subfolder=None,
-            pattern=pattern, cache_subdir='청년_가톨릭성가',
+            pattern=pattern, cache_subdir='청년_가톨릭성가', local_kind='catholic_hymn',
         )
         if not found:
             raise FileNotFoundError(f'가톨릭성가 {번호} 성가 PPT를 OneDrive에서 찾을 수 없습니다.')
@@ -1677,6 +1677,7 @@ def resolve_youth_hymn_pptx(entry: dict, htype: str):
         remote_path_key='onedrive_youth_hymn_path',
         default_remote_path=_DEFAULT_ONEDRIVE_YOUTH_HYMN_PATH, subfolder=subfolder,
         pattern='^' + re.escape(prefix), cache_subdir=f'청년미사_성가/{subfolder}',
+        local_kind='youth_hymn',
     )
 
     if existing is not None:
@@ -1685,12 +1686,12 @@ def resolve_youth_hymn_pptx(entry: dict, htype: str):
         src_prs = yh.build_hymn_pptx(htype, 출처, 번호, resolved_title)
         filename = f'{prefix}{resolved_title}.pptx'
 
-        # 새로 만든 곡을 어디에 저장할지도 find_youth_onedrive_hymn_file()과 같은 우선순위를
-        # 따른다 — 로컬 동기화 폴더가 있으면 거기(OneDrive 데스크톱 앱이 알아서 올려줌),
-        # 없으면 위 finder가 다음 주에 그대로 찾을 수 있는 같은 로컬 캐시 폴더에 저장한다.
-        local_sync_dir = _youth_onedrive_local_sync_dir('onedrive_youth_hymn_folder')
-        if local_sync_dir is not None:
-            dest_dir = local_sync_dir / subfolder
+        # 저장 위치도 find_youth_onedrive_hymn_file()과 같은 모드를 따른다(§3.3.1) — 로컬
+        # 모드면 'PPT 문서' 아래 성가 폴더에 저장하고(OneDrive 앱이 동기화하므로 직접 업로드
+        # 하지 않음), 폴백 모드면 로컬 캐시에 저장한 뒤 Graph로 업로드한다.
+        local_mode = get_youth_ppt_mode() == 'local'
+        if local_mode:
+            dest_dir = youth_local_subdir('youth_hymn', subfolder)
         else:
             from missa_gui import _SCRIPT_DIR
             dest_dir = _SCRIPT_DIR / 'cache' / '청년미사_성가' / subfolder
@@ -1701,10 +1702,7 @@ def resolve_youth_hymn_pptx(entry: dict, htype: str):
         except Exception as e:
             print(f'  [경고] {출처} {번호} 성가 PPT 캐시 저장 실패: {e}')
         else:
-            # 로컬 동기화 폴더(Scott PC 등)에서는 OneDrive 데스크톱 앱이 알아서 올려주므로
-            # 여기서 끝난다. 그 외(배포 PC 등)에는 직접 업로드해서, 다음 주부터 다른 PC도
-            # 이번에 새로 만든 성가를 재사용할 수 있게 한다.
-            if local_sync_dir is None:
+            if not local_mode:
                 config = _load_config()
                 remote_root = config.get('onedrive_youth_hymn_path', _DEFAULT_ONEDRIVE_YOUTH_HYMN_PATH)
                 import missa_onedrive as od

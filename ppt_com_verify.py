@@ -122,7 +122,8 @@ def is_available() -> bool:
     return _available_cache
 
 
-def _open_and_measure(temp_pptx_path: str, shape_index: int) -> int:
+def _open_and_measure(temp_pptx_path: str, shape_index: int, want_bounds: bool = False,
+                      line_starts_max: int = None):
     app = _ensure_app()
     presentation = app.Presentations.Open(
         temp_pptx_path,
@@ -135,7 +136,25 @@ def _open_and_measure(temp_pptx_path: str, shape_index: int) -> int:
         # TextRange.Lines는 PowerPoint 객체 모델에서 선택적 인자(Start, Length)를
         # 받는 파라미터화된 속성이라, late-bound COM에서는 일반 속성이 아니라
         # 인자 없이 호출해야 하는 메서드로 노출된다(`Lines()` → TextRange 컬렉션).
-        return int(shape.TextFrame.TextRange.Lines().Count)
+        tr = shape.TextFrame.TextRange
+        lines = int(tr.Lines().Count)
+        if line_starts_max is not None:
+            # Lines(i,1).Start는 전체 텍스트 기준 1-based 문자 위치(문단 구분 '\r'은 앞 줄 Length에 포함)라
+            # 줄들이 텍스트를 빈틈 없이 분할한다 — 슬라이드 단위 채우기가 "10번째 줄이 시작하는 오프셋"에서 자른다.
+            k = min(lines, line_starts_max)
+            starts, texts = [], []
+            for i in range(1, k + 1):
+                ln = tr.Lines(i, 1)
+                starts.append(int(ln.Start) - 1)
+                texts.append(str(ln.Text))
+            return {'lines': lines, 'starts': starts, 'texts': texts}
+        if want_bounds:
+            # BoundHeight(pt)는 실제 렌더된 텍스트 전체의 세로 폭 — Pillow 글리프
+            # 메트릭(ascent+descent)은 이보다 14~18% 작게 나오는 것으로 이미 확인돼
+            # 있다(CLAUDE.md). 1줄 오차가 바로 시각적 결함(종료 텍스트박스가 본문과
+            # 거의 겹침)으로 드러나는 measure_text_metrics() 용도로 함께 반환한다.
+            return {'lines': lines, 'bound_height_pt': float(tr.BoundHeight)}
+        return lines
     finally:
         presentation.Close()
 
@@ -184,6 +203,46 @@ def count_slide_lines(temp_pptx_path: str, shape_index: int) -> int:
     except Exception as exc:
         raise ComVerificationUnavailable(
             f"PowerPoint COM 줄 수 측정 실패: {exc}"
+        ) from exc
+
+
+def measure_text_metrics(temp_pptx_path: str, shape_index: int) -> dict:
+    """temp_pptx_path를 읽기 전용으로 열어 슬라이드 1의 Shapes(shape_index)
+    TextRange의 실제 줄 수와 세로 범위(BoundHeight, pt)를 함께 반환한다.
+
+    {'lines': int, 'bound_height_pt': float} — (bound_height_pt/lines)가 실측
+    1줄 높이(pt)다. count_slide_lines()와 동일한 재시도/예외 변환 규칙을 따른다
+    (한 번 실패하면 캐시된 Application을 버리고 1회 재시도, 그래도 실패하면
+    ComVerificationUnavailable 하나로 통일)."""
+    try:
+        return _open_and_measure(temp_pptx_path, shape_index, want_bounds=True)
+    except Exception:
+        pass
+
+    try:
+        _discard_app()
+        return _open_and_measure(temp_pptx_path, shape_index, want_bounds=True)
+    except Exception as exc:
+        raise ComVerificationUnavailable(
+            f"PowerPoint COM 텍스트 메트릭 측정 실패: {exc}"
+        ) from exc
+
+
+def measure_line_starts(temp_pptx_path: str, shape_index: int, max_lines: int = 10) -> dict:
+    """슬라이드 1의 Shapes(shape_index) TextRange의 총 줄 수와 앞쪽 max_lines줄의 시작 문자 오프셋(0-based)·줄
+    텍스트를 한 번의 프레젠테이션 열기로 돌려준다: {'lines': int, 'starts': [int], 'texts': [str]}.
+    재시도/예외 변환 규칙은 count_slide_lines()와 동일."""
+    try:
+        return _open_and_measure(temp_pptx_path, shape_index, line_starts_max=max_lines)
+    except Exception:
+        pass
+
+    try:
+        _discard_app()
+        return _open_and_measure(temp_pptx_path, shape_index, line_starts_max=max_lines)
+    except Exception as exc:
+        raise ComVerificationUnavailable(
+            f"PowerPoint COM 줄 시작 측정 실패: {exc}"
         ) from exc
 
 

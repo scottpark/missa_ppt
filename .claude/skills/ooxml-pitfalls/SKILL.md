@@ -62,7 +62,7 @@ description: "missa_to_ppt.py에서 python-pptx/lxml로 OOXML(a:pPr, spTree, rPr
 
 - [ ] 참조하려는 값이 "계획 단계의 값"(예: `units_pages` 같은 사전 배분 결과)인가, 아니면
   "실제로 슬라이드에 반영된 뒤 다시 측정한 값"인가? 앞 단계가 슬라이드를 추가/삭제/재배치할
-  수 있다면 반드시 재측정 함수(`_count_slide_lines()` 등)로 최신 상태를 다시 읽는다
+  수 있다면 반드시 실측 함수(`_com_measure_line_starts()`/`_measure_slide_cut()` 등)로 최신 상태를 다시 읽는다
 
 ## 5. 단락/run을 두 조각으로 분리할 때
 

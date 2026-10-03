@@ -1651,180 +1651,6 @@ def test_M9_get_youth_mass_schema(monkeypatch):
     assert "복음" not in out
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 국소 버그 수정: 제2독서 슬라이드 줄 수 대량 미달 (2026-09-20 주일미사 실사용자 보고)
-#
-# 청년미사 작업과 무관한 기존(성인미사) 회귀 버그. 20260920 주일미사 결과 PPT의
-# 제2독서(70·71·72쪽)가 9줄이 아니었다는 실사용자 육안 검수 보고로 발견.
-#
-# 재현: output/20260712/Template_20260628_연중 제13주일 (교황주일).pptx (git 추적 대상,
-# output/20260823의 동명 사본과 SHA256 동일 — find_sections()만 쓰므로 어느 사본이든 무방)에
-# 실측 로마서 8장 본문(31~39절)을 흘리면 콘텐츠 슬라이드 5장 중 뒤 2장(마지막 제외)이
-# 6줄/4줄로 크게 미달한 채 재조정이 수렴 종료된다.
-#
-# 근본 원인(COM 실측 추적으로 확인, _split_and_adjust_via_com):
-# len(nxt_paras)==1인 이웃(38절 단락)을 3줄만 흡수하도록 분리(keep=3)했을 때 Pillow 예측과
-# 달리 COM 실측이 8줄(목표 9줄에 1줄 미달, 초과 아님)로 나왔다. 재시도 루프가 "미달이니
-# keep을 1 늘려보자"며 keep=4로 재시도했는데, 이 단락의 Pillow 워드랩 버킷 수가 정확히
-# 4개라 keep=4는 "전부 다 가져간다"는 뜻이 되어 _split_para_at_lines()가 분리할 게 없다며
-# None을 반환했다. 이때 _split_and_adjust_via_com()의 _give_up()이 이미 확보했던 keep=3의
-# "8줄(미달이지만 초과는 아님)" 결과까지 통째로 버리고 완전 원상복구(0줄 개선)해 버렸다 —
-# 이 함수 자신의 문서화된 철학("미달로 끝나는 것은 받아들일 수 있다, 초과만 막으면 된다")과
-# 모순되는 동작이었다. 그 결과 이 슬라이드 쌍은 이후 어떤 스윕에서도 개선 기회를 얻지 못한
-# 채 낮은 줄 수로 고정됐다(2번째 while 루프는 len(nxt_paras)<=1이면 아예 건드리지도 않음).
-#
-# 안정화되면 regression-qa가 test_missa_regression.py로 승격한다.
-# ═══════════════════════════════════════════════════════════════════════════
-import types as _b_types
-
-import missa_reading_layout as rl_b
-import missa_sections as sec_b
-from pptx import Presentation as _BPresentation
-
-_B_TEMPLATE = (
-    BASE / "output" / "20260712"
-    / "Template_20260628_연중 제13주일 (교황주일).pptx"
-)
-
-# 2026-08-23자 실사용자 로마서 8,31-39 본문 그대로(20260920 주일 제2독서 재현에 쓰인 실측값).
-_B_CONTENT_ROM_8_31_39 = (
-    "형제 여러분, 31 하느님께서 우리 편이신데 누가 우리를 대적하겠습니까? "
-    "32 당신의 친아드님마저 아끼지 않으시고 우리 모두를 위하여 내어 주신 분께서, "
-    "어찌 그 아드님과 함께 모든 것을 우리에게 베풀어 주지 않으시겠습니까? "
-    "33 하느님께 선택된 이들을 누가 고발할 수 있겠습니까? 그들을 의롭게 해 주시는 분은 "
-    "하느님이십니다. 34 누가 그들을 단죄할 수 있겠습니까? 돌아가셨다가 참으로 되살아나신 분, "
-    "또 하느님의 오른쪽에 앉아 계신 분, 그리고 우리를 위하여 간구해 주시는 분이 바로 "
-    "그리스도 예수님이십니다. 35 무엇이 우리를 그리스도의 사랑에서 갈라놓을 수 있겠습니까? "
-    "환난입니까? 역경입니까? 박해입니까? 굶주림입니까? 헐벗음입니까? 위험입니까? 칼입니까? "
-    "36 이는 성경에 기록된 그대로입니다. \"저희는 온종일 당신 때문에 살해되며 도살될 양처럼 "
-    "여겨집니다.\" 37 그러나 우리는 우리를 사랑해 주신 분의 도움에 힘입어 이 모든 것을 이겨 "
-    "내고도 남습니다. 38 나는 확신합니다. 죽음도, 삶도, 천사도, 권세도, 현재의 것도, "
-    "미래의 것도, 권능도, 39 저 높은 곳도, 저 깊은 곳도, 그 밖의 어떠한 피조물도 우리 주 "
-    "그리스도 예수님에게서 드러난 하느님의 사랑에서 우리를 떼어 놓을 수 없습니다."
-)
-
-
-class TestSplitAndAdjustViaComKeepsBestPartialResult:
-    """_split_and_adjust_via_com()이 재시도(keep 조정) 도중 확보했던 "초과는 아니지만
-    정확히 목표에 맞지는 않는" 최선의 분리 결과를, 다음 재시도가 완전히 실패(분리할 여지
-    없음)했다는 이유만으로 통째로 버려서는 안 된다."""
-
-    @staticmethod
-    def _build_para(text, sz=3200):
-        from pptx.oxml import parse_xml as pptx_parse_xml
-        A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
-        xml = f'<a:p xmlns:a="{A}"><a:r><a:rPr sz="{sz}"/><a:t>{text}</a:t></a:r></a:p>'
-        return pptx_parse_xml(xml)
-
-    @staticmethod
-    def _text(p_elem):
-        A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
-        return ''.join(
-            (r.find(f'{{{A}}}t').text or '') for r in p_elem.findall(f'{{{A}}}r')
-        )
-
-    @staticmethod
-    def _font():
-        from PIL import ImageFont
-        return ImageFont.truetype(r'C:\Windows\Fonts\arial.ttf', 32)
-
-    def test_falls_back_to_best_under_target_split_when_retry_exhausts_buckets(self, monkeypatch):
-        # box_px=300에서 이 12단어 문장은 정확히 4개의 워드랩 버킷([3,3,4,2]단어)으로
-        # 쪼개진다 — keep=3(마지막 버킷만 분리)은 성공하지만, keep=4는 "버킷 수(4) <=
-        # keep_lines(4)"라 분리할 나머지가 없어 _split_para_at_lines()가 None을 반환한다.
-        # 이는 실제 38절 단락(버킷 4개)에서 일어난 상황을 최소 재현한 것이다.
-        text = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu"
-        box_px = 300
-        font = self._font()
-
-        # 버킷 수 전제 확인(회귀 시 테스트 자체가 무의미해지지 않도록 가정을 명시적으로 검증) —
-        # 별도의 일회용 사본으로 확인해 실제 테스트에 쓸 p를 mutate하지 않는다.
-        probe4 = self._build_para(text)
-        assert rl_b._split_para_at_lines(probe4, keep_lines=4, pil_font=font, box_px=box_px) is None
-        probe3 = self._build_para(text)
-        assert rl_b._split_para_at_lines(probe3, keep_lines=3, pil_font=font, box_px=box_px) is not None
-
-        p = self._build_para(text)
-        calls = []
-
-        def fake_verified(prs, slide):
-            calls.append(True)
-            # 첫 호출(keep=3): COM 실측 8줄(목표 9줄에 1줄 미달, 초과 아님).
-            # 재시도(keep=4)는 _split_para_at_lines가 None을 반환해 COM을 아예 호출하지 않는다.
-            return rl_b.LINES_PER_SLIDE - 1
-
-        monkeypatch.setattr(rl_b, "_count_slide_lines_verified", fake_verified)
-
-        placed = []
-
-        def place_rest(rp):
-            placed.append(rp)
-
-        def remove_rest(rp):
-            placed.remove(rp)
-
-        rest_p, final_lines = rl_b._split_and_adjust_via_com(
-            prs=None, cur_slide=object(), p_elem=p, keep=3,
-            pil_font=font, box_px=box_px,
-            place_rest=place_rest, remove_rest=remove_rest, max_adjust=2,
-        )
-
-        # 핵심 회귀 방지 assertion: 초과(overflow)가 아닌 최선의 부분 성공(8줄)을
-        # 완전 포기(rest_p=None, 0줄 개선)보다 우선해야 한다.
-        assert rest_p is not None, (
-            "keep=4 재시도가 분리 불가라는 이유로, 이미 확보했던 keep=3의 8줄 결과까지 "
-            "버리고 완전 포기했다 — 2026-09-20 제2독서 6줄/4줄 미달 버그의 원인"
-        )
-        assert final_lines == rl_b.LINES_PER_SLIDE - 1
-        assert len(placed) == 1  # 최종적으로 배치된 rest_p 하나만 남아야 함
-        assert final_lines <= rl_b.LINES_PER_SLIDE  # 오버플로는 여전히 절대 금지
-
-
-@pytest.mark.skipif(
-    not _B_TEMPLATE.is_file(),
-    reason=f"제2독서 재현용 참조 PPT가 로컬에 없음: {_B_TEMPLATE}",
-)
-def test_second_reading_rebalance_converges_without_large_deficit():
-    """20260920 주일미사(로마서 8,31-39) 재현: post-write 재조정 후 제2독서 콘텐츠
-    슬라이드는 마지막 1장을 제외하고 전부 LINES_PER_SLIDE(9줄)이거나, 아무리 못해도
-    1줄 이내 미달이어야 한다. 6줄/4줄처럼 연속으로 크게 미달인 슬라이드가 남으면 안 된다
-    (실사용자 육안 검수로 발견된 프로덕션 버그의 재현 시나리오)."""
-    try:
-        import ppt_com_verify as com_b
-    except ImportError:
-        pytest.skip("pywin32 미설치")
-    if not com_b.is_available():
-        pytest.skip("PowerPoint COM 연결 불가")
-
-    prs = _BPresentation(str(_B_TEMPLATE))
-    sections = sec_b.find_sections(prs)
-    units = rl_b.parse_into_verse_units(_B_CONTENT_ROM_8_31_39)
-    pages = rl_b.layout_units_on_slides(units)
-    pages = rl_b._verify_and_rebalance_pages(pages, '제2독서')
-    rl_b.replace_reading_slides(
-        prs, sections['제2독서_start'], sections['제2독서_end'],
-        pages, sections['제2독서_start'], label='제2독서',
-    )
-
-    sections2 = sec_b.find_sections(prs)
-    s, e = sections2['제2독서_start'], sections2['제2독서_end']
-    line_counts = [
-        rl_b._count_slide_lines_rendered(prs.slides[i]) for i in range(s, e)
-    ]
-    assert len(line_counts) >= 2, "테스트 전제(콘텐츠 슬라이드 2장 이상)가 깨짐"
-
-    non_last = line_counts[:-1]  # 마지막 슬라이드(종료 문구 병합 가능)는 미달 허용 대상 제외
-    problems = [
-        f"슬라이드 {s + i}: {lines}줄 (목표 {rl_b.LINES_PER_SLIDE}줄, 1줄 초과 미달)"
-        for i, lines in enumerate(non_last)
-        if lines < rl_b.LINES_PER_SLIDE - 1
-    ]
-    assert not problems, (
-        f"제2독서 콘텐츠 슬라이드 줄 수 분포: {line_counts}\n" + "\n".join(problems)
-    )
-    assert all(lines <= rl_b.LINES_PER_SLIDE for lines in line_counts), (
-        f"오버플로 발견(절대 금지): {line_counts}"
-    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1875,63 +1701,8 @@ def e_y2_prs():
     return _EPresentation(str(_E_YOUTH_TEMPLATE))
 
 
-# ---------------------------------------------------------------------------
-# E1: 청년미사 결과 PPT OneDrive 업로드(신규 기능)
-# ---------------------------------------------------------------------------
-
-def test_e1_youth_output_upload_calls_ensure_folder_and_upload_with_year_path(tmp_path, monkeypatch):
-    import sys
-    import missa_to_ppt as mtp
-
-    calls = {'ensure_folder': [], 'upload_file': []}
-
-    class _StubOD:
-        @staticmethod
-        def ensure_folder(path):
-            calls['ensure_folder'].append(path)
-
-        @staticmethod
-        def upload_file(path, local_path):
-            calls['upload_file'].append((path, local_path))
-
-    monkeypatch.setitem(sys.modules, 'missa_onedrive', _StubOD)
-
-    local_pptx = tmp_path / "토요일 저녁 청년 주일미사_20260926_연중 제26주일.pptx"
-    local_pptx.write_bytes(b'dummy')
-
-    mtp._upload_youth_output_to_onedrive(local_pptx, local_pptx.name, '20260926')
-
-    assert calls['ensure_folder'] == ['PPT 문서/20.청년 미사/2026']
-    assert calls['upload_file'] == [
-        (f'PPT 문서/20.청년 미사/2026/{local_pptx.name}', local_pptx),
-    ]
-
-
-def test_e1_youth_output_upload_failure_is_swallowed_and_warns(tmp_path, monkeypatch, capsys):
-    """업로드 실패해도 로컬 저장은 이미 끝난 뒤이므로 예외를 밖으로 던지지 않는다(기존
-    resolve_youth_hymn_pptx() 업로드-백 관례와 동일)."""
-    import sys
-    import missa_to_ppt as mtp
-
-    class _StubOD:
-        @staticmethod
-        def ensure_folder(path):
-            pass
-
-        @staticmethod
-        def upload_file(path, local_path):
-            raise RuntimeError('네트워크 오류(테스트)')
-
-    monkeypatch.setitem(sys.modules, 'missa_onedrive', _StubOD)
-
-    local_pptx = tmp_path / "출력.pptx"
-    local_pptx.write_bytes(b'dummy')
-
-    mtp._upload_youth_output_to_onedrive(local_pptx, local_pptx.name, '20260926')  # 예외 없이 반환
-
-    out = capsys.readouterr().out
-    assert '경고' in out
-    assert '네트워크 오류(테스트)' in out
+# E1(청년 결과 PPT 자동 OneDrive 업로드)는 2026-10-03 폐지 — 결과창 '원드라이브로 복사' 버튼으로 대체
+# (tests/test_missa_youth_local_mode.py의 복사 테스트 참고).
 
 
 # ---------------------------------------------------------------------------
@@ -2085,6 +1856,12 @@ def e_full_output(tmp_path_factory):
         expected_liturgy = _e_json.loads(_E_KO_JSON_20260913.read_text(encoding='utf-8'))['liturgy']
         out_path = tmp_path / f'{date_str}_youth' / f"토요일 저녁 청년 주일미사_{date_str}_{expected_liturgy}.pptx"
         prs = mtp.Presentation(str(out_path))
+        # main() 실행이 끝났으니 스텁을 즉시 되돌린다 — 모듈 스코프 yield 동안 유지하면 같은 모듈의
+        # 뒤 테스트(k2g/k2h 등)가 실제 missa_onedrive 대신 스텁을 import하는 순서 오염이 생긴다.
+        if orig_modules_onedrive is not None:
+            _e_sys.modules['missa_onedrive'] = orig_modules_onedrive
+        else:
+            _e_sys.modules.pop('missa_onedrive', None)
         yield {'prs': prs, 'out_path': out_path, 'date_str': date_str, 'upload_calls': upload_calls}
     finally:
         _e_sys.argv = orig_argv
@@ -2097,13 +1874,13 @@ def e_full_output(tmp_path_factory):
             _e_sys.modules.pop('missa_onedrive', None)
 
 
-def test_e1_full_pipeline_wires_onedrive_upload_call(e_full_output):
-    calls = e_full_output['upload_calls']
-    ensure_calls = [c for c in calls if c[0] == 'ensure_folder']
-    upload_calls = [c for c in calls if c[0] == 'upload_file']
-    assert ensure_calls == [('ensure_folder', 'PPT 문서/20.청년 미사/2026')]
-    assert len(upload_calls) == 1
-    assert upload_calls[0][1] == f'PPT 문서/20.청년 미사/2026/{e_full_output["out_path"].name}'
+def test_e1_full_pipeline_does_not_upload_result_to_onedrive(e_full_output):
+    """2026-10-03: 청년 결과 PPT는 output/에만 생성한다 — 파이프라인이 OneDrive 업로드를 하면 안 된다
+    (운영자가 검증 후 결과창 '원드라이브로 복사' 또는 수동으로 올린다)."""
+    result_uploads = [c for c in e_full_output['upload_calls']
+                      if c[0] == 'upload_file' and str(c[1]).endswith(e_full_output['out_path'].name)]
+    assert result_uploads == []
+    assert e_full_output['out_path'].is_file()
 
 
 def test_e2_full_pipeline_title_slide_shows_input_saturday_date(e_full_output):
@@ -2407,127 +2184,10 @@ def test_f3_log_dir_wiring_points_to_youth_output_folder_after_main_run(tmp_path
 # G1: 영문 복음 조기 줄바꿈 버그 수정
 # ---------------------------------------------------------------------------
 
-def test_g1a_pagination_passes_unscaled_box_px_to_wrap_spans(monkeypatch):
-    """G1a: layout_units_on_slides_pil()이 _pil_wrap_spans()에 넘기는 box_px가 호출부가
-    준 값 그대로여야 한다(과거처럼 _PIL_WRAP_SAFETY=0.97을 몰래 곱해 검증 경로보다 좁은
-    폭을 쓰면 안 됨) — 검증(_rendered_wrap_count/_get_slide_render_params)은 이 배율을
-    적용하지 않으므로, 두 경로가 항상 같은 폭을 봐야 페이지 경계가 실제 렌더링과 일치한다."""
-    captured_box_px = []
-    orig = rl_b._pil_wrap_spans
-
-    def _spy(text, pil_font, box_px):
-        captured_box_px.append(box_px)
-        return orig(text, pil_font, box_px)
-
-    monkeypatch.setattr(rl_b, '_pil_wrap_spans', _spy)
-
-    class _FixedWidthFont:
-        def getlength(self, s):
-            return len(s) * 10.0
-
-    units = rl_b.parse_into_verse_units('hello world this is a simple test sentence for wrap')
-    rl_b.layout_units_on_slides_pil(units, _FixedWidthFont(), 1000.0)
-
-    assert captured_box_px, "layout_units_on_slides_pil이 텍스트가 있는데도 wrap을 한 번도 안 함"
-    assert all(bp == 1000.0 for bp in captured_box_px), (
-        f"페이지네이션이 호출부가 준 box_px(1000.0)를 그대로 쓰지 않음: {captured_box_px}"
-    )
-
-
-_G_EN_GOSPEL_20260926 = (
-    _E_BASE / "output" / "20260926_youth" / "missa_en_20260927.json"
-)
-
-
-_G_RESULT_PPTX_20260926 = (
-    _E_BASE / "output" / "20260926_youth"
-    / "토요일 저녁 청년 주일미사_20260926_연중 제26주일.pptx"
-)
-
-
-def test_g1b_20260926_real_gospel_no_longer_cuts_before_fitting_word():
-    """G1b: 실사용자 20260926 청년미사 슬라이드 54 재현. box_px는 참조 템플릿이 아니라
-    **그 실행이 실제로 만든 결과 PPTX**의 슬라이드 54(0-based 53) 콘텐츠 shape에서 직접
-    잰다 — 템플릿 원본과 실제 결과물의 shape 폭이 다를 수 있음을 실측으로 확인했다(참조
-    템플릿 965.5px vs 실제 결과 949.98px, `output/20260926_youth/`에 남아있는 "Template"
-    사본조차 참조 템플릿과 또 다르다 — "계획값이 아니라 실제 물리 슬라이드를 다시 측정"
-    원칙, CLAUDE.md). 실측: 949.98px 박스에서 "...did the father's will?"까지가 들어간다는
-    게 실제 PowerPoint COM 실측으로 확인된 사실 — 0.97로 좁힌 921px 폭에서만 못 들어감."""
-    if not _G_RESULT_PPTX_20260926.is_file() or not _G_EN_GOSPEL_20260926.is_file():
-        pytest.skip(
-            f"20260926 실사용 산출물이 로컬에 없음: {_G_RESULT_PPTX_20260926} / "
-            f"{_G_EN_GOSPEL_20260926}"
-        )
-    import json as _g_json
-    from pptx import Presentation as _GPresentation
-
-    content = _g_json.loads(_G_EN_GOSPEL_20260926.read_text(encoding='utf-8'))['Gospel']['content']
-    units = rl_b.parse_into_verse_units(content)
-
-    result_prs = _GPresentation(str(_G_RESULT_PPTX_20260926))
-    content_slide = result_prs.slides[53]  # 실사용자가 보고한 "슬라이드 54"(1-based)
-    pil_font, box_px = rl_b._get_slide_render_params(content_slide)
-    if pil_font is None:
-        pytest.skip("Pillow 또는 폰트 파일(batang.ttc)을 찾을 수 없는 환경")
-
-    pages = rl_b.layout_units_on_slides_pil(units, pil_font, box_px)
-    assert pages, "페이지네이션 결과가 비어있음"
-    last_line_of_first_page = pages[0][-1]['text']
-    assert 'father' in last_line_of_first_page, (
-        f"첫 페이지 마지막 줄이 여전히 'father's' 앞에서 끊김: {last_line_of_first_page!r}"
-    )
-
-
-import missa_gui as _g_gui
-
-
-@pytest.mark.skipif(not _g_gui._com_verification_enabled(), reason="config.json: com_verification_enabled=false")
-def test_g1c_20260913_pagination_overpredict_still_converges_via_postwrite_rebalance(e_y2_prs):
-    """G1c: _PIL_WRAP_SAFETY가 원래 막으려던 시나리오(20260913 영문 복음, Pillow가 특정
-    단락에서 실제보다 줄 수를 과소 예측 — 초기 9줄 예측, 실제 COM 10줄)를 안전마진 없이
-    돌려도, post-write COM 재조정(_rebalance_reading_slides_post_write, replace_reading_
-    slides 내부에서 자동 호출)이 최종적으로 모든 슬라이드를 9줄 이하로 수렴시키는지
-    실제 PowerPoint COM으로 확인한다 — 이 안전망이 없다면 0.97 제거가 회귀다."""
-    try:
-        import ppt_com_verify as com_g1
-    except ImportError:
-        pytest.skip("pywin32 미설치")
-    if not com_g1.is_available():
-        pytest.skip("PowerPoint COM 연결 불가")
-    if not _E_EN_GOSPEL_FIXTURE.is_file():
-        pytest.skip(f"20260913 영문 복음 JSON이 로컬에 없음: {_E_EN_GOSPEL_FIXTURE}")
-    import json as _g_json
-
-    content = _g_json.loads(_E_EN_GOSPEL_FIXTURE.read_text(encoding='utf-8'))['Gospel']['content']
-    units = rl_b.parse_into_verse_units(content)
-
-    sections = sec_b.find_sections(e_y2_prs, mass_type='youth')
-    content_slide = e_y2_prs.slides[sections['복음_start']]
-    pil_font, box_px = rl_b._get_slide_render_params(content_slide)
-    if pil_font is None:
-        pytest.skip("Pillow 또는 폰트 파일(batang.ttc)을 찾을 수 없는 환경")
-
-    pages = rl_b.layout_units_on_slides_pil(units, pil_font, box_px)
-    rl_b.replace_reading_slides(
-        e_y2_prs, sections['복음_start'], sections['복음_end'],
-        pages, sections['복음_start'], label='복음_영문',
-    )
-
-    sections2 = sec_b.find_sections(e_y2_prs, mass_type='youth')
-    s, en = sections2['복음_start'], sections2['복음_end']
-    from missa_ooxml_utils import _find_content_shape as _g1_find_content_shape
-    from missa_ooxml_utils import _build_com_probe_pptx as _g1_build_probe
-
-    problems = []
-    for idx in range(s, en):
-        slide = e_y2_prs.slides[idx]
-        if _g1_find_content_shape(slide) is None:
-            continue
-        probe_path, shape_idx = _g1_build_probe(e_y2_prs, slide)
-        real_lines = com_g1.count_slide_lines(str(probe_path), shape_idx)
-        if real_lines > rl_b.LINES_PER_SLIDE:
-            problems.append(f"슬라이드 {idx}: COM 실측 {real_lines}줄 (>{rl_b.LINES_PER_SLIDE})")
-    assert not problems, "\n".join(problems)
+# (G1a/G1c 삭제 — 2026-10-03 슬라이드 단위 채우기: 분할과 검증이 같은 박스 폭을 쓴다는 요구사항은
+#  test_y2_G1b(Pillow 경로, 949.98px)·test_sf9(Pillow 루프)가, "추정 오차에도 COM 실측 9줄 수렴"은
+#  test_sf1/test_sf6/test_sf_real4가 이어받았다. G1b는 test_missa_regression.py로 승격됨 —
+#  2026-10-03: test_y2_G1b_20260926_father_fits_first_page)
 
 
 # ---------------------------------------------------------------------------
@@ -3352,11 +3012,11 @@ _od_stub = types.ModuleType("missa_onedrive")
 _od_stub.list_children = lambda path: {{
     "PPT 문서": [
         {{"name": "11.공지사항 PPT문서", "folder": {{}}}},
-        {{"name": "13. 기도문", "folder": {{}}}},
+        {{"name": "13.기도문", "folder": {{}}}},
         {{"name": "20.청년 미사", "folder": {{}}}},
     ],
     "PPT 문서/11.공지사항 PPT문서": [{{"name": "x.pptx"}}],
-    "PPT 문서/13. 기도문": [{{"name": "y.pptx"}}],
+    "PPT 문서/13.기도문": [{{"name": "y.pptx"}}],
     "PPT 문서/20.청년 미사": [{{"name": "z.pptx"}}],
 }}.get(path, [])
 _od_stub.download_file = lambda path, dest: dest
@@ -3403,7 +3063,7 @@ with open({str(out_file)!r}, 'w', encoding='utf-8') as f:
     )
     cached_keys = _j5_json.loads(out_file.read_text(encoding='utf-8'))
     assert 'PPT 문서/11.공지사항 PPT문서' in cached_keys, cached_keys
-    assert 'PPT 문서/13. 기도문' in cached_keys, cached_keys
+    assert 'PPT 문서/13.기도문' in cached_keys, cached_keys
     assert 'PPT 문서/20.청년 미사' in cached_keys, cached_keys
 
 
@@ -3708,12 +3368,6 @@ def test_j3m_run_gui_mode_skips_mass_type_popup_and_uses_given_kr(monkeypatch):
         lambda mass_type: (calls.append(('combined', mass_type)), ('20260927', {}))[1],
     )
     monkeypatch.setattr(mtp, '_ask_youth_hymn_popup', lambda: (calls.append('youth_hymn'), {})[1])
-    # §J7 — `_run_gui_mode()`가 이제 진행률 창을 열기 전에 실제 messagebox를 띄우는
-    # `_show_powerpoint_background_notice()`를 호출한다. 이 테스트는 그 함수를 모킹하지
-    # 않으면 헤드리스 pytest 환경에서 진짜 모달 다이얼로그가 떠서 응답 없이 멈춘다(직접
-    # 겪음 — 타임아웃으로 발견) — 이 테스트의 관심사는 mass_type 분기 순서이지 J7의
-    # 안내 자체가 아니므로 그대로 스텁 처리한다.
-    monkeypatch.setattr(mtp, '_show_powerpoint_background_notice', lambda: calls.append('notice'))
     monkeypatch.setattr(mtp, '_run_with_progress_window', lambda fn: (calls.append('progress'), ('', ''))[1])
     monkeypatch.setattr(mtp, '_show_result_window', lambda *a, **k: calls.append(('result', a, k)))
     mtp._preloaded_inputs[0] = None
@@ -3724,8 +3378,7 @@ def test_j3m_run_gui_mode_skips_mass_type_popup_and_uses_given_kr(monkeypatch):
     assert calls[0] == 'login', calls
     assert calls[1] == ('combined', 'youth'), calls
     assert calls[2] == 'youth_hymn', calls
-    assert calls[3] == 'notice', calls
-    assert calls[4] == 'progress', calls
+    assert calls[3] == 'progress', calls
 
 
 def test_j3n_dialog_title_has_mass_type_suffix():
@@ -3833,59 +3486,32 @@ def test_j8d_extract_liturgy_name_h3_sub_empty_text_ignored():
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def test_j7a_powerpoint_background_notice_shown_before_progress_window_adult(monkeypatch):
-    """성인미사 흐름: 실제 처리(_run_with_progress_window)가 시작되기 전에
-    `_show_powerpoint_background_notice()`가 정확히 한 번 호출돼야 한다."""
-    calls = []
-    monkeypatch.setattr(
-        mtp, '_ask_combined_input_popup',
-        lambda mass_type: (calls.append(('combined', mass_type)), ('20260927', {}))[1],
-    )
-    monkeypatch.setattr(
-        mtp, '_ask_numbers_popup',
-        lambda numbers, is_sunday: (calls.append('numbers'), {})[1],
-    )
-    monkeypatch.setattr(mtp, '_show_powerpoint_background_notice', lambda: calls.append('notice'))
-    monkeypatch.setattr(mtp, '_run_with_progress_window', lambda fn: (calls.append('progress'), ('', ''))[1])
-    monkeypatch.setattr(mtp, '_show_result_window', lambda *a, **k: calls.append(('result', a, k)))
-    mtp._preloaded_inputs[0] = None
-    try:
-        mtp._run_gui_mode('성인')
-    finally:
-        mtp._preloaded_inputs[0] = None
-    assert calls.count('notice') == 1, calls
-    assert calls.index('notice') < calls.index('progress'), calls
+def test_j7a_no_separate_powerpoint_notice_popup_anymore():
+    """2026-10-03: PowerPoint 백그라운드 안내 팝업(messagebox)은 폐지됐다 — 진행 창 첫머리 안내로 대체."""
+    assert not hasattr(mtp, '_show_powerpoint_background_notice')
+    import inspect
+    assert '_show_powerpoint_background_notice' not in inspect.getsource(mtp._run_gui_mode)
 
 
-def test_j7b_powerpoint_background_notice_shown_before_progress_window_youth(monkeypatch):
-    """청년미사 흐름도 동일하게 처리 시작 직전 정확히 한 번 호출돼야 한다(성인과
-    동일 문구 — 별도 청년용 안내를 새로 만들지 않는다)."""
-    calls = []
-    monkeypatch.setattr(mtp, 'ensure_onedrive_login', lambda: calls.append('login'))
-    monkeypatch.setattr(
-        mtp, '_ask_combined_input_popup',
-        lambda mass_type: (calls.append(('combined', mass_type)), ('20260927', {}))[1],
-    )
-    monkeypatch.setattr(mtp, '_ask_youth_hymn_popup', lambda: (calls.append('youth_hymn'), {})[1])
-    monkeypatch.setattr(mtp, '_show_powerpoint_background_notice', lambda: calls.append('notice'))
-    monkeypatch.setattr(mtp, '_run_with_progress_window', lambda fn: (calls.append('progress'), ('', ''))[1])
-    monkeypatch.setattr(mtp, '_show_result_window', lambda *a, **k: calls.append(('result', a, k)))
-    mtp._preloaded_inputs[0] = None
-    try:
-        mtp._run_gui_mode('청년')
-    finally:
-        mtp._preloaded_inputs[0] = None
-    assert calls.count('notice') == 1, calls
-    assert calls.index('notice') < calls.index('progress'), calls
+def test_j7b_progress_window_shows_notice_for_five_seconds_then_removes_it():
+    """진행 창이 안내 라벨을 만들고(첫머리), `_POWERPOINT_NOTICE_SECONDS`(=5)초 뒤 지운다.
+    진행 메시지(label_var)는 그 라벨과 별개라 5초 동안 같이 보인다."""
+    import inspect
+    import missa_gui as gui
+    assert gui._POWERPOINT_NOTICE_SECONDS == 5
+    src = inspect.getsource(gui._run_with_progress_window)
+    assert '_POWERPOINT_NOTICE_TEXT' in src and '_POWERPOINT_NOTICE_SECONDS * 1000' in src
+    assert 'notice.destroy()' in src
+    # 안내 라벨이 진행 메시지 라벨보다 먼저 pack된다(첫머리).
+    assert src.index('notice.pack(') < src.index("label_var = tk.StringVar")
 
 
 def test_j7c_notice_wording_does_not_falsely_claim_no_window_appears():
-    """실측(§J7)으로 확인된 사실과 다른 주장("화면에 창이 뜨지 않습니다")을 안내 문구에
-    남기면 안 된다. 실제로는 프레임 창이 visible해지지만 포커스는 가져가지 않는다 —
-    문구는 "포커스"/"활성"에 대한 정확한 표현만 담아야 한다."""
-    import inspect
-    src = inspect.getsource(mtp._show_powerpoint_background_notice)
-    assert '화면에 창이 뜨지 않습니다' not in src, src
+    """실측(§J7)과 다른 주장("화면에 창이 뜨지 않습니다")을 안내 문구에 남기면 안 된다 —
+    프레임 창은 visible해지지만 포커스는 가져가지 않는다."""
+    import missa_gui as gui
+    assert '화면에 창이 뜨지 않습니다' not in gui._POWERPOINT_NOTICE_TEXT
+    assert '포커스' in gui._POWERPOINT_NOTICE_TEXT
 
 
 def test_j7d_ppt_com_verify_ensure_app_notice_wording_fixed():
@@ -4806,7 +4432,7 @@ def test_l2d_browse_returns_immediately_and_confirm_waits_for_pending_download(t
         entry = _find_entry(self)
         entry.insert(0, '20260906')
 
-        def _fake_browser(parent, dest_dir_, cache=None, root_remote_path=gui._ONEDRIVE_BROWSER_ROOT):
+        def _fake_browser(parent, dest_dir_, cache=None, root_remote_path=gui._ONEDRIVE_BROWSER_ROOT, start_subpath=None):
             name = 'file.pptx'
             return (str(Path(dest_dir_) / name), 'PPT 문서/13.기도문/' + name)
         gui._ask_onedrive_file_browser_popup = _fake_browser
@@ -4856,7 +4482,7 @@ def test_l2e_confirm_shows_error_and_stays_open_when_download_fails_after_retrie
         entry = _find_entry(self)
         entry.insert(0, '20260906')
 
-        def _fake_browser(parent, dest_dir_, cache=None, root_remote_path=gui._ONEDRIVE_BROWSER_ROOT):
+        def _fake_browser(parent, dest_dir_, cache=None, root_remote_path=gui._ONEDRIVE_BROWSER_ROOT, start_subpath=None):
             return (str(Path(dest_dir_) / 'file.pptx'), 'PPT 문서/13.기도문/file.pptx')
         gui._ask_onedrive_file_browser_popup = _fake_browser
 
@@ -4894,7 +4520,7 @@ def test_l2f_reselecting_before_completion_only_latest_selection_wins(tmp_path):
         entry.insert(0, '20260906')
 
         _browser_calls = {{'n': 0}}
-        def _fake_browser(parent, dest_dir_, cache=None, root_remote_path=gui._ONEDRIVE_BROWSER_ROOT):
+        def _fake_browser(parent, dest_dir_, cache=None, root_remote_path=gui._ONEDRIVE_BROWSER_ROOT, start_subpath=None):
             _browser_calls['n'] += 1
             name = f"file{{_browser_calls['n']}}.pptx"
             return (str(Path(dest_dir_) / name), 'PPT 문서/13.기도문/' + name)
@@ -4959,7 +4585,7 @@ def test_l2g_reselecting_same_filename_stale_slow_download_must_not_overwrite_la
         entry = _find_entry(self)
         entry.insert(0, '20260906')
 
-        def _fake_browser(parent, dest_dir_, cache=None, root_remote_path=gui._ONEDRIVE_BROWSER_ROOT):
+        def _fake_browser(parent, dest_dir_, cache=None, root_remote_path=gui._ONEDRIVE_BROWSER_ROOT, start_subpath=None):
             return (str(Path(dest_dir_) / 'shared.pptx'), 'PPT 문서/13.기도문/shared.pptx')
         gui._ask_onedrive_file_browser_popup = _fake_browser
 
@@ -5001,5 +4627,3 @@ def test_l2g_reselecting_same_filename_stale_slow_download_must_not_overwrite_la
         "구세대(느린, 이미 무효화된) 다운로드가 나중에 도착해 최신 선택 파일을 조용히 "
         "덮어씀(리뷰 라운드19 확정 버그)", data,
     )
-
-

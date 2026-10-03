@@ -1,9 +1,9 @@
 """
 missa_to_ppt.py 모듈 분리 리팩토링 Phase 3 — 독서/복음 레이아웃 엔진.
 
-절 파싱(parse_into_verse_units)부터 슬라이드 분배(layout_units_on_slides), 실제
-렌더링 줄 수 계산(Pillow 추정 + PowerPoint COM 실측), 슬라이드 기록 후 재조정
-(_rebalance_reading_slides_post_write)까지 독서/복음 처리 파이프라인 전체.
+절 파싱(parse_into_verse_units)부터 슬라이드 단위 채우기(replace_reading_slides — 각 슬라이드의
+실제 본문 상자에서 줄 시작 위치를 PowerPoint COM(불가 시 Pillow)으로 실측해 정확히 9줄씩 확정),
+실제 렌더링 줄 수 계산과 종료 슬라이드 위치 정렬까지 독서/복음 처리 파이프라인 전체.
 """
 from __future__ import annotations
 
@@ -31,21 +31,6 @@ LINES_PER_SLIDE = 9
 # 1.03~1.04에서만 전체 일치 — 1.02 이하는 과소보정, 1.05 이상은 과보정됨.
 _RENDER_WIDTH_CALIBRATION = 1.03
 
-# **2026-09-26 폐지(1.0로 무력화, 상수는 이력 보존용으로 유지)** — 원래
-# layout_units_on_slides_pil() 초기 페이지네이션에만 곱해 검증 경로(_rendered_wrap_count/
-# _count_slide_lines_rendered/COM)보다 3% 좁은 박스로 줄바꿈을 시뮬레이션했다. 실사용자
-# 20260926 청년미사 슬라이드 54에서, 이 3% 차이 때문에 실제로는 그 줄에 들어가는 단어
-# ("father's")까지 다음 슬라이드로 밀려나는 조기 컷 버그가 실측으로 확인됐다 — 페이지네이션과
-# 검증이 서로 다른 박스 폭을 쓰면 안 된다는 원칙(CLAUDE.md류) 위반. 0.97은 2026-09-17에
-# **반대 방향** 오차(20260913 영문 복음 4번째 슬라이드 — Pillow가 실제 COM 실측보다 줄 수를
-# 1줄 적게 예측)를 막으려고 도입됐었지만, 2026-09-18에 강화된 post-write COM 재조정
-# (_rebalance_reading_slides_post_write, best-so-far 추적)이 바로 그 시나리오(초기 9줄 예측
-# → 실제 COM 10줄)를 이미 최종적으로 9줄 이하로 수렴시킴을 실측으로 재확인했다(회귀 테스트
-# test_y2_G2_com_confirms_convergence_to_lines_per_slide, 프로그레션 test_g1c_* 참고) — 즉
-# 이 안전마진은 이제 불필요할 뿐 아니라 반대 방향 버그를 만드는 원인이었다. box_px는 반드시
-# 검증 경로와 100% 동일해야 하므로 1.0으로 고정한다(0으로 지워 이름 자체를 없애지 않은 이유는
-# "왜 이 값이 한때 0.97이었는지"를 코드 자리에서 바로 확인할 수 있게 하기 위함).
-_PIL_WRAP_SAFETY = 1.0
 
 _PILLOW_FONT_CACHE: dict = {}  # (font_name, font_size_pt) → PIL ImageFont or None
 
@@ -164,16 +149,10 @@ def parse_into_verse_units(content: str) -> list:
 
 
 
-def _visual_lines(text: str) -> int:
-    """문자 수 기반 줄 수 추정 (영성체송 높이 조정 등 레이아웃 외 용도 전용)."""
-    return max(1, (len(text) + CHARS_PER_LINE - 1) // CHARS_PER_LINE)
-
-
 def _wrap_line_count(text: str) -> int:
     """단어 경계 word-wrap 시뮬레이션으로 줄 수 계산.
 
-    layout_units_on_slides의 청킹 로직과 동일하므로 1 dl = 1줄이 보장된다.
-    독서·복음 슬라이드 줄 수 계산에 사용한다.
+    CHARS_PER_LINE 근사라 폰트 메트릭이 없을 때의 폴백 추정이다(종료 병합 판정·종료 상자 배치 계산에 사용).
     """
     if not text.strip():
         return 0
@@ -194,18 +173,11 @@ def _wrap_line_count(text: str) -> int:
     return count
 
 
-def _page_visual_lines(page: list) -> int:
-    """display_lines 리스트의 시각적 줄 수 — dl 1개 = 1줄."""
-    return len(page)
-
-
-
 def _merge_continuation_units(units: list) -> list:
     """is_continuation=True인 unit을 이전 unit에 합쳐 하나의 논리 단락으로 만든다.
 
-    layout_units_on_slides()(한글, CHARS_PER_LINE 기준)와 layout_units_on_slides_pil()
-    (영문 등, Pillow 실측 기준)이 이 병합 단계를 공유한다 — 절 중간에서 문장이 이어지는지
-    여부는 언어/렌더링 방식과 무관한 순수 텍스트 판단이라 중복 구현할 이유가 없다."""
+    절 중간에서 문장이 이어지는지 여부는 언어/렌더링 방식과 무관한 순수 텍스트 판단이라 한글·영문이
+    이 병합 단계를 공유한다(`_reading_paras_from_units`가 이 결과로 슬라이드 분할용 문단을 만든다)."""
     merged = []
 
     for unit in units:
@@ -255,124 +227,10 @@ def _merge_continuation_units(units: list) -> list:
     return merged
 
 
-def layout_units_on_slides(units: list) -> list:
-
-    """절 단위를 슬라이드로 묶음.
-
-    is_continuation=True인 unit은 이전 unit에 합쳐 하나의 논리 단락으로 처리.
-    논리 단락은 CHARS_PER_LINE 기준 단어 경계에서 display_lines로 분해하여
-    LINES_PER_SLIDE개씩 슬라이드로 묶음 (절 중간 분리 허용).
-
-    반환: [[dl, ...], ...]
-      dl: {'text', 'verse_num', 'extra_verses', 'new_para'}
-        new_para=True  → 새 PPT paragraph 시작
-        new_para=False → 이전 paragraph에 이어 붙임 (문장 연속, paragraph break 없음)
-      extra_verses: [(pos_in_dl_text, verse_num), ...] — 오렌지색 절 번호 위치
-
-    """
-
-    merged = _merge_continuation_units(units)
-
-    # 각 논리 단락을 display_lines로 분해 (CHARS_PER_LINE 기준 단어 경계 분리)
-    display_lines = []
-
-    for mu in merged:
-
-        mu_text = mu['text']
-
-        mu_extra = mu.get('extra_verses', [])
-
-        mu_verse = mu['verse_num']
-
-        pos = 0
-
-        first_dl = True
-
-        while pos < len(mu_text):
-
-            end = pos + CHARS_PER_LINE
-
-            if end >= len(mu_text):
-
-                chunk = mu_text[pos:]
-
-                next_pos = len(mu_text)
-
-            else:
-
-                # 단어 경계: end 이하에서 마지막 공백
-                space = mu_text.rfind(' ', pos, end + 1)
-
-                if space > pos:
-
-                    chunk = mu_text[pos:space]
-
-                    next_pos = space + 1
-
-                else:
-
-                    chunk = mu_text[pos:end]
-
-                    next_pos = end
-
-            if not chunk:
-
-                pos = next_pos
-
-                continue
-
-            # 이 display_line에 해당하는 extra_verses (머지 텍스트 절대 위치 → 상대 위치)
-            chunk_start = pos
-
-            chunk_end = pos + len(chunk)
-
-            chunk_extra = [
-
-                (p - chunk_start, v)
-
-                for p, v in mu_extra
-
-                if chunk_start <= p < chunk_end
-
-            ]
-
-            display_lines.append({
-
-                'text': chunk,
-
-                'verse_num': mu_verse if first_dl else '',
-
-                'extra_verses': chunk_extra,
-
-                'new_para': first_dl,
-
-            })
-
-            pos = next_pos
-
-            first_dl = False
-
-    # dl 1개 = 시각적 1줄 (단어 경계 분리 기준)
-    # _visual_lines 기반 추정 대신 dl 개수로 직접 분배
-    slides = []
-    current_slide = []
-
-    for dl in display_lines:
-        if len(current_slide) >= LINES_PER_SLIDE:
-            slides.append(current_slide)
-            current_slide = []
-        current_slide.append(dl)
-
-    if current_slide:
-        slides.append(current_slide)
-
-    return slides if slides else [[]]
-
-
 def _pil_wrap_spans(text: str, pil_font, box_px: float) -> list:
     """단어 경계 word-wrap을 Pillow 실측 폭으로 수행해 (start, end) 오프셋 리스트로 반환.
 
-    _rendered_wrap_count()와 동일한 그리디 word-wrap 알고리즘(누적 폭이 box_px를 넘기 전까지
+    (구 _rendered_wrap_count와 동일한) 그리디 word-wrap 알고리즘(누적 폭이 box_px를 넘기 전까지
     단어를 계속 붙임)이되, 재구성한 문자열이 아니라 원본 슬라이스 오프셋을 돌려준다 — 절 번호
     오렌지 위치(extra_verses)를 원본 텍스트 좌표로 그대로 계산해야 하므로, `cur + ' ' + word`로
     재조립한 문자열은 원본 공백 패턴과 어긋나 `.index()` 매칭이 불안정해질 수 있다(CLAUDE.md
@@ -393,141 +251,6 @@ def _pil_wrap_spans(text: str, pil_font, box_px: float) -> list:
             cur_start, cur_end = ts, te
     spans.append((cur_start, cur_end))
     return spans
-
-
-def layout_units_on_slides_pil(units: list, pil_font, box_px: float,
-                                lines_per_slide: int = LINES_PER_SLIDE) -> list:
-    """영문(또는 임의 언어) 콘텐츠 전용 슬라이드 분배.
-
-    layout_units_on_slides()의 CHARS_PER_LINE=27은 32pt 바탕체 한글 전각 문자 기준 실측
-    상수라 라틴 가변폭 텍스트에 그대로 쓰면 실제보다 좁게 잘라 슬라이드 수를 과대추정한다
-    (한글보다 라틴 문자가 평균적으로 좁으므로). is_continuation 병합은
-    `_merge_continuation_units()`를 공유하고, display_lines만 문자수 가정 대신 Pillow 실측
-    word-wrap(`_pil_wrap_spans`)으로 만든다. 반환 형식은 layout_units_on_slides()와 동일해
-    호출부(`replace_reading_slides()` 등)가 언어 구분 없이 그대로 재사용할 수 있다.
-
-    pil_font가 없으면(Pillow/폰트 미존재) CHARS_PER_LINE 기반 layout_units_on_slides()로
-    폴백한다 — 초기 추정이 부정확해도 `_rebalance_reading_slides_post_write()`의 COM 실측이
-    최종 정확성을 보장하므로(§3.2), 폴백이 최종 결과를 깨뜨리지 않는다.
-
-    **실측 보정 이력 (2026-09-17 도입 → 2026-09-26 폐지):**
-    `_RENDER_WIDTH_CALIBRATION`(1.03)은 한글 커닝 특성 기준으로 튜닝된 값이라 라틴 가변폭
-    텍스트에는 부족하다 — 실측 결과 Pillow가 특정 영문 단락에서 실제 PowerPoint보다 정확히
-    1줄 적게 예측하는 경계 케이스가 나온다(예: 20260913 복음 4번째 슬라이드, Pillow 9줄 vs
-    COM 실측 10줄). 2026-09-17 당시엔 `_rebalance_reading_slides_post_write()`의 재분리
-    (`_split_para_at_lines`)조차 "9줄에 맞는 keep 값"을 못 찾는 간극(keep=8→COM 8줄,
-    keep=9→Pillow가 "분리 불필요"로 오판해 그대로 10줄 잔존)이 있어, `_PIL_WRAP_SAFETY`로
-    초기 줄바꿈 폭을 추가로 좁혀(0.97) 애초에 그 경계에 걸리지 않게 회피했었다.
-
-    **2026-09-26 폐지 이유**: 이 0.97 좁힘이 검증 경로(`_rendered_wrap_count`/
-    `_count_slide_lines_rendered`/COM, 전부 이 안전마진 없이 계산)보다 페이지네이션을
-    3% 좁게 만들어, 실사용자 20260926 청년미사 슬라이드 54에서 실제로는 그 줄에 들어가는
-    단어("father's")까지 다음 슬라이드로 밀어내는 **반대 방향** 버그를 냈다 — 페이지네이션과
-    검증은 항상 같은 박스 폭을 써야 한다는 원칙 위반. 한편 2026-09-17 당시 있었던 "keep 값
-    간극" 문제는 그 이후(2026-09-18) `_split_and_adjust_via_com()`의 재시도 루프가
-    best-so-far를 보존하도록 강화되면서 이미 별도로 해소돼 있었다(CLAUDE.md "재시도 루프는
-    정확히 맞지 않으면 포기가 아니라..." 원칙) — 실측 재확인 결과 `_PIL_WRAP_SAFETY` 없이도
-    20260913 5개 슬라이드 전부 post-write 재조정 후 COM 실측 9줄 이하로 수렴한다(회귀
-    `test_y2_G2_com_confirms_convergence_to_lines_per_slide`, 프로그레션
-    `test_g1c_20260913_pagination_overpredict_still_converges_via_postwrite_rebalance`).
-    즉 0.97이 막던 문제는 이미 다른 메커니즘이 해결해 뒀고, 0.97 자체는 더 이상 필요 없이
-    새 버그만 만들고 있었다 — `_PIL_WRAP_SAFETY=1.0`으로 무력화해 페이지네이션이 검증과
-    동일한 box_px를 쓰도록 통일했다. `_get_slide_render_params()`/`_RENDER_WIDTH_CALIBRATION`
-    자체는 여전히 건드리지 않는다(한글 경로 무회귀)."""
-    if pil_font is None:
-        return layout_units_on_slides(units)
-
-    safe_box_px = box_px * _PIL_WRAP_SAFETY
-
-    merged = _merge_continuation_units(units)
-
-    display_lines = []
-    for mu in merged:
-        mu_text = mu['text']
-        mu_extra = mu.get('extra_verses', [])
-        mu_verse = mu['verse_num']
-        spans = _pil_wrap_spans(mu_text, pil_font, safe_box_px)
-        for i, (s, e) in enumerate(spans):
-            chunk_extra = [(p - s, v) for p, v in mu_extra if s <= p < e]
-            display_lines.append({
-                'text': mu_text[s:e],
-                'verse_num': mu_verse if i == 0 else '',
-                'extra_verses': chunk_extra,
-                'new_para': i == 0,
-            })
-
-    slides = []
-    current_slide = []
-    for dl in display_lines:
-        if len(current_slide) >= lines_per_slide:
-            slides.append(current_slide)
-            current_slide = []
-        current_slide.append(dl)
-    if current_slide:
-        slides.append(current_slide)
-
-    return slides if slides else [[]]
-
-
-def _verify_and_rebalance_pages(pages: list, label: str) -> list:
-    """layout_units_on_slides() 결과를 검증하고 줄 수 이상 슬라이드를 재조정.
-
-    - 비마지막 슬라이드가 LINES_PER_SLIDE 초과 → 마지막 dl들을 다음 슬라이드로 이동
-    - 비마지막 슬라이드가 LINES_PER_SLIDE 미만 → 다음 슬라이드 앞 dl들을 흡수 시도
-    - 마지막 슬라이드는 어떤 줄 수여도 건드리지 않음
-    """
-    i = 0
-    while i < len(pages):
-        lines = _page_visual_lines(pages[i])
-        is_last = (i == len(pages) - 1)
-
-        if lines > LINES_PER_SLIDE:
-            if len(pages[i]) > 1:
-                moved = []
-                while _page_visual_lines(pages[i]) > LINES_PER_SLIDE and len(pages[i]) > 1:
-                    moved.insert(0, pages[i].pop())
-                if i + 1 < len(pages):
-                    pages[i + 1] = moved + pages[i + 1]
-                else:
-                    pages.append(moved)
-                new_lines = _page_visual_lines(pages[i])
-                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 ({len(moved)}개 항목 다음 슬라이드로 이동)')
-                continue  # 현재 슬라이드 재검사
-            else:
-                print(f'  [{label}] 경고 슬라이드 {i+1}: {lines}줄 (항목 1개라 분리 불가)')
-
-        elif not is_last and lines < LINES_PER_SLIDE:
-            absorbed = 0
-            while i + 1 < len(pages) and pages[i + 1]:
-                test = pages[i] + [pages[i + 1][0]]
-                if _page_visual_lines(test) <= LINES_PER_SLIDE:
-                    pages[i].append(pages[i + 1].pop(0))
-                    absorbed += 1
-                    if not pages[i + 1]:
-                        pages.pop(i + 1)
-                        break
-                else:
-                    break
-            if absorbed:
-                new_lines = _page_visual_lines(pages[i])
-                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 ({absorbed}개 항목 흡수)')
-
-        i += 1
-
-    # 최종 검증 보고
-    issues = []
-    for i, page in enumerate(pages):
-        lines = _page_visual_lines(page)
-        is_last = (i == len(pages) - 1)
-        if lines > LINES_PER_SLIDE:
-            issues.append(f'슬라이드 {i+1}: {lines}줄 (분리 불가)')
-        elif not is_last and lines < LINES_PER_SLIDE:
-            issues.append(f'슬라이드 {i+1}: {lines}줄 (흡수 불가)')
-    if issues:
-        print(f'  [{label}] 미해결 이슈: {", ".join(issues)}')
-
-    return pages
-
 
 
 def _set_reading_text(tf, units: list, line_spacing: float = None, align: str = None):
@@ -795,36 +518,6 @@ def _set_reading_text(tf, units: list, line_spacing: float = None, align: str = 
 
 
 
-def _count_slide_lines(slide) -> int:
-    """슬라이드 본문 shape의 시각적 줄 수 계산 (word-wrap 시뮬레이션 기준)."""
-    shape = _find_content_shape(slide)
-    if shape is None:
-        return 0
-    return sum(
-        _wrap_line_count(para.text)
-        for para in shape.text_frame.paragraphs
-        if para.text.strip()
-    )
-
-
-def _rendered_wrap_count(text: str, pil_font, box_px: float) -> int:
-    """Pillow 폰트 메트릭으로 word-wrap 줄 수 계산."""
-    if not text.strip():
-        return 0
-    words = text.split(' ')
-    lines = 1
-    cur = ''
-    for word in words:
-        candidate = (cur + ' ' + word) if cur else word
-        if pil_font.getlength(candidate) <= box_px:
-            cur = candidate
-        else:
-            if cur:
-                lines += 1
-            cur = word
-    return lines
-
-
 def _get_slide_render_params(slide):
     """슬라이드의 콘텐츠 shape에서 Pillow 폰트와 박스 너비(px)를 반환.
     실패 또는 Pillow 미설치 시 (None, 0.0) 반환."""
@@ -891,26 +584,6 @@ def _get_slide_render_params(slide):
         _PILLOW_FONT_CACHE[cache_key] = pil_font
 
     return _PILLOW_FONT_CACHE.get(cache_key), box_px
-
-
-def _count_slide_lines_rendered(slide) -> int:
-    """Pillow 실제 폰트 메트릭으로 줄 수 계산.
-    Pillow 또는 폰트 파일 미존재 시 _count_slide_lines()로 폴백."""
-    pil_font, box_px = _get_slide_render_params(slide)
-    if pil_font is None:
-        return _count_slide_lines(slide)
-
-    shape = _find_content_shape(slide)
-    if shape is None:
-        return 0
-
-    total = 0
-    for para in shape.text_frame.paragraphs:
-        text = para.text
-        if not text.strip():
-            continue
-        total += _rendered_wrap_count(text, pil_font, box_px)
-    return total
 
 
 def _content_lnspc_factor(content_shape) -> float:
@@ -984,734 +657,293 @@ _COM_MISMATCH_COUNT: dict = {}
 _COM_ATEXIT_REGISTERED = [False]
 
 
-def _count_slide_lines_verified(prs, slide) -> int:
-    """_count_slide_lines_rendered()의 Pillow 추정치가 경계값(LINES_PER_SLIDE)일
-    때만 PowerPoint COM 실측으로 재확인한다. COM 불가/실패 시 Pillow 값을 그대로
-    반환(영구 폴백) — 어떤 실패 경로도 예외를 밖으로 내보내지 않는다.
+def _merged_ending_body_metrics(prs, slide, content_shape) -> tuple:
+    """본문+종료 통합 슬라이드에서 종료 텍스트박스를 배치하기 전, 실제 본문 줄 수와
+    1줄 높이(EMU)를 함께 구한다. (line_count, line_height_emu) 반환.
 
-    2026-08-04 발견 버그: 예전에는 슬라이드별 불일치 횟수가 일정 캡을 넘으면 이
-    함수 자체가 그 슬라이드에 한해 COM을 다시 묻지 않고 Pillow 값을 영구히
-    반환했다. 문제는 이 캡이 "한 번의 수정 시도"가 아니라 섹션 전체 처리 동안
-    누적되는 전역 카운터였다는 것 — 한 슬라이드가 앞선 무관한 작업에서 이미
-    3번 불일치를 겪었다면, 그 뒤 실제로는 성공하지 못한 수정 시도조차 COM을
-    건너뛰고 Pillow의 (틀린) 값을 "실측값"인 것처럼 반환해 거짓 성공을
-    보고했다(제1독서 슬라이드 19가 실제로는 10줄인데 9줄로 "성공" 처리된
-    사례로 실측 확인). 이제는 조건을 만족하는 한 매번 실제로 COM에 묻는다 —
-    무한 재시도 방지는 개별 수정 시도 쪽(`_split_and_adjust_via_com`의
-    max_adjust, `_rebalance_reading_slides_post_write`의 스윕 횟수 상한)에서
-    책임진다."""
-    pil_lines = _count_slide_lines_rendered(slide)
-    if pil_lines != LINES_PER_SLIDE or _COM_DISABLED[0]:
-        return pil_lines
-    if not _com_verification_enabled():
-        return pil_lines
+    (삭제된) `_count_slide_lines_verified()`는 overflow 경계(LINES_PER_SLIDE)에 걸렸을 때만 COM에
+    묻는다 — "9줄을 넘었는지"만 중요한 그 용도에선 합리적이지만, 이 함수(종료 텍스트박스
+    위치 계산)는 줄 수·줄 높이 추정이 조금만 틀려도 종료 텍스트박스가 실제 마지막 줄과
+    거의 겹치는 시각적 결함으로 바로 드러난다.
+
+    2026-10-03 실사용 사례(청년미사 출력, 제2독서 종료 통합 슬라이드)에서 char-count 근사
+    (`_wrap_line_count`)가 실제 5줄(PowerPoint COM `TextRange.Lines.Count` 실측 확인)인
+    문단을 4줄로 오산했다 — Pillow 폰트 메트릭 word-wrap(구 `_rendered_wrap_count`)도 같은
+    문단을 4줄로 오산해(동일 문단의 둘째 줄을 3줄로 과소 계산) 두 추정 경로 모두 실제보다
+    적게 세었다. 이는 "Pillow가 PowerPoint보다 몇 % 작게 잰다"는 기존 보정 계수(14~18%,
+    `_content_line_height_emu`가 보정하는 대상)로는 못 잡는, word-wrap 자체의 줄 수 오차다.
+    줄 수뿐 아니라 1줄 높이 자체도 `_content_line_height_emu`(Pillow ascent+descent 기반)가
+    실측(`TextRange.BoundHeight`)보다 14~18% 작게 나온다 — 두 오차가 겹쳐 GAP=2줄로
+    설계했는데 실제로는 거의 0(≈0.09인치)에 배치됐다. 경계값 여부와 무관하게 COM이
+    가능하면 항상 실측값(줄 수·BoundHeight 둘 다)을 쓴다 — 이 함수는 섹션(제1독서/제2독서/
+    복음)당 병합 슬라이드가 있을 때만, 많아야 1회 호출되므로 비용이 낮다."""
+    fallback_count = sum(
+        _wrap_line_count(para.text)
+        for para in content_shape.text_frame.paragraphs
+        if para.text.strip()
+    )
+    fallback_height = _content_line_height_emu(slide, content_shape)
+    if fallback_height is None or fallback_height <= 0:
+        fallback_height = content_shape.height // LINES_PER_SLIDE
+
+    if _COM_DISABLED[0] or not _com_verification_enabled():
+        return fallback_count, fallback_height
 
     try:
         import ppt_com_verify as com
     except ImportError:
         _COM_DISABLED[0] = True
-        print('  [경고] pywin32(PowerPoint COM) 미설치 — 이후 Pillow 추정치만으로 줄 수를 계산합니다.')
-        return pil_lines
+        return fallback_count, fallback_height
 
-    # probe 생성(_build_com_probe_pptx)은 python-pptx만 쓰는 순수 파이썬 코드라
-    # ComVerificationUnavailable이 아닌 예외(예: 복사된 슬라이드에 content shape가
-    # 없어 ValueError, 디스크 오류로 OSError 등)를 낼 수 있다. 이는 COM 자체의
-    # 문제가 아니라 이 슬라이드 하나에 국한된 문제이므로, COM을 전역적으로
-    # 비활성화하지 않고 이번 호출만 Pillow로 폴백한다.
+    try:
+        probe_path, shape_idx = _build_com_probe_pptx(prs, slide)
+    except Exception as e:
+        print(f'  [경고] 종료 텍스트박스 위치 계산용 COM probe 생성 실패({e}) — 추정치를 사용합니다.')
+        return fallback_count, fallback_height
+
+    try:
+        metrics = com.measure_text_metrics(str(probe_path), shape_idx)
+    except com.ComVerificationUnavailable as e:
+        _COM_DISABLED[0] = True
+        print(f'  [경고] PowerPoint COM 실측 실패({e}) — 이후 종료 텍스트박스 위치는 추정치로 계산합니다.')
+        return fallback_count, fallback_height
+
+    if not _COM_ATEXIT_REGISTERED[0]:
+        atexit.register(com.shutdown)
+        _COM_ATEXIT_REGISTERED[0] = True
+
+    real_lines = metrics['lines']
+    real_height = (
+        int(round(metrics['bound_height_pt'] * 12700 / real_lines))
+        if real_lines > 0 else fallback_height
+    )
+    if real_lines != fallback_count:
+        print(f'  [경고] 종료 텍스트박스 위치: 추정 {fallback_count}줄 vs COM 실측 {real_lines}줄 → COM 값 채택')
+    return real_lines, real_height
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 슬라이드 단위 채우기 (2026-10-03 구조 교체)
+#
+# 이전 구조는 본문 전체를 추정(27자/줄, Pillow 폭)으로 9줄씩 먼저 나눠 모든 슬라이드에 기록한 뒤,
+# PowerPoint 실측과의 오차를 이웃 슬라이드 간 문단 이동/분리로 사후 보정했다. 추정 오차가 이웃으로
+# 전파되어 보정이 수렴한다는 보장이 없었다(예: 비마지막 슬라이드가 8줄로 남거나 마지막 줄에 두 글자만
+# 남는 꼬리). 지금은 슬라이드마다 "남은 본문"을 그 슬라이드의 실제 본문 상자에 놓고 실제 줄 시작 위치를
+# 실측해 정확히 첫 LINES_PER_SLIDE줄까지만 확정한다 — 줄 경계에서 자르므로 앞 슬라이드 마지막 줄은 항상
+# 꽉 찬 줄이고, 그리디 줄바꿈은 줄 시작에서 무기억이라 앞 조각만 따로 렌더링해도 첫 9줄이 그대로다.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 측정용 프리픽스 글자 수 하한(문단 단위로 담는다). 10번째 줄이 안 보이면 2배로 늘려 재측정한다 —
+# 본문 전체를 매번 기록하면 슬라이드 수만큼 긴 텍스트를 COM에 태우게 된다.
+_MEASURE_PREFIX_CHARS = 1200
+_MAX_FILL_SLIDES = 500  # 무한 루프 방지용 안전장치(정상 본문은 수 장)
+_VERSE_PREFIX_RE = re.compile(r'^(\d+(?:,\d+)?\s*)')
+
+
+def _reading_paras_from_units(units: list) -> list:
+    """parse_into_verse_units() 결과를 슬라이드 분할용 문단 목록으로 바꾼다.
+
+    {'text': 문단 전체 텍스트, 'orange': [(start, end), ...]} — 오렌지 구간(절 번호)은 _set_reading_text가
+    쓰는 것과 같은 규칙(선두 절 번호 + continuation으로 병합된 중간 절 번호)으로 문단 내 절대 오프셋에
+    저장한다. run 개수를 가정하지 않으므로 어느 위치에서 잘라도 절 번호 서식이 유실되지 않는다."""
+    paras = []
+    for mu in _merge_continuation_units(units):
+        text = mu['text']
+        if not text.strip():
+            continue
+        ranges = []
+        if mu.get('verse_num'):
+            m = _VERSE_PREFIX_RE.match(text)
+            if m:
+                ranges.append((0, len(m.group(1))))
+        for pos, _vnum in mu.get('extra_verses', []):
+            if pos < len(text):
+                m2 = _VERSE_PREFIX_RE.match(text[pos:])
+                if m2:
+                    ranges.append((pos, pos + len(m2.group(1))))
+        ranges.sort()
+        paras.append({'text': text, 'orange': ranges})
+    return paras
+
+
+def _split_paras_at(paras: list, para_idx: int, offset: int):
+    """paras를 (para_idx번 문단, 문단 내 offset)에서 (앞 조각, 뒤 조각)으로 자른다.
+
+    offset==0이면 그 문단은 통째로 뒤 조각에 들어간다. 앞 조각의 끝 공백은 제거하고(줄 끝 공백이라
+    줄 수에 영향이 없다) 뒤 조각은 줄 시작 문자부터 그대로 둔다. 오렌지 구간은 양쪽에서 잘라 옮긴다."""
+    front = [dict(p, orange=list(p['orange'])) for p in paras[:para_idx]]
+    rest = []
+    p = paras[para_idx]
+    text = p['text']
+    if offset <= 0:
+        rest.append({'text': text, 'orange': list(p['orange'])})
+    else:
+        ftxt = text[:offset].rstrip()
+        if ftxt:
+            front.append({
+                'text': ftxt,
+                'orange': [(s, min(e, len(ftxt))) for s, e in p['orange'] if s < len(ftxt)],
+            })
+        rtxt = text[offset:]
+        if rtxt.strip():
+            rest.append({
+                'text': rtxt,
+                'orange': [(max(s - offset, 0), e - offset) for s, e in p['orange'] if e > offset],
+            })
+    rest.extend({'text': q['text'], 'orange': list(q['orange'])} for q in paras[para_idx + 1:])
+    return front, rest
+
+
+def _paras_to_units(paras: list) -> list:
+    """문단 목록을 _set_reading_text 입력 형식으로 바꾼다. 오렌지 구간은 모두 extra_verses
+    (pos, 절번호)로 표현한다(선두 절 번호도 pos 0) — _set_reading_text가 같은 정규식으로 run을 나눈다."""
+    units = []
+    for p in paras:
+        text = p['text']
+        extra = []
+        for s, e in p['orange']:
+            m = re.match(r'\d+(?:,\d+)?', text[s:e])
+            if m and s < len(text):
+                extra.append((s, m.group(0)))
+        units.append({'text': text, 'verse_num': '', 'extra_verses': extra, 'new_para': True})
+    return units
+
+
+def _write_reading_paras(shape, paras: list, line_spacing, align):
+    if paras:
+        _set_reading_text(shape.text_frame, _paras_to_units(paras),
+                          line_spacing=line_spacing, align=align)
+    else:
+        _clear_text_frame(shape.text_frame)
+
+
+def _pil_line_starts(paras: list, pil_font, box_px: float) -> list:
+    """Pillow word-wrap으로 본 줄 시작 위치 [(문단 인덱스, 문단 내 오프셋), ...]."""
+    out = []
+    for i, p in enumerate(paras):
+        for j, (s, _e) in enumerate(_pil_wrap_spans(p['text'], pil_font, box_px)):
+            out.append((i, 0 if j == 0 else s))
+    return out
+
+
+def _char_line_starts(paras: list) -> list:
+    """폰트 메트릭이 전혀 없을 때만 쓰는 CHARS_PER_LINE 단어 경계 줄 시작 위치."""
+    out = []
+    for i, p in enumerate(paras):
+        text = p['text']
+        n = len(text)
+        pos = 0
+        while pos < n:
+            out.append((i, pos))
+            end = pos + CHARS_PER_LINE
+            if end >= n:
+                break
+            space = text.rfind(' ', pos, end + 1)
+            pos = space + 1 if space > pos else end
+    return out
+
+
+def _locate_offset(paras: list, offset: int) -> tuple:
+    """'\\r'로 문단을 이은 전체 텍스트의 오프셋 → (문단 인덱스, 문단 내 오프셋)."""
+    base = 0
+    for i, p in enumerate(paras):
+        if offset < base + len(p['text']) + 1:
+            return i, offset - base
+        base += len(p['text']) + 1
+    return len(paras) - 1, len(paras[-1]['text'])
+
+
+def _com_measure_line_starts(prs, slide, paras: list):
+    """slide에 이미 기록된 paras의 (총 줄 수, 앞 LINES_PER_SLIDE+1줄의 줄 시작 위치)를 PowerPoint COM으로
+    실측한다. COM을 쓸 수 없거나 응답이 텍스트와 어긋나면 None(호출부가 Pillow로 폴백) — 어떤 실패 경로도
+    예외를 밖으로 내보내지 않는다. COM 자체가 안 되면(ImportError/ComVerificationUnavailable) 전역 비활성화하고,
+    이 슬라이드 하나만의 문제(probe 생성 실패, 응답 불일치)면 비활성화하지 않는다."""
+    if _COM_DISABLED[0] or not _com_verification_enabled():
+        return None
+    try:
+        import ppt_com_verify as com
+    except ImportError:
+        _COM_DISABLED[0] = True
+        print('  [경고] pywin32(PowerPoint COM) 미설치 — 이후 Pillow 추정치만으로 줄 수를 계산합니다.')
+        return None
+    measure = getattr(com, 'measure_line_starts', None)
+    if measure is None:
+        return None
+
     try:
         probe_path, shape_idx = _build_com_probe_pptx(prs, slide)
     except Exception as e:
         print(f'  [경고] COM 검증용 probe 생성 실패({e}) — 이 슬라이드는 Pillow 추정치를 사용합니다.')
-        return pil_lines
-
-    com_failed = False
+        return None
     try:
-        real_lines = com.count_slide_lines(str(probe_path), shape_idx)
+        info = measure(str(probe_path), shape_idx, LINES_PER_SLIDE + 1)
     except com.ComVerificationUnavailable as e:
         _COM_DISABLED[0] = True
         print(f'  [경고] PowerPoint COM 실측 실패({e}) — 이후 Pillow 추정치만으로 줄 수를 계산합니다.')
-        com_failed = True
-    # probe pptx는 프로세스당 1개 경로를 재사용(_com_probe_path)하므로 매 호출 후
-    # 삭제하지 않는다 — 정리는 atexit(_cleanup_probe_file)이 프로세스 종료 시 처리한다.
+        return None
 
     if not _COM_ATEXIT_REGISTERED[0]:
-        # PowerPoint Application 인스턴스는 프로세스 종료 시 반드시 Quit()되어야 한다.
-        # atexit는 등록 역순(LIFO)으로 실행되므로, 위 _build_com_probe_pptx()가 이미
-        # 등록한 임시 파일 정리(_cleanup_probe_file)보다 반드시 "뒤에" 등록해야
-        # PowerPoint가 먼저 종료되고(파일 잠금 해제) 그 다음에 파일이 삭제된다.
-        # 반대 순서로 등록하면 Quit() 전에 삭제를 시도해 파일이 잠긴 채로 남을 수 있다.
+        # PowerPoint Application은 프로세스 종료 시 Quit()되어야 하고, probe 임시 파일 정리(atexit)보다
+        # "뒤에" 등록해야(LIFO) PowerPoint가 먼저 종료돼 파일 잠금이 풀린 뒤 삭제된다.
         atexit.register(com.shutdown)
         _COM_ATEXIT_REGISTERED[0] = True
 
-    if com_failed:
-        return pil_lines
-
-    if real_lines != pil_lines:
-        sid = slide.slide_id
-        _COM_MISMATCH_COUNT[sid] = _COM_MISMATCH_COUNT.get(sid, 0) + 1
-        print(f'  [경고] 줄 수 불일치 감지: Pillow={pil_lines}줄, COM 실측={real_lines}줄 '
-              f'→ COM 값 채택 (해당 슬라이드 누적 {_COM_MISMATCH_COUNT[sid]}회)')
-    return real_lines
-
-
-def _split_para_at_lines(p_elem, keep_lines: int, pil_font, box_px: float):
-    """단락 XML 요소를 word-wrap 기준 keep_lines 줄에서 분리.
-
-    p_elem을 keep_lines 줄에 맞게 수정하고, 나머지 텍스트를 담은
-    새 a:p 요소를 반환. 분리 불필요하거나 불가하면 None 반환.
-
-    run 개수를 2개(절 번호+본문)로 가정하지 않는다. 여러 절이 하나의 논리 단락으로
-    병합된 경우(예: continuation 절) 절 번호 run이 단락 중간에도 나타날 수 있으므로,
-    분리 지점이 어느 run에 속하는지 실제로 찾아 그 run의 서식(rPr, 오렌지색 포함)을
-    그대로 유지한 채 텍스트만 자른다."""
-    from copy import deepcopy
-    A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
-
-    runs = p_elem.findall(f'{{{A}}}r')
-    if not runs:
+    full = '\r'.join(p['text'] for p in paras)
+    starts, texts, total = info['starts'], info['texts'], info['lines']
+    consistent = (
+        bool(starts) and starts[0] == 0 and len(starts) == min(total, LINES_PER_SLIDE + 1)
+        and all(a < b for a, b in zip(starts, starts[1:])) and starts[-1] < len(full)
+        and len(texts) == len(starts)
+        and all(full.startswith(t.rstrip('\r\n '), s) for s, t in zip(starts, texts))
+    )
+    if not consistent:
+        print('  [경고] COM 줄 시작 응답이 기록한 텍스트와 어긋나 이 슬라이드는 Pillow 추정치를 사용합니다.')
         return None
-    run_texts = [
-        (r.find(f'{{{A}}}t').text or '') if r.find(f'{{{A}}}t') is not None else ''
-        for r in runs
-    ]
-    full_text = ''.join(run_texts)
-    if not full_text.strip():
-        return None
+    return total, [_locate_offset(paras, s) for s in starts]
 
-    # word-wrap 시뮬레이션 → 줄별 단어 목록
-    words = full_text.split(' ')
-    line_buckets = []
-    cur_words: list = []
-    cur_w = 0.0
-    for word in words:
-        ww = pil_font.getlength(word)
-        if cur_words:
-            sw = pil_font.getlength(' ')
-            if cur_w + sw + ww > box_px:
-                line_buckets.append(cur_words)
-                cur_words = [word]
-                cur_w = ww
-            else:
-                cur_words.append(word)
-                cur_w += sw + ww
+
+def _measure_slide_cut(prs, slide, remaining: list, write, label: str):
+    """slide의 실제 본문 상자에서 remaining의 앞 LINES_PER_SLIDE줄 뒤 절단점을 찾는다.
+
+    반환: (절단점 (문단 인덱스, 문단 내 오프셋) 또는 None, 마지막 측정의 총 줄 수).
+    None이면 남은 본문 전부가 한 슬라이드(<= LINES_PER_SLIDE줄)에 들어간다 — 이때 슬라이드에는 이미
+    remaining 전체가 기록된 상태다. 절단점이 있으면 슬라이드에는 프리픽스(앞부분 문단들)가 기록돼 있으니
+    호출부가 앞 조각으로 다시 기록한다."""
+    cap = _MEASURE_PREFIX_CHARS
+    while True:
+        n, chars = 0, 0
+        while n < len(remaining) and (n == 0 or chars < cap):
+            chars += len(remaining[n]['text'])
+            n += 1
+        prefix = remaining[:n]
+        write(prefix)
+
+        pil_font, box_px = _get_slide_render_params(slide)
+        measured = _com_measure_line_starts(prs, slide, prefix)
+        if measured is None:
+            starts = (_char_line_starts(prefix) if pil_font is None
+                      else _pil_line_starts(prefix, pil_font, box_px))
+            total = len(starts)
         else:
-            cur_words = [word]
-            cur_w = ww
-    if cur_words:
-        line_buckets.append(cur_words)
-
-    if len(line_buckets) <= keep_lines:
-        return None  # 분리 불필요
-
-    first_text = ' '.join(w for bucket in line_buckets[:keep_lines] for w in bucket)
-    rest_text  = ' '.join(w for bucket in line_buckets[keep_lines:]  for w in bucket)
-    if not rest_text:
-        return None
-
-    # first_text/rest_text는 full_text를 공백 기준으로 재분할한 것이므로,
-    # 경계는 full_text[len(first_text)] 위치의 공백이다.
-    split_idx = len(first_text)
-    rest_start = split_idx + 1 if full_text[split_idx:split_idx + 1] == ' ' else split_idx
-
-    def _locate(pos):
-        """full_text상의 문자 위치 → (run 인덱스, run 내부 offset)."""
-        acc = 0
-        for i, t in enumerate(run_texts):
-            if pos <= acc + len(t):
-                return i, pos - acc
-            acc += len(t)
-        return len(run_texts) - 1, len(run_texts[-1])
-
-    front_idx, front_off = _locate(split_idx)
-    rest_idx, rest_off = _locate(rest_start)
-
-    # 수정 전에 먼저 deepcopy → rest_p는 원본 run 서식을 그대로 유지
-    rest_p = deepcopy(p_elem)
-    rest_runs = rest_p.findall(f'{{{A}}}r')
-
-    # 앞부분(p_elem): front_idx까지 run 유지, 그 run은 앞쪽 글자만 남김 (서식은 그 run 고유의 것)
-    for r in runs[front_idx + 1:]:
-        p_elem.remove(r)
-    t_front = runs[front_idx].find(f'{{{A}}}t')
-    if t_front is not None:
-        t_front.text = run_texts[front_idx][:front_off]
-
-    # 뒷부분(rest_p): rest_idx부터 run 유지, 그 run은 뒤쪽 글자만 남김 (서식은 원본 그대로)
-    for r in rest_runs[:rest_idx]:
-        rest_p.remove(r)
-    t_rest = rest_runs[rest_idx].find(f'{{{A}}}t')
-    if t_rest is not None:
-        t_rest.text = run_texts[rest_idx][rest_off:]
-
-    return rest_p
-
-
-def _restore_para_from_backup(p_elem, backup):
-    """_split_para_at_lines()로 분리(mutate)된 p_elem을, 분리 전 deepcopy해 둔
-    backup 상태로 되돌린다. 자식 요소(run 등)를 전부 backup의 복사본으로
-    교체한다 — backup은 이미 올바른 스키마 순서였으므로 순서도 그대로 보존된다."""
-    for child in list(p_elem):
-        p_elem.remove(child)
-    for child in backup:
-        p_elem.append(copy.deepcopy(child))
-
-
-def _split_and_adjust_via_com(prs, cur_slide, p_elem, keep: int, pil_font, box_px: float,
-                                place_rest, remove_rest, max_adjust: int = 2):
-    """p_elem을 keep 줄에서 분리해 place_rest(rest_p)로 배치한 뒤, cur_slide의
-    실제 줄 수를 COM으로 재확인한다.
-
-    _split_para_at_lines()는 "어디서 자를지"를 여전히 Pillow 워드랩으로
-    계산하므로, COM 실측이 목표(LINES_PER_SLIDE)와 다르면 분리 지점 자체가
-    편향된 것이다. keep을 늘리면(p_elem에 더 많이 남기면) cur_slide에 남는
-    줄 수가 늘고, 줄이면 준다 — 이 관계는 p_elem이 cur_slide에 남는 경우
-    (초과분 분리)와 다음 슬라이드에서 넘어와 cur_slide에 합쳐지는 경우
-    (부족분 흡수) 모두 동일하다. 불일치가 남으면 배치를 되돌리고 keep을
-    ±1 조정해 재분리하기를 최대 max_adjust회 반복한다.
-
-    max_adjust회를 다 써도 여전히 LINES_PER_SLIDE를 초과하면(즉 오버플로가
-    남으면), 이 시도 전체를 되돌리고 (None, 원래 줄 수)를 반환한다 — 이
-    함수가 존재하는 목적 자체가 "9줄로 맞추다가 실수로 넘치는 것"을 막는
-    것이므로, 못 맞출 바에는 아무것도 안 하느니만 못하다. 반대로 미달(9줄
-    미만)로 끝나는 것은 넘침이 아니므로 그대로 받아들인다 — 안 채워진 줄은
-    미관상 아쉬울 뿐 내용이 잘리는 문제가 아니다.
-
-    재시도 중 어느 한 번이라도 "초과는 아니지만 정확히 목표는 아닌" 결과(keep, actual)를
-    얻었다면 이를 best로 기억해 둔다. 다음 재시도가 분리 자체에 실패(_split_para_at_lines가
-    None 반환 — 예: 그 단락의 워드랩 버킷 수가 이미 소진돼 더 늘릴 keep이 없는 경우)하거나
-    max_adjust를 다 써도 여전히 미달인 채로 끝나면, best를 되살려 반환한다. 완전 포기(항상
-    원본으로 되돌려 0줄 개선)는 "초과를 절대 만들지 않는다"는 이 함수의 핵심 불변조건이
-    실제로 위협받을 때(어떤 attempt도 LINES_PER_SLIDE 이하를 만들지 못했을 때)에만 쓴다.
-
-    2026-09-20 발견: 이 구분이 없어서, keep=3 시도가 8줄(9줄 목표에 1줄 미달, 초과 아님)을
-    만들어냈는데도 keep=4 재시도가 "그 단락 자체에 더 나눌 버킷이 없어" 실패하자 8줄 결과까지
-    버리고 완전 원상복구했다. 이 함수 자신의 "미달은 받아들인다"는 철학과 모순되는 동작이었고,
-    호출부(_rebalance_reading_slides_post_write)가 이 실패를 "이번 스윕은 변화 없음"으로
-    취급해 재조정 루프가 조기 수렴 종료 — 결과적으로 제2독서 슬라이드가 6줄/4줄로 크게
-    미달한 채 남았다(실사용자 육안 검수로 발견).
-
-    반환: (최종 rest_p 또는 None, cur_slide의 최종 실제 줄 수)
-    """
-    original_backup = copy.deepcopy(p_elem)
-    best_keep = None
-    best_actual = None
-
-    def _detach_current(rp):
-        if rp is not None:
-            remove_rest(rp)
-        _restore_para_from_backup(p_elem, original_backup)
-
-    def _reapply(k):
-        rp = _split_para_at_lines(p_elem, k, pil_font, box_px)
-        place_rest(rp)
-        return rp
-
-    rest_p = _split_para_at_lines(p_elem, keep, pil_font, box_px)
-    if rest_p is None:
-        return None, None
-    place_rest(rest_p)
-    actual = _count_slide_lines_verified(prs, cur_slide)
-    if actual <= LINES_PER_SLIDE:
-        best_keep, best_actual = keep, actual
-
-    for _ in range(max_adjust):
-        if actual == LINES_PER_SLIDE:
-            break
-        keep += 1 if actual < LINES_PER_SLIDE else -1
-        if keep <= 0:
-            break
-        _detach_current(rest_p)
-        new_rest = _split_para_at_lines(p_elem, keep, pil_font, box_px)
-        if new_rest is None:
-            rest_p = None
-            break
-        rest_p = new_rest
-        place_rest(rest_p)
-        actual = _count_slide_lines_verified(prs, cur_slide)
-        if actual <= LINES_PER_SLIDE and (best_actual is None or actual > best_actual):
-            best_keep, best_actual = keep, actual
-
-    if actual == LINES_PER_SLIDE and rest_p is not None:
-        return rest_p, actual
-
-    # 정확히 맞추지 못했다(마지막 시도가 초과/분리불가로 끝났거나 미달인 채 재시도 소진).
-    # 지금 배치돼 있는 것(있다면)을 걷어낸 뒤, best가 있으면 그 keep으로 재적용해 채택한다.
-    if rest_p is not None:
-        _detach_current(rest_p)
-    else:
-        _restore_para_from_backup(p_elem, original_backup)
-
-    if best_keep is None:
-        return None, None
-
-    rest_p = _reapply(best_keep)
-    return rest_p, best_actual
-
-
-def _rebalance_reading_slides_post_write(prs, content_start: int, n_content: int, label: str) -> int:
-    """독서/복음 본문 슬라이드 기록 후 실제 줄 수 검증 및 재조정.
-
-    비마지막 슬라이드가 LINES_PER_SLIDE 미만(7·8줄) 또는 초과(10줄 이상)이면
-    인접 슬라이드와 단락을 이동하여 LINES_PER_SLIDE에 맞춤.
-    마지막 슬라이드는 건드리지 않음(단, 그 앞 슬라이드가 마지막 슬라이드의 유일한
-    단락을 통째로 흡수해 마지막 슬라이드가 비면 삭제 후 병합 — "마지막 슬라이드는
-    건드리지 않음"은 그 텍스트를 자르지 않는다는 뜻이지, 완전히 흡수돼 빈 껍데기만
-    남았는데도 그 빈 슬라이드를 보존한다는 뜻은 아니다).
-    반환: 순삽입 슬라이드 수(overflow로 삽입 − underfull 병합으로 삭제). 호출부
-    (replace_reading_slides)가 이 값으로 종료 슬라이드 위치를 계산하므로 삽입만
-    세면 안 된다.
-    """
-    if n_content < 2:
-        return 0
-    n_inserted = 0
-    _COM_MISMATCH_COUNT.clear()  # 섹션(제1독서/제2독서/복음)마다 통계용 카운트를 새로 시작
-
-    def _content_paras(slide):
-        shape = _find_content_shape(slide)
-        if shape is None:
-            return []
-        return [p for p in shape.text_frame.paragraphs if p.text.strip()]
-
-    def _get_txBody(slide):
-        shape = _find_content_shape(slide)
-        return shape.text_frame._txBody if shape else None
-
-    # 렌더링 파라미터 (단락 분리 시 사용) — 같은 섹션 내 슬라이드는 동일 shape
-    _pil_font, _box_px = _get_slide_render_params(prs.slides[content_start])
-
-    def _try_absorb_underfull(cur_slide, nxt_slide, nxt_idx, lines, slide_no, phase_prefix=''):
-        """cur_slide(<LINES_PER_SLIDE)를 nxt_slide에서 흡수해 채운다.
-
-        다음 슬라이드에 단락이 1개뿐이어도(종료 텍스트 병합 슬라이드 등) 포기하지
-        않고 분리를 시도한다. 초기 스윕과 "병합 후 재검증" 스윕이 이 로직을 공유해야
-        하는 이유: 2026-09-20 제2독서 사례에서 초기 스윕이 한 슬라이드 쌍을 개선하자,
-        그 개선이 이웃 슬라이드를 "단락 1개까지 소진된" 상태로 만들었다. 병합 후
-        재검증 루프가 이 상태를 별도의(더 약한) 로직으로 처리하고 있었다면 — 즉
-        단락 1개인 이웃을 무조건 건너뛰기만 했다면(과거 실제 코드) — 그 이웃 앞
-        슬라이드가 크게 미달인 채로 새로 남는다. 두 스윕이 같은 흡수 능력을 갖춰야
-        어느 스윕에서 이 상태를 만나든 동일하게 대응한다.
-
-        다음 슬라이드의 유일한 단락을 통째로 가져가도 넘치지 않는 경우(예전에는 이때
-        "다음 슬라이드가 완전히 비게 됨"을 이유로 아무것도 하지 않고 건너뛰었다), 이제는
-        통째로 가져가고 빈 다음 슬라이드는 삭제해 병합한다. 빈 슬라이드를 만들지 않으려는
-        원래 의도는 "빈 슬라이드가 화면에 남지 않는 것"이 목적이지 "다음 슬라이드를
-        건드리지 않는 것" 자체가 목적이 아니었다 — 삭제까지 하면 원래 우려가 그대로
-        해소되면서, cur가 크게 미달인 채로 고아가 되는 부작용도 함께 사라진다(2026-09-20
-        발견: 흡수 없이 건너뛰기만 하는 이전 동작이 실제로 "1줄짜리 슬라이드 + 그 뒤
-        2줄짜리 마지막 슬라이드"처럼 거의 빈 슬라이드 2장을 나란히 남기는 더 나쁜 결과를
-        냈다).
-
-        반환: (changed, deleted) — changed=True면 뭔가 바뀜, deleted=True면 nxt_slide가
-        삭제됐다(호출부가 n_content/인덱스를 갱신하고 이번 스윕을 재시작해야 함)."""
-        needed = LINES_PER_SLIDE - lines
-        nxt_paras = _content_paras(nxt_slide)
-        if len(nxt_paras) == 0:
-            return False, False  # 다음 슬라이드에 가져올 내용 자체가 없음
-        nxt_txBody = _get_txBody(nxt_slide)
-        cur_txBody = _get_txBody(cur_slide)
-
-        if len(nxt_paras) == 1:
-            if _pil_font is None:
-                return False, False
-            p_elem = nxt_paras[0]._p
-            first_p_lines = _rendered_wrap_count(nxt_paras[0].text, _pil_font, _box_px)
-
-            if first_p_lines <= needed:
-                # 통째로 가져가도 넘치지 않는다 — 분리 없이 전부 흡수하고, 빈
-                # 다음 슬라이드는 삭제해 병합한다.
-                nxt_txBody.remove(p_elem)
-                cur_all_p = cur_txBody.findall(qn('a:p'))
-                if cur_all_p:
-                    cur_all_p[-1].addnext(p_elem)
-                else:
-                    cur_txBody.append(p_elem)
-                new_lines = _count_slide_lines_verified(prs, cur_slide)
-                if new_lines > LINES_PER_SLIDE:
-                    # Pillow 추정과 달리 COM 실측이 초과라면 안전하게 원위치(절대 금지 불변조건).
-                    cur_txBody.remove(p_elem)
-                    nxt_txBody.append(p_elem)
-                    return False, False
-                if len(_content_paras(nxt_slide)) == 0:
-                    delete_slide(prs, nxt_idx)
-                    print(f'  [{label}] 슬라이드 {slide_no}: {lines}줄 → {new_lines}줄 '
-                          f'({phase_prefix}다음 슬라이드 전체 흡수 후 빈 슬라이드 삭제)')
-                    return True, True
-                print(f'  [{label}] 슬라이드 {slide_no}: {lines}줄 → {new_lines}줄 '
-                      f'({phase_prefix}다음 슬라이드 전체 흡수)')
-                return True, False
-
-            # 다음 슬라이드(종료 텍스트 병합 슬라이드 등)에 단락이 하나뿐이고 통째로
-            # 가져가면 넘치므로, 앞부분만 분리해 가져오고 나머지는 다음 슬라이드에 남긴다.
-            nxt_txBody.remove(p_elem)
-            cur_all_p = cur_txBody.findall(qn('a:p'))
-            if cur_all_p:
-                cur_all_p[-1].addnext(p_elem)
-            else:
-                cur_txBody.append(p_elem)
-
-            def _place_rest(rp):
-                first_nxt_p = nxt_txBody.find(qn('a:p'))
-                if first_nxt_p is not None:
-                    first_nxt_p.addprevious(rp)
-                else:
-                    nxt_txBody.append(rp)
-
-            def _remove_rest(rp):
-                nxt_txBody.remove(rp)
-
-            rest_p, new_lines = _split_and_adjust_via_com(
-                prs, cur_slide, p_elem, needed, _pil_font, _box_px,
-                _place_rest, _remove_rest,
-            )
-            if rest_p is None:
-                # 분리 불가 → p_elem을 원위치(다음 슬라이드)로 되돌린다
-                cur_txBody.remove(p_elem)
-                nxt_txBody.append(p_elem)
-                return False, False
-            print(f'  [{label}] 슬라이드 {slide_no}: {lines}줄 → {new_lines}줄 '
-                  f'({phase_prefix}다음 슬라이드 단일 단락 분리 흡수)')
-            return True, False
-
-        p_elem = nxt_paras[0]._p
-        nxt_txBody.remove(p_elem)
-        cur_all_p = cur_txBody.findall(qn('a:p'))
-        if cur_all_p:
-            cur_all_p[-1].addnext(p_elem)
-        else:
-            cur_txBody.append(p_elem)
-        new_lines = _count_slide_lines_verified(prs, cur_slide)
-        if new_lines > LINES_PER_SLIDE:
-            # 흡수 시 초과 → 원위치 후 단락 분리 시도
-            cur_txBody.remove(p_elem)
-            first_nxt_p = nxt_txBody.find(qn('a:p'))
-            if first_nxt_p is not None:
-                first_nxt_p.addprevious(p_elem)
-            else:
-                nxt_txBody.append(p_elem)
-            # 단락 분리: 다음 슬라이드 첫 단락에서 needed줄만 가져옴
-            if _pil_font is not None:
-                first_p_lines = _rendered_wrap_count(nxt_paras[0].text, _pil_font, _box_px)
-                if first_p_lines > needed:
-                    nxt_txBody.remove(p_elem)
-                    cur_all_p2 = cur_txBody.findall(qn('a:p'))
-                    if cur_all_p2:
-                        cur_all_p2[-1].addnext(p_elem)
-                    else:
-                        cur_txBody.append(p_elem)
-
-                    def _place_rest2(rp):
-                        first_nxt_p2 = nxt_txBody.find(qn('a:p'))
-                        if first_nxt_p2 is not None:
-                            first_nxt_p2.addprevious(rp)
-                        else:
-                            nxt_txBody.append(rp)
-
-                    def _remove_rest2(rp):
-                        nxt_txBody.remove(rp)
-
-                    rest_p, new_lines = _split_and_adjust_via_com(
-                        prs, cur_slide, p_elem, needed, _pil_font, _box_px,
-                        _place_rest2, _remove_rest2,
-                    )
-                    if rest_p is not None:
-                        print(f'  [{label}] 슬라이드 {slide_no}: {lines}줄 → {new_lines}줄 '
-                              f'({phase_prefix}다음 단락 분리 흡수 후 COM 조정)')
-                        return True, False
-                    # 분리 불가 → p_elem을 원위치(다음 슬라이드)로 되돌린다.
-                    # nxt_txBody에는 이미 nxt_paras[1:]가 남아 있으므로 append하면
-                    # 순서가 뒤바뀐다 — 반드시 맨 앞에 다시 삽입해야 한다.
-                    cur_txBody.remove(p_elem)
-                    first_nxt_p3 = nxt_txBody.find(qn('a:p'))
-                    if first_nxt_p3 is not None:
-                        first_nxt_p3.addprevious(p_elem)
-                    else:
-                        nxt_txBody.append(p_elem)
-            return False, False
-        print(f'  [{label}] 슬라이드 {slide_no}: {lines}줄 → {new_lines}줄 '
-              f'({phase_prefix}다음 슬라이드 첫 단락 흡수)')
-        return True, False
-
-    changed = True
-    _sweep_guard = 0
-    _MAX_SWEEPS = 50  # 무한 루프 방지용 안전장치(정상 케이스는 훨씬 적은 스윕으로 수렴)
-    while changed:
-        _sweep_guard += 1
-        if _sweep_guard > _MAX_SWEEPS:
-            print(f'  [경고] [{label}] 재조정이 {_MAX_SWEEPS}회 스윕 내에 수렴하지 않아 중단합니다.')
-            break
-        changed = False
-        for i in range(n_content - 1):  # 마지막 슬라이드 제외
-            cur_slide = prs.slides[content_start + i]
-            nxt_slide = prs.slides[content_start + i + 1]
-            lines = _count_slide_lines_verified(prs, cur_slide)
-
-            if lines == LINES_PER_SLIDE:
-                continue
-
-            if lines > LINES_PER_SLIDE:
-                excess = lines - LINES_PER_SLIDE
-                cur_paras = _content_paras(cur_slide)
-                cur_txBody = _get_txBody(cur_slide)
-                nxt_txBody = _get_txBody(nxt_slide)
-
-                if len(cur_paras) <= 1:
-                    # 단락 1개 → 단락 분리로만 해결 가능
-                    if _pil_font is not None:
-                        last_p = cur_paras[0]._p
-                        last_p_lines = _rendered_wrap_count(cur_paras[0].text, _pil_font, _box_px)
-                        keep = last_p_lines - excess
-                        if keep > 0:
-                            def _place_rest1(rp):
-                                first_nxt_p = nxt_txBody.find(qn('a:p'))
-                                if first_nxt_p is not None:
-                                    first_nxt_p.addprevious(rp)
-                                else:
-                                    nxt_txBody.append(rp)
-
-                            def _remove_rest1(rp):
-                                nxt_txBody.remove(rp)
-
-                            rest_p, new_lines = _split_and_adjust_via_com(
-                                prs, cur_slide, last_p, keep, _pil_font, _box_px,
-                                _place_rest1, _remove_rest1,
-                            )
-                            if rest_p is not None:
-                                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (단락 분리 후 COM 조정)')
-                                changed = True
-                                continue
-                    print(f'  [{label}] 경고 슬라이드 {i+1}: {lines}줄 (단락 1개, 분리 불가)')
-                    continue
-
-                # 마지막 단락을 다음 슬라이드 앞으로 이동 시도
-                p_elem = cur_paras[-1]._p
-                cur_txBody.remove(p_elem)
-                first_nxt_p = nxt_txBody.find(qn('a:p'))
-                if first_nxt_p is not None:
-                    first_nxt_p.addprevious(p_elem)
-                else:
-                    nxt_txBody.append(p_elem)
-                new_lines = _count_slide_lines_verified(prs, cur_slide)
-                nxt_new_lines = _count_slide_lines_verified(prs, nxt_slide)
-
-                # 다음 슬라이드가 마지막이 아닌데도 overflow → 롤백 후 단락 분리 시도
-                if nxt_new_lines > LINES_PER_SLIDE and i < n_content - 2:
-                    nxt_txBody.remove(p_elem)
-                    cur_all_rb = cur_txBody.findall(qn('a:p'))
-                    if cur_all_rb:
-                        cur_all_rb[-1].addnext(p_elem)
-                    else:
-                        cur_txBody.append(p_elem)
-
-                    # 단락 분리: 현재 슬라이드에 LINES_PER_SLIDE줄까지 채우고 나머지를 다음으로
-                    if _pil_font is not None:
-                        last_p = cur_paras[-1]._p
-                        last_p_lines = _rendered_wrap_count(cur_paras[-1].text, _pil_font, _box_px)
-                        keep = last_p_lines - excess
-                        if keep > 0:
-                            def _place_rest2(rp):
-                                first_nxt_p2 = nxt_txBody.find(qn('a:p'))
-                                if first_nxt_p2 is not None:
-                                    first_nxt_p2.addprevious(rp)
-                                else:
-                                    nxt_txBody.append(rp)
-
-                            def _remove_rest2(rp):
-                                nxt_txBody.remove(rp)
-
-                            rest_p, new_lines = _split_and_adjust_via_com(
-                                prs, cur_slide, last_p, keep, _pil_font, _box_px,
-                                _place_rest2, _remove_rest2,
-                            )
-                            if rest_p is not None:
-                                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (단락 분리 후 COM 조정, 나머지 → 다음)')
-                                changed = True
-                                continue
-
-                    # 인접 슬라이드로 이동/분리 모두 불가 (누적 초과분이 이웃 슬라이드로
-                    # 흡수되지 않는 경우) → 현재 위치 뒤에 새 슬라이드를 삽입해 초과분을 옮긴다.
-                    insert_slide_copy(prs, content_start + i + 1, content_start + i)
-                    new_slide = prs.slides[content_start + i + 1]
-                    new_txBody = _get_txBody(new_slide)
-                    if new_txBody is not None:
-                        for _p in list(new_txBody.findall(qn('a:p'))):
-                            new_txBody.remove(_p)
-                        moved = 0
-                        while _count_slide_lines_verified(prs, cur_slide) > LINES_PER_SLIDE:
-                            cur_paras_ins = _content_paras(cur_slide)
-                            if len(cur_paras_ins) <= 1:
-                                break
-                            p_elem2 = cur_paras_ins[-1]._p
-                            cur_txBody.remove(p_elem2)
-                            first_p = new_txBody.find(qn('a:p'))
-                            if first_p is not None:
-                                first_p.addprevious(p_elem2)
-                            else:
-                                new_txBody.append(p_elem2)
-                            moved += 1
-                        new_lines = _count_slide_lines_verified(prs, cur_slide)
-                        added_lines = _count_slide_lines_verified(prs, new_slide)
-                        print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (새 슬라이드 삽입: {added_lines}줄, {moved}단락 이동)')
-                        n_content += 1
-                        n_inserted += 1
-                        changed = True
-                    # 슬라이드 인덱스가 밀렸으므로 이번 pass는 중단하고 처음부터 재스캔
-                    break
-
-                print(f'  [{label}] 슬라이드 {i+1}: {lines}줄 → {new_lines}줄 (마지막 단락 → 다음={nxt_new_lines}줄)')
-                changed = True
-
-            else:  # lines < LINES_PER_SLIDE
-                did_change, did_delete = _try_absorb_underfull(
-                    cur_slide, nxt_slide, content_start + i + 1, lines, i + 1
-                )
-                if did_change:
-                    changed = True
-                if did_delete:
-                    n_content -= 1
-                    n_inserted -= 1  # net(삽입-삭제) — 호출부가 이 값으로 종료 슬라이드 위치를 계산함
-                    # 슬라이드 인덱스가 밀렸으므로 이번 pass는 중단하고 처음부터 재스캔
-                    break
-
-    # 마지막 콘텐츠 슬라이드가 LINES_PER_SLIDE 초과인 경우 새 슬라이드 삽입
-    last_idx = content_start + n_content - 1
-    last_lines = _count_slide_lines_verified(prs, prs.slides[last_idx])
-    if last_lines > LINES_PER_SLIDE:
-        last_paras_check = _content_paras(prs.slides[last_idx])
-        if len(last_paras_check) > 1:
-            # 과분리 방지: 마지막 단락 이동 후 남는 줄이 LINES_PER_SLIDE//2 이하이면
-            # 이동분이 남은 분보다 많은 불균형 분리 → 새 슬라이드 삽입 건너뜀
-            _skip_split = False
-            if _pil_font is not None:
-                _last_para_lines = _rendered_wrap_count(
-                    last_paras_check[-1].text, _pil_font, _box_px
-                )
-                _remaining_est = last_lines - _last_para_lines
-                if _remaining_est <= LINES_PER_SLIDE // 2:
-                    print(f'  [{label}] 마지막 슬라이드 {n_content}: {last_lines}줄 초과이나 단락 이동 시 {_remaining_est}줄만 남아 불균형 분리 → 유지')
-                    _skip_split = True
-            if not _skip_split:
-                insert_slide_copy(prs, last_idx + 1, last_idx)
-                n_inserted += 1
-                new_slide = prs.slides[last_idx + 1]
-                # new_txBody를 한 번만 조회하여 재사용 (루프 내 재조회 시 빈 shape 인식 실패 방지)
-                new_txBody = _get_txBody(new_slide)
-                if new_txBody is not None:
-                    for _p in list(new_txBody.findall(qn('a:p'))):
-                        new_txBody.remove(_p)
-                last_txBody = _get_txBody(prs.slides[last_idx])
-                moved = 0
-                while _count_slide_lines_verified(prs, prs.slides[last_idx]) > LINES_PER_SLIDE:
-                    cur_paras2 = _content_paras(prs.slides[last_idx])
-                    if len(cur_paras2) <= 1:
-                        break
-                    if new_txBody is None:
-                        break
-                    p_elem = cur_paras2[-1]._p
-                    last_txBody.remove(p_elem)
-                    first_p = new_txBody.find(qn('a:p'))
-                    if first_p is not None:
-                        first_p.addprevious(p_elem)
-                    else:
-                        new_txBody.append(p_elem)
-                    moved += 1
-                new_last_lines = _count_slide_lines_verified(prs, prs.slides[last_idx])
-                added_lines = _count_slide_lines_verified(prs, prs.slides[last_idx + 1]) if new_txBody is not None else 0
-                print(f'  [{label}] 마지막 슬라이드 {n_content}: {last_lines}줄 → {new_last_lines}줄 (새 슬라이드 삽입: {added_lines}줄, {moved}단락 이동)')
-
-    # ── 연속 단편 병합: 문장 미완성 단락 + 절 번호 없는 다음 단락 → 하나로 합치기 ──
-    # _split_para_at_lines 분리 후 rebalance 이동으로 같은 슬라이드에 놓인
-    # 연속 단편("하고" / "불렀다." 등)을 단락 간격 없이 한 줄로 이어 붙인다.
-    _A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
-
-    def _run_is_orange(r):
-        rPr = r.find(f'{{{_A}}}rPr')
-        if rPr is None:
-            return False
-        sf = rPr.find(f'{{{_A}}}solidFill')
-        if sf is None:
-            return False
-        cl = sf.find(f'{{{_A}}}srgbClr')
-        return cl is not None and cl.get('val', '').upper() == 'FFC000'
-
-    def _has_verse_run(p):
-        rr = p.findall(f'{{{_A}}}r')
-        return bool(rr) and _run_is_orange(rr[0])
-
-    def _p_text(p):
-        return ''.join(
-            (r.find(f'{{{_A}}}t').text or '')
-            for r in p.findall(f'{{{_A}}}r')
-            if r.find(f'{{{_A}}}t') is not None
-        )
-
-    def _ends_sentence(p):
-        t = _p_text(p).rstrip()
-        return bool(t) and t[-1] in '.!?'
-
-    for si in range(n_content):
-        slide_m = prs.slides[content_start + si]
-        txBody_m = _get_txBody(slide_m)
-        if txBody_m is None:
-            continue
-        merged_any = True
-        while merged_any:
-            merged_any = False
-            m_paras = _content_paras(slide_m)
-            for j in range(len(m_paras) - 1):
-                p_c = m_paras[j]._p
-                p_n = m_paras[j + 1]._p
-                if not _ends_sentence(p_c) and not _has_verse_run(p_n):
-                    # 공백 런 추가 후 p_n의 런을 p_c로 이동, p_n 제거
-                    c_runs = p_c.findall(f'{{{_A}}}r')
-                    if c_runs:
-                        space_r = copy.deepcopy(c_runs[-1])
-                        space_t = space_r.find(f'{{{_A}}}t')
-                        if space_t is not None:
-                            space_t.text = ' '
-                        _para_append_run(p_c, space_r)
-                    for nr in list(p_n.findall(f'{{{_A}}}r')):
-                        p_n.remove(nr)
-                        _para_append_run(p_c, nr)
-                    txBody_m.remove(p_n)
-                    print(f'  [{label}] 슬라이드 {si+1}: 연속 단편 병합 (단락 {j+1}+{j+2})')
-                    merged_any = True
-                    break  # m_paras 변경됐으므로 재시작
-
-    # ── 병합 후 재검증: 단락 병합으로 텍스트가 재배치(reflow)되어
-    #    LINES_PER_SLIDE 아래로 떨어진 슬라이드를 다음 슬라이드에서 다시 흡수해 보충 ──
-    changed = True
-    _sweep_guard = 0
-    _MAX_SWEEPS = 50  # 무한 루프 방지용 안전장치(정상 케이스는 훨씬 적은 스윕으로 수렴)
-    while changed:
-        _sweep_guard += 1
-        if _sweep_guard > _MAX_SWEEPS:
-            print(f'  [경고] [{label}] 재조정이 {_MAX_SWEEPS}회 스윕 내에 수렴하지 않아 중단합니다.')
-            break
-        changed = False
-        for i in range(n_content - 1):  # 마지막 슬라이드 제외
-            cur_slide = prs.slides[content_start + i]
-            nxt_slide = prs.slides[content_start + i + 1]
-            lines = _count_slide_lines_verified(prs, cur_slide)
-            if lines >= LINES_PER_SLIDE:
-                continue
-            did_change, did_delete = _try_absorb_underfull(
-                cur_slide, nxt_slide, content_start + i + 1, lines, i + 1,
-                phase_prefix='병합 후 보충: ',
-            )
-            if did_change:
-                changed = True
-            if did_delete:
-                n_content -= 1
-                n_inserted -= 1  # net(삽입-삭제) — 호출부가 이 값으로 종료 슬라이드 위치를 계산함
-                break  # 슬라이드 인덱스가 밀렸으므로 이번 pass는 중단하고 처음부터 재스캔
-
-    return n_inserted
-
+            total, starts = measured
+            if pil_font is not None:
+                pil_total = len(_pil_line_starts(prefix, pil_font, box_px))
+                if pil_total != total:
+                    sid = slide.slide_id
+                    _COM_MISMATCH_COUNT[sid] = _COM_MISMATCH_COUNT.get(sid, 0) + 1
+                    print(f'  [경고] 줄 수 불일치 감지: Pillow={pil_total}줄, COM 실측={total}줄 '
+                          f'→ COM 값 채택 (해당 슬라이드 누적 {_COM_MISMATCH_COUNT[sid]}회)')
+
+        if total > LINES_PER_SLIDE:
+            return starts[LINES_PER_SLIDE], total
+        if n == len(remaining):
+            return None, total
+        cap *= 2
 
 
 def replace_reading_slides(prs, content_start: int, content_end: int,
 
-                            units_pages: list, template_idx: int,
+                            units: list, template_idx: int,
 
                             line_spacing: float = None, merge_threshold: int = 5,
 
@@ -1719,14 +951,14 @@ def replace_reading_slides(prs, content_start: int, content_end: int,
                             normalize_page_size: bool = False) -> int:
 
     """
-
     독서/복음 콘텐츠 슬라이드를 교체.
 
     맨 뒤에 '주님의 말씀입니다.' 전용 슬라이드(TYPE B)가 있으면 보존하고
-
     본문 슬라이드는 그 앞에 삽입.
 
-    units_pages: layout_units_on_slides() 결과
+    units: parse_into_verse_units() 결과. 슬라이드마다 남은 본문을 그 슬라이드의 실제 본문 상자에서
+    실측해 정확히 LINES_PER_SLIDE줄까지만 확정하고 나머지로 다음 슬라이드를 같은 방식으로 채운다
+    (마지막 슬라이드만 그 이하). 슬라이드가 모자라면 template_idx를 복제해 늘리고 남으면 삭제한다.
 
     template_idx: 새 슬라이드 복제 기준 슬라이드 인덱스
 
@@ -1734,7 +966,7 @@ def replace_reading_slides(prs, content_start: int, content_end: int,
 
     """
 
-    needed = len(units_pages)
+    paras = _reading_paras_from_units(units)
 
     existing = content_end - content_start
 
@@ -1764,76 +996,77 @@ def replace_reading_slides(prs, content_start: int, content_end: int,
 
 
 
-    # 본문 슬라이드 수 조정
-
-    if needed > n_usable:
-
-        for k in range(needed - n_usable):
-
-            insert_slide_copy(prs, insert_pos + k, template_idx)
-
-            _set_slide_bg_black(prs.slides[insert_pos + k], prs)
-
-    elif needed < n_usable:
-
-        for _ in range(n_usable - needed):
-
-            delete_slide(prs, content_start + needed)
-
-
-
-    # template_idx 슬라이드는 삽입/삭제 대상이 아니라 항상 그대로 남으므로(needed>n_usable
-    # 이면 뒤에 삽입, needed<n_usable이면 content_start+needed 이후를 삭제 — 둘 다
-    # template_idx 위치를 건드리지 않음), 여기서 그 크기를 기준(golden) 삼아도 안전하다.
-    # 새로 삽입된 슬라이드는 insert_slide_copy()가 template_idx를 그대로 복제하므로 이미
-    # 크기가 같지만, needed<=n_usable로 "기존 슬라이드를 그대로 재사용"하는 경우 그 기존
-    # 슬라이드가 템플릿 제작자가 자신의 샘플 콘텐츠 분량에 맞춰 손으로 줄여놓은 박스
-    # (예: 청년미사 영문 복음 3번째 슬라이드)일 수 있다 — 페이지 분배 자체는 template_idx의
-    # 박스 크기 하나만 기준으로 word-wrap 줄 수를 계산했으므로(_get_slide_render_params),
-    # 실제로 쓰이는 모든 페이지 박스도 그 크기와 같아야 마지막 줄이 잘리지 않는다(D2).
-    #
-    # normalize_page_size=False(기본값)이면 이 단계를 완전히 건너뛴다 — 독립 리뷰
-    # (02b_review_report.md, 2026-09-24)가 실제 성인 회귀 픽스처(output/20260712/
-    # Template_20260628_...pptx)를 열어, 제2독서 콘텐츠 슬라이드 62(template_idx)와
-    # 63의 박스 크기가 원래부터(회귀와 무관하게) 서로 다르다는 것을 실측으로 확인했다.
-    # 이 정규화를 항상 켜두면 청년미사 버그(D2)와 무관한 성인 경로에서까지 기존 슬라이드
-    # 지오메트리를 조용히 바꿔버린다 — "no-op"이라는 구현 당시 주장이 실측으로 거짓임이
-    # 드러났다. D2가 실제로 필요한 곳(청년미사 영문 복음)만 명시적으로 켜도록 기본값을
-    # False로 바꿨다 — 호출부가 opt-in해야 한다.
+    # normalize_page_size=False(기본값)이면 템플릿 박스 크기 복사를 건너뛴다 — 성인 픽스처
+    # (output/20260712/Template_20260628_...pptx)의 제2독서 콘텐츠 슬라이드 62/63은 원래부터 박스
+    # 크기가 서로 달라, 이 정규화를 항상 켜면 청년미사 버그(D2)와 무관한 성인 경로의 기존 지오메트리를
+    # 조용히 바꾼다(02b_review_report.md, 2026-09-24 실측). D2가 실제로 필요한 곳(청년미사 영문 복음)만
+    # 호출부가 opt-in한다. 슬라이드 단위 채우기는 각 슬라이드의 "실제" 상자에서 측정하므로 이 옵션이
+    # 꺼져 있어도 박스 크기가 달라서 줄 수가 어긋나지는 않는다.
     template_shape = _find_content_shape(prs.slides[template_idx]) if normalize_page_size else None
 
-    # 각 본문 슬라이드에 콘텐츠 설정 (종료 슬라이드는 건드리지 않음)
+    _COM_MISMATCH_COUNT.clear()  # 섹션(제1독서/제2독서/복음)마다 통계용 카운트를 새로 시작
 
-    for page_i, page_units in enumerate(units_pages):
-
-        slide = prs.slides[content_start + page_i]
+    remaining = paras
+    n_used = 0
+    k = 0
+    last_total = None  # 마지막 슬라이드를 확정할 때 실측(COM/Pillow)한 줄 수 — 종료 병합 판정에 쓴다
+    while k < _MAX_FILL_SLIDES:
+        if k < n_usable:
+            slide = prs.slides[content_start + k]
+        else:
+            ins = insert_pos + (k - n_usable)
+            insert_slide_copy(prs, ins, template_idx)
+            slide = prs.slides[ins]
+            _set_slide_bg_black(slide, prs)
+        k += 1
+        n_used = k
 
         shape = _find_content_shape(slide)
+        if shape is None:
+            if k > n_usable:
+                raise RuntimeError(
+                    f'[{label}] 슬라이드 {k}: 복제한 슬라이드에서 본문 상자를 찾지 못해 남은 본문 '
+                    f'{len(remaining)}개 단락을 배치할 수 없습니다')
+            continue  # 본문 상자가 없는 기존 슬라이드는 건너뛴다(내용을 잃지 않고 다음 슬라이드로)
 
-        if shape:
+        if template_shape is not None and (
+            shape.height != template_shape.height or shape.width != template_shape.width
+        ):
+            shape.width = template_shape.width
+            shape.height = template_shape.height
+            shape.left = template_shape.left
+            shape.top = template_shape.top
 
-            if template_shape is not None and (
-                shape.height != template_shape.height or shape.width != template_shape.width
-            ):
-                shape.width = template_shape.width
-                shape.height = template_shape.height
-                shape.left = template_shape.left
-                shape.top = template_shape.top
+        def _write(ps, _shape=shape):
+            _write_reading_paras(_shape, ps, line_spacing, align)
 
-            _set_reading_text(shape.text_frame, page_units, line_spacing=line_spacing, align=align)
+        if not remaining:
+            _write([])
+            last_total = 0
+            break
+
+        cut, total = _measure_slide_cut(prs, slide, remaining, _write, label)
+        if cut is None:
+            print(f'  [{label}] 슬라이드 {k}: 마지막 슬라이드 {total}줄')
+            last_total = total
+            break
+        front, remaining = _split_paras_at(remaining, cut[0], cut[1])
+        _write(front)
+        split_note = ', 마지막 단락은 줄 경계에서 분할' if cut[1] > 0 else ''
+        print(f'  [{label}] 슬라이드 {k}: {LINES_PER_SLIDE}줄 확정 (단락 {len(front)}개{split_note})')
+
+    # 필요한 만큼 채우고 남은 기존 본문 슬라이드(종료 슬라이드 앞쪽)는 삭제
+    for _ in range(n_usable - n_used):
+
+        delete_slide(prs, content_start + n_used)
+
+    needed = n_used
 
 
-
-    # 기록 후 실제 줄 수 검증 및 재조정 (비마지막 슬라이드 7·8·10줄 → 9줄)
-    n_rebalance_inserted = 0
-    if needed > 1:
-        n_rebalance_inserted = _rebalance_reading_slides_post_write(prs, content_start, needed, label)
 
     # 종료 슬라이드의 본문 텍스트박스 비우기 (참조 PPT 잔여 내용 제거)
-    # n_rebalance_inserted: overflow로 삽입된 슬라이드 수만큼 ending 슬라이드 위치가 밀림
 
-    for i in range(content_start + needed + n_rebalance_inserted,
-                   content_start + needed + n_rebalance_inserted + n_ending):
+    for i in range(content_start + needed, content_start + needed + n_ending):
 
         shape = _find_content_shape(prs.slides[i])
 
@@ -1843,31 +1076,30 @@ def replace_reading_slides(prs, content_start: int, content_end: int,
 
 
 
-    total_new = needed + n_rebalance_inserted + n_ending
+    total_new = needed + n_ending
 
     # 마지막 본문 슬라이드의 줄 수가 merge_threshold 이하이면 ending shape를 본문 슬라이드로 통합
-    # (post-write 재조정으로 슬라이드가 추가/재배치될 수 있으므로 units_pages[-1]이 아닌
-    #  실제 마지막 본문 슬라이드의 렌더링된 줄 수를 확인해야 한다)
-    if n_ending > 0 and units_pages and needed > 0:
-        last_content_idx = content_start + needed + n_rebalance_inserted - 1
-        last_page_lines = _count_slide_lines(prs.slides[last_content_idx])
-        if last_page_lines <= merge_threshold:
+    # 판정 줄 수는 마지막 슬라이드를 확정할 때 얻은 실측값(COM, 불가 시 Pillow, 폰트도 없으면 27자 근사)이다 —
+    # 구 27자/줄 추정은 라틴 본문을 약 2배 과대 추정해 실측 4~5줄도 병합하지 못했다(2026-10-03 사용자 결정).
+
+    if n_ending > 0 and needed > 0:
+        last_content_idx = content_start + needed - 1
+        if last_total is not None and last_total <= merge_threshold:
             ENDING_KW = ('주님의 말씀입니다', '◎ 하느님', '◎ 그리스도님')
-            ending_slide_idx = content_start + needed + n_rebalance_inserted
+            ending_slide_idx = content_start + needed
             ending_slide = prs.slides[ending_slide_idx]
-            last_slide = prs.slides[content_start + needed + n_rebalance_inserted - 1]
+            last_slide = prs.slides[last_content_idx]
             spTree = last_slide.shapes._spTree
             for shape in ending_slide.shapes:
                 if shape.has_text_frame and any(kw in shape.text_frame.text for kw in ENDING_KW):
                     spTree.append(copy.deepcopy(shape._element))
-            for i in range(content_start + needed + n_rebalance_inserted + n_ending - 1,
-                           content_start + needed + n_rebalance_inserted - 1, -1):
+            for i in range(content_start + needed + n_ending - 1,
+                           content_start + needed - 1, -1):
                 delete_slide(prs, i)
             total_new -= n_ending
 
+    print(f'    [{label}] 본문 {needed}개 슬라이드')
     return total_new - existing
-
-
 
 
 
@@ -2041,17 +1273,11 @@ def _reposition_merged_ending_shapes(prs, sections: dict):
 
                 continue
 
-            # 실제 본문 줄 수 계산 (빈 슬라이드는 건너뜀)
+            # 실제 본문 줄 수·1줄 높이 계산 (빈 슬라이드는 건너뜀). char-count/Pillow
+            # 추정이 틀리면 종료 텍스트박스가 실제 마지막 줄과 거의 겹치는 결함으로 바로
+            # 드러나므로, COM이 가능하면 항상 실측값을 쓴다(_merged_ending_body_metrics).
 
-            line_count = 0
-
-            for para in content_shape.text_frame.paragraphs:
-
-                text = para.text.strip()
-
-                if text:
-
-                    line_count += _wrap_line_count(text)
+            line_count, line_height = _merged_ending_body_metrics(prs, slide, content_shape)
 
             if line_count == 0:
 
@@ -2065,12 +1291,6 @@ def _reposition_merged_ending_shapes(prs, sections: dict):
                     break
             if ending_shape is None:
                 continue
-
-            # line_height는 폰트 실측으로 산출한다. 박스 height // 9는 '박스가 항상 9줄'
-            # 이라는 틀린 전제라 짧은 박스에서 종료 텍스트박스가 본문과 겹쳤다.
-            line_height = _content_line_height_emu(slide, content_shape)
-            if line_height is None or line_height <= 0:
-                line_height = content_shape.height // LINES_PER_SLIDE  # 폴백
 
             # 종료 텍스트박스 자체의 시각 줄 수 (일반적으로 2줄: 사제 응답 + 회중 응답)
             ending_span = 0

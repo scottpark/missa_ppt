@@ -11,7 +11,7 @@
 - `missa_to_ppt.py` — 진입점. CLI 인자·파일 탐색·JSON 로드·`main()`/`_run_gui_mode()` 분기.
 - `missa_ooxml_utils.py` — 슬라이드/도형 복사·rId 매핑·배경 상속 등 OOXML 저수준 프리미티브.
 - `missa_gui.py` — Tkinter 팝업 전부 + config.json 로드/저장 + OneDrive 온디맨드 조회·캐싱.
-- `missa_reading_layout.py` — 독서·복음 절 파싱 → 슬라이드 분배 → Pillow/COM 실측 → 재조정.
+- `missa_reading_layout.py` — 독서·복음 절 파싱 → COM 실측으로 슬라이드마다 정확히 9줄씩 채우기(폴백 Pillow).
 - `missa_sections.py` — 섹션 탐색(`find_sections`)과 검증(`validate*`).
 - `missa_content_updaters.py` — 화답송·성가·입당송 등 섹션별 콘텐츠 갱신(`update_*`).
 - `missa_psalm_score_image.py` — 화답송 악보 원본 이미지 → 슬라이드 변환(leaf 모듈).
@@ -87,13 +87,20 @@
 23. **캐시 계층이 여러 개 겹칠 때, 한 계층의 스냅샷을 다른 계층의 최종 판단에 재사용하지
     않는다** — "UI 표시용"과 "최종 재사용 판단용"은 다른 질문이다. 후자는 항상 실시간
     재확인 경로를 거친다.
+24. **공백행 연속 길이로 영역 분할 시 스트레이 잉크에 흔들리지 않는 보조 지표를 둔다** —
+    1차 패스(공백 연속 길이)가 영역을 잘못 합치면, 영역 내부 밀도 군집(오선행 등)으로
+    2차 보정 분할을 건다(2026-10-04, 나주노 172).
+25. **"전체를 추정으로 나눈 뒤 사후 보정"하지 말고 슬라이드 단위로 실측해 채운다** — 추정 오차를 이웃
+    슬라이드 간 이동으로 메우면 보정 단계가 늘고 한두 글자 꼬리 줄(widow) 같은 부작용이 남는다.
+    남은 본문을 실제 상자에 놓고 COM 줄 시작 위치로 정확히 N줄에서 자르면 앞 조각의 마지막 줄은 항상
+    꽉 찬다(2026-10-03, 20261004 복음 '짓는' → 슬라이드 단위 채우기로 교체).
 
 ## 회귀 테스트
 
 `tests/test_missa_regression.py`에 주일·평일 통합 테스트와 핵심 함수 단위 테스트가 있다.
 
 **선택 실행 우선, 전체 실행은 최종 게이트 1회**: 기능별 클래스(`TestIsSundayMass`/
-`TestWrapLineCount`/`TestSplitAndAdjustViaCom`/`TestComVerify` 등)와 별도 파일(OneDrive/
+`TestWrapLineCount`/`TestSplitParaPreservesVerseColors`/`TestComVerify` 등)와 별도 파일(OneDrive/
 GUI-OneDrive/COM검증/업데이터)로 이미 나뉘어 있다. 작업 중엔 관련 클래스/파일만 `-k`나
 `::클래스명`으로 좁혀 돌리고, 전체 스위트(`pytest tests/ -v`, 총 300개+·3~4분)는 리뷰
 통과 후 최종 게이트로 한 번만 돌린다.

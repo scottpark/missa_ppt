@@ -48,6 +48,7 @@ _first_dialog_pos  = [None, None]  # 첫 번째 다이얼로그 위치 (x, y)
 _last_output_path  = [None]        # main()이 저장한 최종 출력 경로
 _last_date_str     = [None]        # main()이 사용한 날짜 문자열
 _last_output_key   = [None]        # main()이 사용한 출력 폴더 키(output_folder_key() 결과)
+_last_output_mass    = [None]        # main()이 처리한 미사 유형('adult'|'youth') — 결과창 '원드라이브로 복사'용
 _preloaded_inputs  = [None]        # EXE 흐름에서 main() 호출 전에 미리 수집한 입력값
 
 # ─── UI 테마 (brokenbaykcc.org Look & Feel) ─────────────────────────────────
@@ -195,6 +196,336 @@ _DEFAULT_ONEDRIVE_HYMN_PATH = 'PPT 문서/09.가톨릭 성가/성가-악보버�
 _DEFAULT_ONEDRIVE_YOUTH_HYMN_PATH = 'PPT 문서/20.청년 미사/2.성가'
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 청년미사 OneDrive 접속 모드(2026-10-02, 요구사항 §3.3.1): 로컬 'PPT 문서' 폴더 우선,
+# 설정이 없거나 무효하면 기존 기기 코드 로그인(Graph API)으로 폴백한다.
+# 모드는 실행 시작 시 한 번 결정해 `_YOUTH_PPT_STATE`에 보관하고, 이후 모든 단계(파일 선택·
+# 성가 조회·결과 저장)가 같은 값을 읽는다 — 단계마다 따로 판정하면 한쪽은 로컬, 한쪽은
+# Graph를 타서 로그인 창이 뒤늦게 뜨는 불일치가 생긴다.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_YOUTH_PPT_FOLDER_KEY = 'onedrive_ppt_folder'
+_YOUTH_ROOT_FOLDER = '20.청년 미사'
+_YOUTH_CATHOLIC_HYMN_SUBPATH = ('09.가톨릭 성가', '성가-악보버전')
+_YOUTH_HYMN_SUBPATH = (_YOUTH_ROOT_FOLDER, '2.성가')
+
+_YOUTH_PPT_STATE = {'mode': None, 'folder': None}
+
+
+def _reset_youth_ppt_mode() -> None:
+    """모드 결정 캐시를 비운다(테스트·설정 변경 직후용)."""
+    _YOUTH_PPT_STATE['mode'] = None
+    _YOUTH_PPT_STATE['folder'] = None
+
+
+def _is_valid_youth_ppt_folder(path) -> bool:
+    """디렉터리이며 그 안에 `20.청년 미사` 폴더가 있으면 유효한 'PPT 문서' 폴더."""
+    try:
+        p = Path(path)
+        return p.is_dir() and (p / _YOUTH_ROOT_FOLDER).is_dir()
+    except Exception:
+        return False
+
+
+def _select_youth_ppt_folder_interactively():
+    """'PPT 문서' 폴더 선택창을 띄운다. 유효하지 않은 폴더를 고르면 안내 후 다시 선택하게
+    하고, 취소하면 None을 반환한다(호출부가 로그인 폴백으로 처리)."""
+    message = ("성당 'PPT 문서' 폴더(이 컴퓨터에서 OneDrive로 동기화 중인 폴더)를 선택해 주세요.\n"
+               "(최초 1회만 설정됩니다. 선택하지 않고 취소하면 이번에는 OneDrive 로그인 방식으로 진행합니다.)")
+    while True:
+        folder = _ask_onedrive_path_popup(
+            title="'PPT 문서' 폴더 설정", message=message,
+            dialog_title="'PPT 문서' 폴더 선택",
+        )
+        if not folder:
+            return None
+        if _is_valid_youth_ppt_folder(folder):
+            return str(Path(folder))
+        message = (f"선택한 폴더 안에 '{_YOUTH_ROOT_FOLDER}' 폴더가 없습니다.\n"
+                   "'PPT 문서' 폴더를 다시 선택해 주세요.\n"
+                   "(취소하면 OneDrive 로그인 방식으로 진행합니다.)")
+
+
+def get_youth_ppt_mode(ask_if_missing: bool = False) -> str:
+    """청년미사 OneDrive 접속 모드를 반환한다: 'local' | 'fallback'.
+
+    `config.json`의 `onedrive_ppt_folder`가 유효하면 'local'. 아니면 `ask_if_missing`일 때만
+    폴더 선택창을 띄우고(선택 성공 시 저장), 취소·무효면 'fallback'. 선택창은 GUI 진입점
+    (`_run_gui_mode`)만 `ask_if_missing=True`로 부른다 — 그 외 호출(CLI·하위 함수·테스트)이
+    모달 창 앞에서 멈추지 않게 하기 위함. 'local'과 선택창을 거친 결과만 캐시한다."""
+    st = _YOUTH_PPT_STATE
+    if st['mode'] is not None:
+        return st['mode']
+
+    config = _load_config()
+    saved = config.get(_YOUTH_PPT_FOLDER_KEY, '')
+    if saved and _is_valid_youth_ppt_folder(saved):
+        st['mode'], st['folder'] = 'local', Path(saved)
+        return 'local'
+
+    if ask_if_missing:
+        folder = _select_youth_ppt_folder_interactively()
+        if folder:
+            config[_YOUTH_PPT_FOLDER_KEY] = folder
+            _save_config(config)
+            print(f"  [설정] 'PPT 문서' 폴더 저장됨: {folder}")
+            st['mode'], st['folder'] = 'local', Path(folder)
+            return 'local'
+        st['mode'], st['folder'] = 'fallback', None
+        return 'fallback'
+    return 'fallback'
+
+
+def youth_local_subdir(kind: str, subfolder: str | None = None, year=None) -> Path:
+    """로컬 모드의 하위 경로 조합(하드코딩 문자열은 여기에만 둔다). kind:
+    'catholic_hymn' | 'youth_hymn'(subfolder=나주노 성가/야훼이레 성가) | 'output'(year) |
+    'start_dir'('PPT 문서' 폴더 자체)."""
+    base = _YOUTH_PPT_STATE['folder']
+    if base is None:
+        raise RuntimeError("청년미사 로컬 모드가 아닙니다('PPT 문서' 폴더 미설정).")
+    if kind == 'start_dir':
+        return base
+    if kind == 'catholic_hymn':
+        return base.joinpath(*_YOUTH_CATHOLIC_HYMN_SUBPATH)
+    if kind == 'youth_hymn':
+        return base.joinpath(*_YOUTH_HYMN_SUBPATH, subfolder or '')
+    if kind == 'output':
+        return base / _YOUTH_ROOT_FOLDER / str(year)
+    raise ValueError(f'알 수 없는 kind: {kind!r}')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 'PPT 문서' 루트·찾아보기 시작 폴더·결과 PPT 복사(2026-10-03, 요구사항 §3.3.2/§3.3.3)
+#
+# 성인미사도 청년미사와 같은 설정 키(`onedrive_ppt_folder`)로 로컬 'PPT 문서' 폴더를 한 번 고른다
+# (성인은 그 안에 `09.가톨릭 성가`가 있어야 유효). 이 루트로부터 (1) 첫 화면 '찾아보기'의 시작
+# 폴더, (2) 결과창 '원드라이브로 복사'의 저장 폴더를 계산한다. 하드코딩된 하위 폴더명은 이 절에만 둔다.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ADULT_HYMN_ROOT_FOLDER = '09.가톨릭 성가'
+_ADULT_PPT_STATE = {'folder': None}
+_LAST_PSALM_DIR_KEY = 'last_psalm_dir'
+
+# 찾아보기 시작 폴더('PPT 문서' 기준 하위 경로). 공통 → 미사 유형별 순으로 조회한다.
+_BROWSE_START_SUBPATHS = {
+    'common': {
+        '시작기도':   ('13.기도문',),
+        '미사후기도': ('13.기도문',),
+        '공지사항':   ('11.공지사항 PPT문서',),
+    },
+    'adult': {'ref_pptx': ('10.기타 PPT문서', 'PPT 자동화', '1.Template')},
+    'youth': {'ref_pptx': (_YOUTH_ROOT_FOLDER, '1.Template')},
+}
+
+
+def _reset_adult_ppt_folder() -> None:
+    """성인미사 'PPT 문서' 폴더 캐시를 비운다(테스트·설정 변경 직후용)."""
+    _ADULT_PPT_STATE['folder'] = None
+
+
+def _is_valid_adult_ppt_folder(path) -> bool:
+    """디렉터리이며 그 안에 `09.가톨릭 성가` 폴더가 있으면 유효한 'PPT 문서' 폴더."""
+    try:
+        p = Path(path)
+        return p.is_dir() and (p / _ADULT_HYMN_ROOT_FOLDER).is_dir()
+    except Exception:
+        return False
+
+
+def _select_adult_ppt_folder_interactively():
+    """성인미사용 'PPT 문서' 폴더 선택창. 무효한 폴더면 다시 묻고, 취소하면 None."""
+    message = ("성당 'PPT 문서' 폴더(이 컴퓨터에서 OneDrive로 동기화 중인 폴더)를 선택해 주세요.\n"
+               "(최초 1회만 설정됩니다. 선택하지 않고 취소하면 성가·결과 복사 기능은 기존 방식으로 동작합니다.)")
+    while True:
+        folder = _ask_onedrive_path_popup(
+            title="'PPT 문서' 폴더 설정", message=message,
+            dialog_title="'PPT 문서' 폴더 선택",
+        )
+        if not folder:
+            return None
+        if _is_valid_adult_ppt_folder(folder):
+            return str(Path(folder))
+        message = (f"선택한 폴더 안에 '{_ADULT_HYMN_ROOT_FOLDER}' 폴더가 없습니다.\n"
+                   "'PPT 문서' 폴더를 다시 선택해 주세요.\n(취소하면 기존 방식으로 진행합니다.)")
+
+
+def get_adult_ppt_folder(ask_if_missing: bool = False):
+    """성인미사 'PPT 문서' 폴더(Path) 또는 None. 우선순위: 캐시 → config `onedrive_ppt_folder` →
+    기존 `onedrive_hymn_folder`(…/PPT 문서/09.가톨릭 성가/성가-악보버전)에서 역산 → (ask_if_missing일
+    때만) 선택창. 선택창으로 고르면 `onedrive_ppt_folder`와 함께 `onedrive_hymn_folder`를
+    `{PPT 문서}/09.가톨릭 성가/성가-악보버전`으로 저장한다. 선택창은 GUI 진입점만 `ask_if_missing=True`로
+    부른다(다른 호출이 모달 창 앞에서 멈추지 않게)."""
+    st = _ADULT_PPT_STATE
+    if st['folder'] is not None:
+        return st['folder']
+
+    config = _load_config()
+    saved = config.get(_YOUTH_PPT_FOLDER_KEY, '')
+    if saved and _is_valid_adult_ppt_folder(saved):
+        st['folder'] = Path(saved)
+        return st['folder']
+
+    hymn = config.get('onedrive_hymn_folder', '')
+    if hymn:
+        derived = Path(hymn).parent.parent
+        if _is_valid_adult_ppt_folder(derived):
+            st['folder'] = derived
+            return derived
+
+    if ask_if_missing:
+        folder = _select_adult_ppt_folder_interactively()
+        if folder:
+            config[_YOUTH_PPT_FOLDER_KEY] = folder
+            config['onedrive_hymn_folder'] = str(
+                Path(folder).joinpath(_ADULT_HYMN_ROOT_FOLDER, '성가-악보버전'))
+            _save_config(config)
+            print(f"  [설정] 'PPT 문서' 폴더 저장됨: {folder}")
+            st['folder'] = Path(folder)
+            return st['folder']
+    return None
+
+
+def get_ppt_root(mass_type: str):
+    """이번 실행의 로컬 'PPT 문서' 폴더(Path) 또는 None(청년 로그인 방식·성인 미설정)."""
+    if mass_type == 'youth':
+        return _YOUTH_PPT_STATE['folder'] if _YOUTH_PPT_STATE['mode'] == 'local' else None
+    return _ADULT_PPT_STATE['folder']
+
+
+def browse_start_subpath(mass_type: str, key: str):
+    """첫 화면 파일 행(key)의 찾아보기 시작 하위 경로(튜플) 또는 None(= 'PPT 문서' 자체)."""
+    return (_BROWSE_START_SUBPATHS.get(mass_type, {}).get(key)
+            or _BROWSE_START_SUBPATHS['common'].get(key))
+
+
+def _find_child_dir(parent: Path, name: str):
+    """parent 아래에서 name과 공백 무시 비교로 일치하는 하위 폴더(없으면 None)."""
+    exact = parent / name
+    if exact.is_dir():
+        return exact
+    norm = name.replace(' ', '')
+    try:
+        for child in parent.iterdir():
+            if child.is_dir() and child.name.replace(' ', '') == norm:
+                return child
+    except OSError:
+        pass
+    return None
+
+
+def resolve_browse_start_dir(root, subpath):
+    """root에서 subpath를 따라 내려간다. 중간에 없는 폴더가 있으면 거기까지(최악엔 root)를 반환."""
+    if root is None:
+        return None
+    cur = Path(root)
+    for seg in subpath or ():
+        nxt = _find_child_dir(cur, seg)
+        if nxt is None:
+            break
+        cur = nxt
+    return cur
+
+
+def psalm_browse_start_dir(root):
+    """화답송 찾아보기 시작 폴더: 직전에 고른 화답송 폴더가 있으면 그곳, 없으면 'PPT 문서'."""
+    last = _load_config().get(_LAST_PSALM_DIR_KEY, '')
+    if last and Path(last).is_dir():
+        return Path(last)
+    return Path(root) if root is not None else None
+
+
+def remember_psalm_dir(path) -> None:
+    """화답송으로 고른 파일의 폴더를 기억한다(다음 실행의 시작 폴더)."""
+    try:
+        config = _load_config()
+        config[_LAST_PSALM_DIR_KEY] = str(Path(path).parent)
+        _save_config(config)
+    except Exception:
+        pass
+
+
+def browse_initial_dir(mass_type: str, key: str):
+    """로컬 파일 선택창의 initialdir(Path) 또는 None(루트 미설정 — 기본 위치 사용)."""
+    root = get_ppt_root(mass_type)
+    if mass_type == 'adult' and key == '화답송_pptx':
+        return psalm_browse_start_dir(root)
+    return resolve_browse_start_dir(root, browse_start_subpath(mass_type, key))
+
+
+def _result_remote_folder(year) -> str:
+    return f'{_ONEDRIVE_BROWSER_ROOT}/{_YOUTH_ROOT_FOLDER}/{year}'
+
+
+def result_copy_dir(mass_type: str, year):
+    """결과 PPT 복사 대상의 로컬 폴더: 청년 `{PPT 문서}/20.청년 미사/{YYYY}`, 성인 `{PPT 문서}/{YYYY}`.
+    루트를 모르면 None."""
+    root = get_ppt_root(mass_type)
+    if root is None:
+        return None
+    if mass_type == 'youth':
+        return Path(root) / _YOUTH_ROOT_FOLDER / str(year)
+    return Path(root) / str(year)
+
+
+def result_copy_exists(mass_type: str, output_path, date_str: str) -> bool:
+    """복사 대상에 같은 이름의 파일이 이미 있는지(덮어쓰기 확인용). 확인 불가면 False."""
+    name = Path(output_path).name
+    dest_dir = result_copy_dir(mass_type, date_str[:4])
+    if dest_dir is not None:
+        return (dest_dir / name).exists()
+    if mass_type == 'youth':
+        try:
+            import missa_onedrive as od
+            od.get_item_metadata(f'{_result_remote_folder(date_str[:4])}/{name}')
+            return True
+        except Exception:
+            return False
+    return False
+
+
+def copy_result_to_onedrive(mass_type: str, output_path, date_str: str) -> str:
+    """결과 PPT를 연도 폴더로 복사하고 저장된 위치(표시용 문자열)를 반환한다. 연도 폴더가 없으면 만든다.
+    로컬 'PPT 문서'를 알면 로컬 복사(OneDrive 앱이 동기화), 청년 로그인 방식이면 Graph로 같은 위치에
+    업로드한다. 성인이 루트를 모르면 RuntimeError."""
+    import shutil
+    output_path = Path(output_path)
+    year = date_str[:4]
+    dest_dir = result_copy_dir(mass_type, year)
+    if dest_dir is not None:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(output_path, dest_dir / output_path.name)
+        return str(dest_dir)
+    if mass_type == 'youth':
+        import missa_onedrive as od
+        folder = _result_remote_folder(year)
+        od.ensure_folder(folder)
+        od.upload_file(f'{folder}/{output_path.name}', output_path)
+        return 'OneDrive\\' + folder.replace('/', '\\')
+    raise RuntimeError("'PPT 문서' 폴더가 설정되지 않았습니다.")
+
+
+def _copy_result_with_ui(parent, mass_type: str, output_path, date_str: str) -> None:
+    """결과창 '원드라이브로 복사' 버튼 핸들러: 성인이 루트 미설정이면 선택창 → 덮어쓰기 확인 → 복사 →
+    저장 폴더 안내(실패하면 오류 안내)."""
+    from tkinter import messagebox
+    if mass_type == 'adult' and get_ppt_root('adult') is None:
+        if get_adult_ppt_folder(ask_if_missing=True) is None:
+            messagebox.showwarning('복사 취소', "'PPT 문서' 폴더가 선택되지 않아 복사하지 않았습니다.",
+                                   parent=parent)
+            return
+    if result_copy_exists(mass_type, output_path, date_str):
+        if not messagebox.askyesno('덮어쓰기 확인',
+                                   f'같은 이름의 파일이 이미 있습니다:\n{Path(output_path).name}\n\n덮어쓸까요?',
+                                   parent=parent):
+            return
+    try:
+        dest = copy_result_to_onedrive(mass_type, output_path, date_str)
+    except Exception as e:
+        messagebox.showerror('복사 실패', f'원드라이브로 복사하지 못했습니다:\n{e}', parent=parent)
+        return
+    messagebox.showinfo('복사 완료', f'다음 폴더에 저장했습니다:\n{dest}', parent=parent)
+
+
 def _mirror_onedrive_folder(remote_path: str, local_dir: Path) -> None:
     """remote_path(OneDrive 상대경로) 아래의 모든 파일을 local_dir로 재귀적으로 동기화한다.
 
@@ -335,6 +666,7 @@ def _find_onedrive_file(remote_path: str, pattern: str) -> str | None:
 def find_youth_onedrive_hymn_file(
     remote_path_key: str, default_remote_path: str,
     subfolder: str | None, pattern: str, cache_subdir: str,
+    local_kind: str | None = None,
 ) -> Path | None:
     """청년미사 성가 파일 하나를 찾아 로컬 경로로 반환한다 — 폴더 전체 미러링은 하지
     않는다. 우선순위: (1) 이미 받아둔 적 있는 로컬 캐시(`cache/{cache_subdir}/`)에서
@@ -342,7 +674,20 @@ def find_youth_onedrive_hymn_file(
     같은 전제) → (2) OneDrive를 `_find_onedrive_file()`로 재귀 검색해 매칭되는 파일
     하나만 다운로드. 어디서도 못 찾으면 None(폴더 자체가 없거나 조회에 실패해도 예외를
     삼키고 None — 호출부가 "없음"과 "조회 실패"를 구분할 필요가 없는 용도라, 실패 시
-    경고만 출력하고 다음 단계(재생성 또는 오류)로 넘어가게 한다)."""
+    경고만 출력하고 다음 단계(재생성 또는 오류)로 넘어가게 한다).
+
+    로컬 모드(§3.3.1, `get_youth_ppt_mode() == 'local'`)이고 `local_kind`가 주어지면 위
+    두 단계 대신 'PPT 문서' 하위의 해당 로컬 폴더(`youth_local_subdir(local_kind, subfolder)`)
+    를 재귀 검색하는 것 하나뿐이다(캐시·Graph 모두 쓰지 않음)."""
+    if local_kind and get_youth_ppt_mode() == 'local':
+        local_dir = youth_local_subdir(local_kind, subfolder)
+        if not local_dir.is_dir():
+            return None
+        for f in sorted(local_dir.rglob('*.pptx')):
+            if not f.name.startswith('~$') and re.search(pattern, f.name):
+                return f
+        return None
+
     local_cache = _SCRIPT_DIR / 'cache' / cache_subdir
     if local_cache.is_dir():
         for f in sorted(local_cache.glob('*.pptx')):
@@ -423,7 +768,7 @@ def _onedrive_visible_children(items: list) -> list:
 # 코디네이터가 실제 Graph API로 직접 조회해 확정한 이름(J2) — 사용자가 구두로 말한 이름과
 # 공백 유무가 미세하게 다를 수 있어(예: '11.공지사항 PPT문서' vs '11.공지사항PPT문서')
 # `_onedrive_root_visible_children()`은 비교 시 공백을 제거해 정규화한다.
-_ONEDRIVE_ROOT_ALLOWED_FOLDERS = ('11.공지사항 PPT문서', '13. 기도문', '20.청년 미사')
+_ONEDRIVE_ROOT_ALLOWED_FOLDERS = ('11.공지사항 PPT문서', '13.기도문', '20.청년 미사')
 
 
 def _onedrive_root_visible_children(items: list) -> list:
@@ -720,7 +1065,7 @@ def _apply_onedrive_selection(key: str, local_path, remote_path: str, vars_: dic
 
 
 def _ask_onedrive_file_browser_popup(parent, dest_dir, root_remote_path: str = _ONEDRIVE_BROWSER_ROOT,
-                                      cache: dict = None):
+                                      cache: dict = None, start_subpath=None):
     """OneDrive 폴더를 Treeview로 탐색해 .pptx 파일 하나를 선택하면 `(local_path,
     remote_path)` 튜플을 반환한다(버그4 — 이전엔 local_path 문자열 하나만 반환했으나,
     호출부가 표시용 상대경로(`_onedrive_display_path`)를 만들려면 선택된 OneDrive 원본
@@ -742,6 +1087,9 @@ def _ask_onedrive_file_browser_popup(parent, dest_dir, root_remote_path: str = _
     `od_real_paths[key]`에 저장할 뿐 파일 존재 여부를 확인하지 않고, 실제 파이프라인
     (`main()`)은 이 팝업이 완전히 끝난 뒤(`on_ok()`가 모든 백그라운드 다운로드를 기다린
     뒤)에야 실행되므로, 파이프라인이 이 경로를 읽는 시점에는 이미 다운로드가 끝나 있다.
+
+    `start_subpath`(2026-10-03): `root_remote_path` 기준 하위 폴더 경로(튜플, 예: ('13.기도문',))가
+    주어지면 그 폴더까지 펼쳐 보이게 시작한다(공백 무시 비교, 없으면 있는 곳까지만).
 
     시작 위치: `root_remote_path`('PPT 문서') 자체를 트리 노드로 보여주지 않고,
     `list_children(root_remote_path)` 결과를 트리 최상위 레벨로 바로 렌더링한다(사용자
@@ -801,6 +1149,25 @@ def _ask_onedrive_file_browser_popup(parent, dest_dir, root_remote_path: str = _
     except Exception as e:
         messagebox.showerror('OneDrive 조회 실패', str(e), parent=win)
 
+    def _expand_start_path(subpath):
+        """subpath의 폴더들을 위에서부터 차례로 펼치고 마지막 폴더를 보이게 한다(조회 실패는 삼킨다)."""
+        parent_iid = ''
+        for seg in subpath or ():
+            norm = seg.replace(' ', '')
+            target = None
+            for iid in tree.get_children(parent_iid):
+                info = node_paths.get(iid)
+                if info and info[1] and info[0].rsplit('/', 1)[-1].replace(' ', '') == norm:
+                    target = iid
+                    break
+            if target is None:
+                return
+            _ensure_folder_children_loaded(target)
+            tree.item(target, open=True)
+            parent_iid = target
+        if parent_iid:
+            tree.see(parent_iid)
+
     # §J5(선택 구현) → L1(2026-09-27, 공유 헬퍼로 추출) — 최상위가 정확히 3개 폴더로
     # 고정됐으니(§J2), 팝업이 열리는 시점에도 그 3개의 자식 목록을 백그라운드로 다시
     # 프리페치 트리거한다(이미 §K1 재귀 프리페치가 `_ask_combined_input_popup()` 표시
@@ -855,6 +1222,12 @@ def _ask_onedrive_file_browser_popup(parent, dest_dir, root_remote_path: str = _
         _ensure_folder_children_loaded(iid)
 
     tree.bind('<<TreeviewOpen>>', _on_treeview_open)
+
+    if start_subpath:
+        try:
+            _expand_start_path(start_subpath)
+        except Exception:
+            pass
 
     selected = {'path': None}
 
@@ -1644,6 +2017,10 @@ def _ask_combined_input_popup(mass_type: str = 'adult') -> tuple:
         _rows_by_key = {row[0]: row for row in file_rows}
         file_rows = [_rows_by_key[k] for k in ('ref_pptx', '시작기도', '미사후기도', '공지사항')]
 
+    # 청년미사 로컬 모드(§3.3.1)면 OneDrive 브라우저·프리페치 대신 로컬 파일 선택창을 쓴다.
+    # 모드는 호출부(_run_gui_mode)가 이미 결정해 둔 값을 읽기만 한다(여기서 선택창을 띄우지 않음).
+    _youth_local = mass_type == 'youth' and get_youth_ppt_mode() == 'local'
+
     # 청년미사 OneDrive 파일 브라우저(§A5)의 세션 내 폴더 목록 캐시 — 이 팝업 하나가 열려
     # 있는 동안 여러 행('찾아보기')이 같은 폴더를 반복 조회하지 않도록 공유한다.
     _od_cache = {}
@@ -1751,7 +2128,7 @@ def _ask_combined_input_popup(mass_type: str = 'adult') -> tuple:
 
         row_types = HWADAPSONG_TYPES if key == '화답송_pptx' else PPTX_TYPES
 
-        if mass_type == 'youth':
+        if mass_type == 'youth' and not _youth_local:
 
             def _browse(v=var, entry=entry, key=key):
                 root.focus_set()
@@ -1764,6 +2141,7 @@ def _ask_combined_input_popup(mass_type: str = 'adult') -> tuple:
                 dest_dir = Path(OUTPUT_ROOT) / output_folder_key(date_val, mass_type)
                 local_path, remote_path = _ask_onedrive_file_browser_popup(
                     root, dest_dir, cache=_od_cache,
+                    start_subpath=browse_start_subpath(mass_type, key),
                 )
                 if not remote_path:
                     return  # 취소 — L2 이전과 동일하게 아무것도 건드리지 않는다.
@@ -1790,15 +2168,21 @@ def _ask_combined_input_popup(mass_type: str = 'adult') -> tuple:
 
         else:
 
-            def _browse(v=var, types=row_types):
+            def _browse(v=var, types=row_types, key=key):
 
                 root.focus_set()
 
-                path = filedialog.askopenfilename(parent=root, filetypes=types)
+                _kw = {}
+                _start = browse_initial_dir(mass_type, key)
+                if _start is not None:
+                    _kw['initialdir'] = str(_start)
+                path = filedialog.askopenfilename(parent=root, filetypes=types, **_kw)
 
                 if path:
 
                     v.set(path)
+                    if mass_type == 'adult' and key == '화답송_pptx':
+                        remember_psalm_dir(path)
 
         tk.Button(frame, text='찾아보기', command=_browse, pady=0).grid(row=r, column=2, pady=6)
 
@@ -1993,7 +2377,7 @@ def _ask_combined_input_popup(mass_type: str = 'adult') -> tuple:
     # 는 데몬 스레드를 시작만 하고 즉시 반환하므로, 로그인이 안 돼 있거나 네트워크가
     # 없어도(또는 MSAL 기기 코드 로그인 대기로 무한정 멈춰도) 이 창 자체는 항상 즉시
     # 뜬다 — 실패는 `_prefetch_onedrive_children()`이 경로 단위로 조용히 삼킨다.
-    if mass_type == 'youth':
+    if mass_type == 'youth' and not _youth_local:
         _start_onedrive_prefetch_thread(_od_cache)
 
     root.after(50, date_entry.focus_set)
@@ -2166,6 +2550,15 @@ def _report_progress(pct: int, label: str = ''):
 
 
 
+# 진행 창 첫머리 안내(§J7 문구 유지 — 실측: PowerPoint 프레임 창은 보이지만 포커스를 가져가지 않는다).
+_POWERPOINT_NOTICE_TEXT = (
+    '처리 중 슬라이드 줄 수를 정확히 확인하려고 PowerPoint가 백그라운드에서 실행됩니다.\n'
+    '작업표시줄에 PowerPoint 아이콘이 잠깐 나타날 수 있지만, 지금 쓰고 있는 창의 포커스를 '
+    '가져가지는 않습니다.'
+)
+_POWERPOINT_NOTICE_SECONDS = 5
+
+
 def _run_with_progress_window(main_func):
 
     """main_func 을 워커 스레드로 실행하고 진행률 팝업을 메인 스레드에서 표시한다.
@@ -2209,6 +2602,20 @@ def _run_with_progress_window(main_func):
     frame.pack(fill='both', expand=True)
 
 
+
+    # 2026-10-03: 별도 팝업 대신 진행 창 첫머리에 안내를 5초간 보여주고 지운다(그 사이 진행
+    # 메시지도 같이 보인다).
+    notice = tk.Label(frame, text=_POWERPOINT_NOTICE_TEXT, anchor='w', justify='left',
+                      wraplength=380, fg='#666666')
+    notice.pack(fill='x', pady=(0, 10))
+
+    def _hide_notice():
+        try:
+            notice.destroy()
+        except Exception:
+            pass
+
+    root.after(_POWERPOINT_NOTICE_SECONDS * 1000, _hide_notice)
 
     label_var = tk.StringVar(value='시작 중...')
 
@@ -2573,6 +2980,18 @@ def _show_result_window(title: str, text: str, is_error: bool = False, log_text:
         font=(_UI['font'], _UI['font_sz'], 'bold'), width=14, relief='flat', cursor='hand2'
 
     ).pack(side=tk.LEFT, padx=6)
+
+    # 2026-10-03: 기존 3개 버튼 아래, 한 사이즈 작은 '원드라이브로 복사' 버튼(성인·청년 공통).
+    _mass = _last_output_mass[0]
+    if output_path and date_str and _mass in ('adult', 'youth'):
+        copy_frame = tk.Frame(root)
+        copy_frame.pack(pady=(0, 10))
+        tk.Button(
+            copy_frame, text='원드라이브로 복사',
+            command=lambda: _copy_result_with_ui(root, _mass, output_path, date_str),
+            bg='#546ea3', fg=_UI['fg_light'],
+            font=(_UI['font'], max(_UI['font_sz'] - 1, 8), 'bold'), width=16, relief='flat', cursor='hand2'
+        ).pack()
 
     _center_window(root)
 

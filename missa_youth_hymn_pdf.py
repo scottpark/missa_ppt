@@ -300,6 +300,74 @@ def _nonblank_runs(row_ink: np.ndarray):
     return runs
 
 
+# 시스템(오선 묶음) 사이 간격은 시스템 내부 오선 5줄 사이 간격보다 훨씬 크다 — 7개 곡
+# (나주노 151/362/173/146/267/172, 야훼 이레 810) 오선행(row_fill>_STAFF_ROW_FILL) 군집
+# 실측: 시스템 내부 최대 간격 21px(151) vs 시스템 사이 최소 간격 60px(362). 40은 이 범위
+# 중앙에 가깝고 양쪽에 충분한 여유(19px/20px)가 있다. _split_merged_systems()가 쓴다.
+_SYSTEM_LINE_MERGE_GAP = 40
+
+
+def _split_merged_systems(row_fill: np.ndarray, row_ink: np.ndarray, t: int, b: int) -> list:
+    """[t, b] 세그먼트가 실제로는 여러 시스템인데 공백행 연속 길이 기반 1차 분할
+    (detect_system_bands의 _SYSTEM_GAP_MIN/RATIO)이 하나로 합쳐버린 경우, 오선행
+    (row_fill>_STAFF_ROW_FILL) 밀도 군집으로 다시 쪼갠다.
+
+    1차 분할이 이미 시스템 하나만 올바르게 담고 있으면(대다수 곡) 오선행 군집도 하나뿐이라
+    [(t, b)] 그대로(입력과 동일) 반환해 기존 동작과 완전히 같다 — 여러 시스템이 실제로
+    합쳐진 경우에만 분기한다.
+
+    **발견 경위 (2026-10-04):** 나주노 172번("나의 고백") 페이지에서 시스템 2~9 사이의
+    여백 구간에 가사 꼬리 등 미세한 잉크가 산발적으로 섞여 있어, 공백행(row_fill<0.005)
+    연속 런이 전부 _SYSTEM_GAP_MIN(45px) 밑으로 끊겼다(실측 최대 36px) — 그 결과
+    detect_system_bands()가 시스템 8개를 세그먼트 하나로 합쳐, 생성된 PPT가 슬라이드 1장에
+    시스템 1개(정상), 슬라이드 2장째에 8개를 욱여넣은(가독 불가) 결과를 냈다. 오선행
+    밀도만 보는 군집화는 가사/화음 텍스트의 잉크 유무에 흔들리지 않는다(시스템 내부 간격
+    21px 이하 vs 시스템 사이 간격 60px 이상 — 10배 이상 margin, 실측 상세는
+    docs/ooxml-pitfalls-log.md 참고)."""
+    staff_rows = np.where(row_fill[t:b + 1] > _STAFF_ROW_FILL)[0] + t
+    if not len(staff_rows):
+        return [(t, b)]
+
+    groups = []
+    s = p = int(staff_rows[0])
+    for r in staff_rows[1:]:
+        r = int(r)
+        if r - p > _SYSTEM_LINE_MERGE_GAP:
+            groups.append((s, p))
+            s = r
+        p = r
+    groups.append((s, p))
+
+    # 각 군집의 실제 오선행 개수(span이 아니라 row_fill>threshold인 행 수)가
+    # _MIN_STAFF_ROWS 미만이면 노이즈(점 하나 등)이므로 버린다 — 151 저작권 줄 오검출을
+    # 막던 것과 동일한 기준(_MIN_STAFF_ROWS)을 재사용한다.
+    accepted = [
+        (gs, ge) for gs, ge in groups
+        if int(np.sum(row_fill[gs:ge + 1] > _STAFF_ROW_FILL)) >= _MIN_STAFF_ROWS
+    ]
+
+    if len(accepted) <= 1:
+        return [(t, b)]
+
+    # 시스템 사이 경계는 인접 군집의 중간점. 첫/마지막 시스템은 원래 세그먼트 경계(t/b)까지
+    # 확장한 뒤, 각 구간 안의 실제 잉크 범위로 다시 트림한다(1차 분할의 seg_rows 트림과
+    # 동일한 원칙).
+    bounds = (
+        [t]
+        + [(accepted[i][1] + accepted[i + 1][0]) // 2 for i in range(len(accepted) - 1)]
+        + [b]
+    )
+
+    result = []
+    for i in range(len(accepted)):
+        win_t, win_b = bounds[i], bounds[i + 1]
+        ink_rows = np.where(row_ink[win_t:win_b + 1] > 0)[0]
+        if not len(ink_rows):
+            continue
+        result.append((win_t + int(ink_rows.min()), win_t + int(ink_rows.max())))
+    return result
+
+
 def _trim_top_above_chords(row_ink: np.ndarray, t: int, staff_top: int) -> int:
     """세그먼트 상단에서 오선 위 텍스트(작곡가/제목)를 제외한 crop 상단을 반환.
 
@@ -357,9 +425,16 @@ def detect_system_bands(gray: np.ndarray) -> list:
             b = seg_top + int(seg_rows.max())
             staff_line_rows = np.where(row_fill[t:b + 1] > _STAFF_ROW_FILL)[0]
             if len(staff_line_rows) >= _MIN_STAFF_ROWS:
-                staff_top = t + int(staff_line_rows.min())
-                t = _trim_top_above_chords(row_ink, t, staff_top)
-                systems.append((t, b))
+                # 공백행 연속 길이 기반 분할이 여러 시스템을 세그먼트 하나로 합쳤을 수
+                # 있으므로(나주노 172), 오선행 밀도 군집으로 한 번 더 쪼갠다. 세그먼트가
+                # 이미 시스템 하나만 담고 있으면 [(t, b)] 그대로 돌아와 기존 동작과 같다.
+                for sub_t, sub_b in _split_merged_systems(row_fill, row_ink, t, b):
+                    sub_staff_rows = np.where(row_fill[sub_t:sub_b + 1] > _STAFF_ROW_FILL)[0]
+                    if not len(sub_staff_rows):
+                        continue
+                    staff_top = sub_t + int(sub_staff_rows.min())
+                    sub_t = _trim_top_above_chords(row_ink, sub_t, staff_top)
+                    systems.append((sub_t, sub_b))
         else:
             i += 1
     return systems
@@ -394,7 +469,16 @@ def _group_content_bbox(gray: np.ndarray, group: list) -> tuple:
 # 동적 패킹(요청 항목 5): "같은 배율로 겹침 없이 들어가면" 최대 3개까지 한 슬라이드에 묶되,
 # 실제로 슬라이드 수를 줄이거나(min-slide) 균형이 나아질 때만 3-pack을 채택한다(순수 greedy는
 # 810형 곡을 97% 빡빡 [3,1]로 악화시키므로 비채택). safety는 밴드 세로 채움 상한(빡빡 방지).
-_PACK_SAFETY = 0.95
+# ch/cw <= band_aspect*safety 식이므로 safety를 "낮추면" 상한이 낮아져 오히려 더 엄격해진다
+# (3-pack을 더 쉽게 떨어뜨림) — 완화하려면 올려야 한다. 1.0을 넘기면 band_aspect 자체보다도
+# 느슨해져(겹치지 않는 선에서는 꽉 채워도 허용) 172번(3-group 종횡비 0.449, band_aspect*1.0=
+# 0.463)처럼 "근소하게 초과" 수준의 3-pack을 통과시킨다.
+# 2026-10-04: 0.95→1.05로 완화(코디네이터 요청) — 172번이 [2,2,2,2,1](5장)이 아니라
+# [3,3,3](3장)으로 묶이도록. 기존 회귀 고정곡 362/173/146/810/267은 safety 0.95~1.10 전
+# 구간에서 그룹 크기 불변(합성곡 테스트 S7~S10도 동일) — 810형 "97% 빡빡 3-pack" 케이스는
+# 종횡비 자체가 아니라 균형 타이브레이크([2,2]가 [3,1]과 슬라이드 수가 같으면 균형 우선)로
+# 여전히 보호되므로 안전.
+_PACK_SAFETY = 1.05
 _PACK_MAX_PER_SLIDE = 3
 
 
