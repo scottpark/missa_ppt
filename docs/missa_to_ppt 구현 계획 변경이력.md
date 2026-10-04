@@ -113,3 +113,18 @@ OneDrive 인증·전체 파이프라인 통합) (2026-10-01 통합 전 원문).m
 `_upload_youth_output_to_onedrive`·`[8.5]` 호출·`_show_powerpoint_background_notice` 삭제, `_last_output_mass` 기록,
 성인 루트 선택 호출 추가. 테스트: `test_missa_youth_local_mode.py` 확장, `j7a~c`·`e1` 갱신, e_full_output 픽스처의
 스텁 복구 시점을 yield 이전으로 이동(k2g/k2h·g2 순서 오염 해소), conftest에 성인 상태 격리.
+
+## 2026-10-04 — 회귀 픽스처 결과 PPT·log를 git 추적에서 제외, 테스트는 임시 폴더에 생성
+
+`output/{20260624,20260705,20260712}`는 입력 파일만 추적(`.gitignore`에 결과 PPT·`log/` 패턴 추가, 기존 추적분은
+`git rm --cached`). 신규 `tests/_gen_helper.py`가 입력만 임시 `output/{date}/`로 복사하고 cwd를 임시 폴더로 해
+`missa_to_ppt.py`를 실행한다. 회귀 `_generate`/`_find_output`과 공지사항 삽입 테스트의 `_FIXTURES`가 이를 사용.
+
+
+## 2026-10-04 — 청년미사 성가 교체 성능 개선 + 결과창 버튼 위치
+
+실측(템플릿 127장·성가 5곡, 같은 조건): `replace_성가_youth` 25.4초 → 약 4초. 원인은 (1) `find_sections(youth)`가 호출당 약 1초
+(성가 5종 × 슬라이드 전체를 htype마다 따로 훑으며 python-pptx 도형 객체를 반복 생성)인데 곡마다·htype마다 10번 호출, (2) 이미
+만든 나주노/야훼이레 성가 파일이 있어도 제목을 PDF에서 조회(야훼 이레는 574쪽 `search_for` ≈ 2.5초). 조치: `_scan_youth_slides()`로
+슬라이드당 1회 스캔을 5종이 공유, 남는 슬롯이 있을 때만 재탐색, `입당송`/`영성체송` 탐색은 이미 추출한 `texts` 재사용, 제목은
+입력값 → 기존 파일명 → PDF 순. 결과창 '원드라이브로 복사' 버튼은 '파일 열기' 바로 옆·같은 글꼴로 이동(§3.4.2).

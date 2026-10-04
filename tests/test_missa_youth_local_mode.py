@@ -258,12 +258,15 @@ def test_copy_ui_adult_without_root_asks_picker_then_cancel_warns(cfg, tmp_path,
     assert shown[-1][0] == "warn"
 
 
-def test_result_window_has_copy_button_below_three_buttons():
+def test_result_window_copy_button_sits_right_after_open_file_with_same_font():
+    """2026-10-04: '원드라이브로 복사'는 '파일 열기' 바로 옆(같은 btn_frame), 같은 글꼴 크기(공용 팩토리 사용)."""
     import inspect
     src = inspect.getsource(gui._show_result_window)
-    assert "원드라이브로 복사" in src
-    assert src.index("text='닫기'") < src.index("원드라이브로 복사")
-    assert "_copy_result_with_ui" in src
+    assert (src.index("'open_file', '파일 열기'") < src.index("'copy', '원드라이브로 복사'")
+            < src.index("'open_folder', '폴더 열기'") < src.index("'close', '닫기'"))
+    assert "copy_frame" not in src and "_copy_result_with_ui" in src
+    factory = inspect.getsource(gui._result_button)
+    assert "_UI['font_sz'], 'bold'" in factory   # 4개 모두 같은 글꼴 크기(한 사이즈 작게 줄이지 않음)
 
 
 # ── 성인 'PPT 문서' 폴더(2026-10-03) ──
@@ -406,3 +409,70 @@ def test_resolve_new_hymn_saved_into_local_folder_without_upload(cfg, ppt_root, 
     assert title == "나의 고백"
     saved = ppt_root / "20.청년 미사" / "2.성가" / "나주노 성가" / "나주노 성가 172 나의 고백.pptx"
     assert saved.exists()
+
+
+def test_existing_hymn_file_title_comes_from_filename_without_pdf_lookup(cfg, ppt_root, monkeypatch):
+    """2026-10-04 성능: 이미 만든 나주노/야훼이레 성가 파일이 있으면 제목을 파일명에서 얻고 PDF 조회(야훼 이레는
+    574쪽 텍스트 검색 ≈ 2.5초)를 하지 않는다. 파일이 없을 때만 PDF에서 찾는다."""
+    import missa_content_updaters as cu
+    import missa_youth_hymn_pdf as yh
+    from pptx import Presentation
+    gui._YOUTH_PPT_STATE.update(mode="local", folder=ppt_root)
+    folder = ppt_root / "20.청년 미사" / "2.성가" / "나주노 성가"
+    Presentation().save(str(folder / "나주노 성가 172 나의 고백.pptx"))
+    monkeypatch.setattr(yh, "find_song_title", lambda *a: pytest.fail("PDF 제목 조회가 호출되면 안 됨"))
+    monkeypatch.setattr(yh, "build_header_runs", lambda *a, **k: None)
+    _, title = cu.resolve_youth_hymn_pptx({"출처": "나주노", "번호": 172, "제목": None}, "입당")
+    assert title == "나의 고백"
+
+
+def test_find_sections_youth_songs_unchanged_by_shared_scan(monkeypatch):
+    """성가 탐색은 슬라이드 1회 스캔을 5종이 공유하지만, 스캔 없이 호출한 결과와 같아야 한다."""
+    import missa_sections as ms
+    from pptx import Presentation
+    tpl = Path(__file__).resolve().parent.parent / "reference" / "청년미사" / \
+        "Template_토요일 저녁 청년 주일미사_20260822_연중 제21주일.pptx"
+    if not tpl.is_file():
+        pytest.skip("청년 템플릿 없음(reference/, git 미포함)")
+    prs = Presentation(str(tpl))
+    scan = ms._scan_youth_slides(prs)
+    for kw in ms.HYMN_LABEL_KW.values():
+        assert ms._find_hymn_songs_youth(prs, kw, scan) == ms._find_hymn_songs_youth(prs, kw)
+        legacy = []
+        n = len(prs.slides)
+        # 구 구현(도형을 직접 순회)과 동일한 결과인지 별도 계산으로 확인
+        i = 0
+        while i < n:
+            if ms._is_hymn_title_youth(prs.slides[i], kw):
+                cs = ce = i + 1
+                while ce < n and ms._slide_has_picture(prs.slides[ce]):
+                    ce += 1
+                legacy.append((i, cs, ce))
+                i = ce
+                if not (i < n and ms._is_hymn_title_youth(prs.slides[i], kw)):
+                    break
+            else:
+                i += 1
+        got = [(s["title_idx"], s["content_start"], s["content_end"]) for s in ms._find_hymn_songs_youth(prs, kw, scan)]
+        assert got == legacy
+
+
+def test_result_buttons_use_option_c_palette():
+    """목업 C안: 파일 열기 #59001d · 복사 #871b24 · 폴더 열기 #3f5a73 · 닫기 흰 배경+#59001d 테두리."""
+    c = gui._RESULT_BTN_COLORS
+    assert c["open_file"][0] == "#59001d" and c["copy"][0] == "#871b24" and c["open_folder"][0] == "#3f5a73"
+    assert c["close"][0] == "#ffffff" and c["close"][1] == "#59001d" and c["close"][3] == "#59001d"
+
+
+def test_result_button_close_has_border_frame_and_others_match_background():
+    import tkinter as tk
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        close = gui._result_button(root, "close", "닫기", lambda: None, 14)
+        copy = gui._result_button(root, "copy", "복사", lambda: None, 16)
+        assert close.cget("bg") == "#59001d"          # 테두리 색 프레임
+        assert copy.cget("bg") == "#871b24"           # 테두리 없음 = 배경색(높이 맞춤)
+        assert close.winfo_children()[0].cget("bg") == "#ffffff"
+    finally:
+        root.destroy()

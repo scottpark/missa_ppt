@@ -492,8 +492,8 @@ file(remote_path, pattern)`으로 OneDrive를 재귀 검색(다운로드 없이 
   Graph 허용 폴더 상수는 실제 이름 `13.기도문`으로 정정.
 - **결과 복사**: `result_copy_dir`/`result_copy_exists`/`copy_result_to_onedrive`(순수 로직, 로컬이면
   `shutil.copy2`, 청년 폴백이면 `ensure_folder`+`upload_file`) + 버튼 핸들러 `_copy_result_with_ui`(성인 루트
-  미설정 시 선택창 → 덮어쓰기 확인 → 복사 → 저장 폴더 안내/오류 안내). `_show_result_window()`가 기존
-  3버튼 아래 `copy_frame`에 한 단계 작은 글꼴(9pt)·폭 16의 버튼을 둔다. `main()`이
+  미설정 시 선택창 → 덮어쓰기 확인 → 복사 → 저장 폴더 안내/오류 안내). `_show_result_window()`가 `btn_frame`에서
+  '파일 열기' 바로 옆에 같은 글꼴(10pt bold)·폭 16의 버튼을 둔다(2026-10-04: 처음엔 3버튼 아래 작은 버튼이었음). 버튼 색은 `_RESULT_BTN_COLORS`(목업 C안: 파일 열기 #59001d, 복사 #871b24, 폴더 열기 #3f5a73, 닫기 흰 배경+#59001d 테두리). `main()`이
   `_last_output_mass[0]`에 미사 유형을 기록한다. `main()`의 `[8.5] OneDrive 업로드`와
   `_upload_youth_output_to_onedrive()`는 삭제됐다.
 - **PowerPoint 안내**: `_show_powerpoint_background_notice()`(messagebox)와 그 호출을 삭제하고,

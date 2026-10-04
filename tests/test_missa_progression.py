@@ -535,12 +535,17 @@ from pptx.util import Emu as _Emu  # noqa: E402
 from missa_content_updaters import insert_공지사항  # noqa: E402
 from missa_ooxml_utils import all_slide_texts as _all_slide_texts  # noqa: E402
 
-_FIXTURES = {
-    "20260712": BASE / "output" / "20260712" / "20260712_연중 제15주일.pptx",
-    "20260705": BASE / "output" / "20260705"
-    / "20260705_한국 성직자들의 수호자 성 김대건 안드레아 사제 순교자 - 신심 미사.pptx",
-    "20260624": BASE / "output" / "20260624" / "20260624_성 요한 세례자 탄생 대축일.pptx",
-}
+import _gen_helper as _gen_fx  # noqa: E402
+
+
+class _LazyFixtures:
+    """`_FIXTURES["20260712"]` → 임시 폴더에 생성된 결과 PPT 경로(저장소 output/의 결과 PPT는 추적하지 않는다)."""
+
+    def __getitem__(self, date_str):
+        return _gen_fx.generated_path(date_str)
+
+
+_FIXTURES = _LazyFixtures()
 
 
 def _make_공지사항_pptx(path, n):

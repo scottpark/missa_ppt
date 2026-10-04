@@ -2823,6 +2823,31 @@ def _run_with_progress_window(main_func):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# 결과 창 버튼 4개 색(2026-10-04 확정 — 목업 C안): 짙은 버건디(파일 열기) → 버건디(복사, 앱 대표색) →
+# 슬레이트 블루(폴더 열기) → 테두리만 있는 닫기. (배경, 글자, 눌림 배경, 테두리) — 외곽선은 닫기만 눈에 보인다.
+_RESULT_BTN_COLORS = {
+    'open_file':   ('#59001d', '#ffffff', '#3d0013', None),
+    'copy':        ('#871b24', '#ffffff', '#6b141c', None),
+    'open_folder': ('#3f5a73', '#ffffff', '#2f4458', None),
+    'close':       ('#ffffff', '#59001d', '#f3e6ea', '#59001d'),
+}
+
+
+def _result_button(parent, name: str, text: str, command, width: int):
+    """결과 창 버튼 한 개. 1px 테두리 색 프레임으로 감싸 반환한다(호출부가 프레임을 pack) — Windows의 tk.Button은
+    highlightbackground 외곽선을 그리지 않아서, 테두리 있는 '닫기'를 이렇게 만든다. 테두리 없는 버튼은 프레임을
+    배경색과 같게 해 4개의 높이가 같다."""
+    import tkinter as tk
+    bg, fg, active, edge = _RESULT_BTN_COLORS[name]
+    frame = tk.Frame(parent, bg=edge or bg, padx=1, pady=1)
+    tk.Button(
+        frame, text=text, command=command, bg=bg, fg=fg, activebackground=active, activeforeground=fg,
+        font=(_UI['font'], _UI['font_sz'], 'bold'), width=width, relief='flat', bd=0,
+        highlightthickness=0, cursor='hand2',
+    ).pack()
+    return frame
+
+
 def _show_result_window(title: str, text: str, is_error: bool = False, log_text: str = None) -> None:
 
     import tkinter as tk
@@ -2949,49 +2974,21 @@ def _show_result_window(title: str, text: str, is_error: bool = False, log_text:
 
                 pass
 
-        tk.Button(
+        _result_button(btn_frame, 'open_file', '파일 열기', open_file, 12).pack(side=tk.LEFT, padx=6)
 
-            btn_frame, text='파일 열기', command=open_file,
+        # 2026-10-04: '파일 열기' 바로 옆, 같은 글꼴 크기(성인·청년 공통).
+        _mass = _last_output_mass[0]
+        if date_str and _mass in ('adult', 'youth'):
+            _result_button(
+                btn_frame, 'copy', '원드라이브로 복사',
+                lambda: _copy_result_with_ui(root, _mass, output_path, date_str), 16,
+            ).pack(side=tk.LEFT, padx=6)
 
-            bg=_UI['primary'], fg=_UI['fg_light'],
-
-            font=(_UI['font'], _UI['font_sz'], 'bold'), width=12, relief='flat', cursor='hand2'
-
-        ).pack(side=tk.LEFT, padx=6)
-
-        tk.Button(
-
-            btn_frame, text='폴더 열기', command=open_folder,
-
-            bg='#546ea3', fg=_UI['fg_light'],
-
-            font=(_UI['font'], _UI['font_sz'], 'bold'), width=12, relief='flat', cursor='hand2'
-
-        ).pack(side=tk.LEFT, padx=6)
+        _result_button(btn_frame, 'open_folder', '폴더 열기', open_folder, 12).pack(side=tk.LEFT, padx=6)
 
 
 
-    tk.Button(
-
-        btn_frame, text='닫기', command=root.destroy,
-
-        bg=_UI['primary'], fg=_UI['fg_light'],
-
-        font=(_UI['font'], _UI['font_sz'], 'bold'), width=14, relief='flat', cursor='hand2'
-
-    ).pack(side=tk.LEFT, padx=6)
-
-    # 2026-10-03: 기존 3개 버튼 아래, 한 사이즈 작은 '원드라이브로 복사' 버튼(성인·청년 공통).
-    _mass = _last_output_mass[0]
-    if output_path and date_str and _mass in ('adult', 'youth'):
-        copy_frame = tk.Frame(root)
-        copy_frame.pack(pady=(0, 10))
-        tk.Button(
-            copy_frame, text='원드라이브로 복사',
-            command=lambda: _copy_result_with_ui(root, _mass, output_path, date_str),
-            bg='#546ea3', fg=_UI['fg_light'],
-            font=(_UI['font'], max(_UI['font_sz'] - 1, 8), 'bold'), width=16, relief='flat', cursor='hand2'
-        ).pack()
+    _result_button(btn_frame, 'close', '닫기', root.destroy, 14).pack(side=tk.LEFT, padx=6)
 
     _center_window(root)
 

@@ -1669,8 +1669,6 @@ def resolve_youth_hymn_pptx(entry: dict, htype: str):
     # 나주노 / 야훼 이레
     import missa_youth_hymn_pdf as yh
 
-    resolved_title = 제목 or yh.find_song_title(출처, 번호)
-
     subfolder = yh.SOURCES[출처]['onedrive_subfolder']
     prefix = f'{출처} 성가 {번호} '
     existing = find_youth_onedrive_hymn_file(
@@ -1679,6 +1677,15 @@ def resolve_youth_hymn_pptx(entry: dict, htype: str):
         pattern='^' + re.escape(prefix), cache_subdir=f'청년미사_성가/{subfolder}',
         local_kind='youth_hymn',
     )
+
+    # 제목: 입력값 → (이미 만든 파일이 있으면) 그 파일명 → PDF 조회 순. 저장 때 파일명을
+    # '{prefix}{제목}.pptx'로 만들었으므로 파일명 제목이 곧 PDF 제목이다. PDF 조회(나주노는 TOC, 야훼 이레는
+    # 574쪽 텍스트 검색 ≈ 2.5초)는 파일이 없어 새로 만들 때만 필요하다(2026-10-04 성능 개선).
+    resolved_title = 제목
+    if not resolved_title and existing is not None:
+        resolved_title = existing.stem[len(prefix):].strip() if existing.stem.startswith(prefix) else ''
+    if not resolved_title:
+        resolved_title = yh.find_song_title(출처, 번호)
 
     if existing is not None:
         src_prs = Presentation(str(existing))
@@ -1894,9 +1901,11 @@ def replace_성가_youth(prs, 성가_선택: dict):
             if not entries:
                 continue
 
+            n_slots = 0  # 템플릿의 이 htype 곡 슬롯 수(곡 교체로는 변하지 않음)
             for slot_i, entry in enumerate(entries):
                 sec = find_sections(prs, mass_type='youth')
                 songs = sec.get(f'{htype}_songs', [])
+                n_slots = len(songs)
                 if slot_i >= len(songs):
                     print(f'  [{htype}] {slot_i + 1}번째 곡 슬롯이 템플릿에 없음, 건너뜀')
                     continue
@@ -1906,6 +1915,8 @@ def replace_성가_youth(prs, 성가_선택: dict):
             # 통째로 삭제한다(요구사항 §5.1: 2번째 곡 입력란을 비우면 1곡만 처리 — 기존
             # 성인미사 "성체 1곡"과 동일 동작). 구분 슬라이드(빈 슬라이드) 자체는 건드리지
             # 않는다 — 그 슬라이드는 이 htype 섹션 전체의 경계이지 이 곡만의 것이 아니다.
+            if n_slots <= len(entries):
+                continue  # 남는 슬롯이 없으면 재탐색이 필요 없다(find_sections는 슬라이드 수에 비례해 느리다)
             sec = find_sections(prs, mass_type='youth')
             songs = sec.get(f'{htype}_songs', [])
             for extra in reversed(songs[len(entries):]):

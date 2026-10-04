@@ -39,6 +39,7 @@ import missa_gui as gui
 import missa_ooxml_utils as ou
 import missa_reading_layout as rl
 import missa_sections as sec
+import _gen_helper as _gen
 
 REPO_ROOT = Path(__file__).resolve().parent.parent  # tests/ -> 저장소 루트
 
@@ -215,38 +216,14 @@ class TestComVerificationEnabledConfig:
 # ─────────────────────────────────────────────────────────────────
 
 def _find_output(date_str: str) -> Path:
-    folder = REPO_ROOT / "output" / date_str
-    candidates = [
-        f for f in folder.glob(f"{date_str}_*.pptx")
-        if not f.name.startswith("~$")
-    ]
-    assert candidates, f"{date_str} 출력 PPT를 찾을 수 없음"
-    return max(candidates, key=lambda f: f.stat().st_mtime)
+    """임시 폴더에 생성된 결과 PPT(tests/_gen_helper.py) — 저장소 output/은 건드리지 않는다."""
+    return _gen.generated_path(date_str)
 
 
 def _generate(case: dict) -> str:
-    date_str = case["date"]
-    folder = REPO_ROOT / "output" / date_str
-
-    locked = list(folder.glob("~$*.pptx"))
-    if locked:
-        pytest.skip(f"{locked[0].name} 이(가) PowerPoint에서 열려 있어 생성을 건너뜀")
-
-    args = [sys.executable, str(REPO_ROOT / "missa_to_ppt.py"), date_str]
-    for k, v in case["hymns"].items():
-        args += [f"--{k}", v]
-
-    result = subprocess.run(
-        args, cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
-    )
-    assert result.returncode == 0, (
-        f"{date_str} 생성 실패 (exit={result.returncode})\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-    assert "모든 검증 통과!" in result.stdout, (
-        f"{date_str} 내부 검증(validate) 실패\nstdout:\n{result.stdout}"
-    )
-    return result.stdout
+    """case를 임시 폴더에 생성(같은 날짜는 프로세스당 1회)하고 stdout을 반환한다. 생성 실패·내부 검증
+    실패는 helper가 AssertionError로 알린다."""
+    return _gen.generate_case(case["date"], case["hymns"])[1]
 
 
 @pytest.fixture(scope="module", params=MASS_CASES, ids=lambda c: c["id"])

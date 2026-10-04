@@ -138,7 +138,27 @@ def _slide_has_picture(slide) -> bool:
     return any(shape.shape_type == MSO_SHAPE_TYPE.PICTURE for shape in slide.shapes)
 
 
-def _find_hymn_songs_youth(prs, kw: str) -> list:
+def _scan_youth_slides(prs) -> list:
+    """슬라이드마다 (AUTO_SHAPE 안 단락 텍스트 집합, PICTURE 유무)를 한 번의 도형 순회로 구한다.
+
+    `_find_hymn_songs_youth()`가 성가 5종 × 슬라이드 전체를 htype마다 따로 훑으면 python-pptx의 도형 객체
+    생성(슬라이드당 수 ms)이 곱절로 반복돼 find_sections() 한 번이 약 1초 걸렸다(2026-10-04 실측 — 청년 성가
+    교체 15초 중 10초). 판정 규칙은 `_find_youth_title_shape()`/`_slide_has_picture()`와 동일하다."""
+    scan = []
+    for slide in prs.slides:
+        labels, has_pic = set(), False
+        for shape in slide.shapes:
+            st = shape.shape_type
+            if st == MSO_SHAPE_TYPE.PICTURE:
+                has_pic = True
+            if st == MSO_SHAPE_TYPE.AUTO_SHAPE and shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    labels.add(para.text.strip())
+        scan.append((labels, has_pic))
+    return scan
+
+
+def _find_hymn_songs_youth(prs, kw: str, scan: list = None) -> list:
     """청년미사 성가 title~content 범위를 곡 단위 리스트로 반환.
 
     콘텐츠 범위는 "빈 슬라이드까지" 대신 "PICTURE 도형이 있는 슬라이드까지"로 판정한다
@@ -160,12 +180,19 @@ def _find_hymn_songs_youth(prs, kw: str) -> list:
     갱신 게이트(`if cs < ce:`)가 조용히 스킵된다(예외 없음). 새 템플릿을 붙일 때는 이
     가정이 여전히 성립하는지 먼저 실측 확인할 것."""
     n = len(prs.slides)
+    if scan is None:
+        scan = _scan_youth_slides(prs)
+    kws = {kw, kw.replace(' ', '')}
+
+    def _is_title(i):
+        return bool(scan[i][0] & kws)
+
     songs = []
     search_from = 0
     while True:
         title_idx = -1
         for i in range(search_from, n):
-            if _is_hymn_title_youth(prs.slides[i], kw):
+            if _is_title(i):
                 title_idx = i
                 break
         if title_idx == -1:
@@ -173,12 +200,12 @@ def _find_hymn_songs_youth(prs, kw: str) -> list:
         cs = title_idx + 1
         ce = cs
         j = cs
-        while j < n and _slide_has_picture(prs.slides[j]):
+        while j < n and scan[j][1]:
             ce = j + 1
             j += 1
         songs.append({'title_idx': title_idx, 'content_start': cs, 'content_end': ce})
         search_from = ce
-        if not (search_from < n and _is_hymn_title_youth(prs.slides[search_from], kw)):
+        if not (search_from < n and _is_title(search_from)):
             break
     return songs
 
@@ -215,7 +242,7 @@ def find_sections(prs, mass_type: str = 'adult') -> dict:
 
     # 입당송
 
-    i = find_slide_with_text(prs, '입당송')
+    i = next((k for k, t in enumerate(texts) if '입당송' in t), -1)  # texts 재사용(find_slide_with_text는 슬라이드 텍스트를 다시 추출)
 
     if i >= 0:
 
@@ -357,7 +384,7 @@ def find_sections(prs, mass_type: str = 'adult') -> dict:
 
     # 영성체송
 
-    i = find_slide_with_text(prs, '영성체송')
+    i = next((k for k, t in enumerate(texts) if '영성체송' in t), -1)  # texts 재사용(find_slide_with_text는 슬라이드 텍스트를 다시 추출)
 
     if i >= 0:
 
@@ -371,9 +398,11 @@ def find_sections(prs, mass_type: str = 'adult') -> dict:
 
     if mass_type == 'youth':
 
+        youth_scan = _scan_youth_slides(prs)  # 5종이 같은 스캔을 공유(슬라이드 1회 순회)
+
         for htype, kw in HYMN_KEYWORDS.items():
 
-            songs = _find_hymn_songs_youth(prs, kw)
+            songs = _find_hymn_songs_youth(prs, kw, youth_scan)
 
             if not songs:
 
