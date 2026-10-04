@@ -1162,6 +1162,10 @@ def main():
 
             normalize_page_size=(mass_type == 'youth'),
 
+            # 청년미사 영문 복음은 마지막 슬라이드가 몇 줄이든 '주님의 말씀입니다/그리스도님, 찬미합니다'를 본문에
+            # 병합하지 않고 별도 슬라이드로 둔다(템플릿 57쪽과 동일, 2026-10-05). 성인은 기존 병합 규칙 유지.
+            allow_ending_merge=(mass_type != 'youth'),
+
         )
 
         print(f'    슬라이드 수 변화: {shift:+d}')
@@ -1173,7 +1177,7 @@ def main():
 
     print('  종료 슬라이드 위치 정렬...')
 
-    _align_ending_slides_to_제2독서(prs, sec)
+    _align_ending_slides_to_제2독서(prs, sec, align_gospel=(mass_type != 'youth'))  # 청년 영문 복음 종료 슬라이드는 템플릿 위치 유지
 
 
     # 본문+종료 통합 슬라이드의 ending shape 동적 위치 재조정 (겹침 방지)

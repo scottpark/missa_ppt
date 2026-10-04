@@ -97,8 +97,10 @@ adult 경로는 4개 값 전부 `is_calendar_sunday`(또는 부정)로만 정의
   `_rendered_wrap_count`/`_PIL_WRAP_SAFETY` 등(경위는 `docs/ooxml-pitfalls-log.md`와
   `docs/missa_to_ppt 구현 계획 변경이력.md`).
 - **종료 텍스트 병합 판정**: 마지막 슬라이드를 확정할 때 얻은 줄 수(COM 실측 / Pillow 줄 수 / 폰트 없을
-  때만 27자 근사)로 `merge_threshold`(5) 이하이면 통합한다.
-- **종료 슬라이드**: `_align_ending_slides_to_제2독서()`(위치·크기를 제2독서 기준으로 복사 —
+  때만 27자 근사)로 `merge_threshold`(5) 이하이면 통합한다. 단 `allow_ending_merge=False`(청년 영문 복음, `main()`이
+  `mass_type != 'youth'`로 전달)이면 줄 수와 무관하게 통합하지 않는다(2026-10-05).
+- **종료 슬라이드**: `_align_ending_slides_to_제2독서(prs, sections, align_gospel)`(위치·크기를 제2독서 기준으로 복사 —
+  청년은 `align_gospel=False`라 복음 종료 슬라이드가 템플릿 위치를 유지 —
   빈 텍스트 도형(`BlackBg`)은 falsy 함정을 피하려 이름으로 먼저 제외), `_reposition_merged_
   ending_shapes()`(1줄 높이를 `_content_line_height_emu()`로 폰트 실측, 역산 금지),
   `_move_ending_shape_to_next_slide()`(한 슬라이드에 안 들어가면 통째로 이동).

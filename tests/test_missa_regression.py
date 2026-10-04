@@ -4040,6 +4040,20 @@ def test_sf23_ending_merge_uses_measured_line_count_com(monkeypatch, n_lines, me
     assert len(prs.slides) == (1 if merged else 2)
 
 
+@pytest.mark.parametrize('n_lines', [1, 2, 3, 4, 5, 6, 7])
+def test_sf32_allow_ending_merge_false_keeps_ending_slide_separate(monkeypatch, n_lines):
+    """SF32(사용자 결정 2026-10-05): 청년 영문 복음은 마지막 슬라이드가 몇 줄이든(병합 기준 5줄 이하여도) 종료 슬라이드
+    ('주님의 말씀입니다/그리스도님, 찬미합니다')를 본문에 병합하지 않는다 — allow_ending_merge=False."""
+    _sf_install(monkeypatch)
+    prs = _sf_prs(1, n_ending=1, widths=[_SF_WIDE_EMU])
+    _sf_fill(prs, chr(10).join([_SF_L60] * n_lines), n_body=1, n_ending=1, allow_ending_merge=False)
+    assert len(prs.slides) == 2
+    assert _sf_slide_lines(prs.slides[0]) == n_lines
+    body_has_ending = any(sh.has_text_frame and '주님의 말씀입니다' in sh.text_frame.text for sh in prs.slides[0].shapes)
+    end_has_ending = any(sh.has_text_frame and '주님의 말씀입니다' in sh.text_frame.text for sh in prs.slides[1].shapes)
+    assert not body_has_ending and end_has_ending
+
+
 @pytest.mark.parametrize('n_lines,merged', [(5, True), (6, False)])
 def test_sf24_ending_merge_uses_pillow_total_when_com_unavailable(monkeypatch, n_lines, merged):
     """SF24: COM이 없으면 Pillow 줄 수로 판정한다(같은 경계)."""

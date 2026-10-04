@@ -948,7 +948,8 @@ def replace_reading_slides(prs, content_start: int, content_end: int,
                             line_spacing: float = None, merge_threshold: int = 5,
 
                             label: str = '', align: str = None,
-                            normalize_page_size: bool = False) -> int:
+                            normalize_page_size: bool = False,
+                            allow_ending_merge: bool = True) -> int:
 
     """
     독서/복음 콘텐츠 슬라이드를 교체.
@@ -961,6 +962,9 @@ def replace_reading_slides(prs, content_start: int, content_end: int,
     (마지막 슬라이드만 그 이하). 슬라이드가 모자라면 template_idx를 복제해 늘리고 남으면 삭제한다.
 
     template_idx: 새 슬라이드 복제 기준 슬라이드 인덱스
+
+    allow_ending_merge: False이면 마지막 본문 슬라이드가 몇 줄이든 종료 슬라이드('주님의 말씀입니다.' 등)를 본문에
+    병합하지 않고 별도 슬라이드로 둔다(청년미사 영문 복음 — 템플릿 57쪽처럼, 2026-10-05 사용자 결정).
 
     반환: 슬라이드 수 변화 (양수 = 추가됨)
 
@@ -1082,7 +1086,7 @@ def replace_reading_slides(prs, content_start: int, content_end: int,
     # 판정 줄 수는 마지막 슬라이드를 확정할 때 얻은 실측값(COM, 불가 시 Pillow, 폰트도 없으면 27자 근사)이다 —
     # 구 27자/줄 추정은 라틴 본문을 약 2배 과대 추정해 실측 4~5줄도 병합하지 못했다(2026-10-03 사용자 결정).
 
-    if n_ending > 0 and needed > 0:
+    if allow_ending_merge and n_ending > 0 and needed > 0:
         last_content_idx = content_start + needed - 1
         if last_total is not None and last_total <= merge_threshold:
             ENDING_KW = ('주님의 말씀입니다', '◎ 하느님', '◎ 그리스도님')
@@ -1111,9 +1115,13 @@ def replace_reading_slides(prs, content_start: int, content_end: int,
 
 
 
-def _align_ending_slides_to_제2독서(prs, sections: dict):
+def _align_ending_slides_to_제2독서(prs, sections: dict, align_gospel: bool = True):
 
-    """제1독서와 복음의 ending 슬라이드 텍스트박스 위치/크기를 제2독서 기준으로 맞춤."""
+    """제1독서와 복음의 ending 슬라이드 텍스트박스 위치/크기를 제2독서 기준으로 맞춤.
+
+    align_gospel=False이면 복음은 건드리지 않는다 — 청년미사 영문 복음의 종료 슬라이드는 템플릿(57쪽)이 별도로 잡아 둔
+    위치를 그대로 쓴다(2026-10-05).
+    """
 
     ENDING_KW = ('주님의 말씀입니다', '◎ 하느님', '◎ 그리스도님')
 
@@ -1177,7 +1185,9 @@ def _align_ending_slides_to_제2독서(prs, sections: dict):
 
     # 제1독서, 복음 ending 슬라이드에 동일 위치 적용
 
-    for start_key, end_key in [('제1독서_start', '제1독서_end'), ('복음_start', '복음_end')]:
+    targets = [('제1독서_start', '제1독서_end')] + ([('복음_start', '복음_end')] if align_gospel else [])
+
+    for start_key, end_key in targets:
 
         if start_key not in sections or end_key not in sections:
 

@@ -1888,6 +1888,39 @@ def test_e1_full_pipeline_does_not_upload_result_to_onedrive(e_full_output):
     assert e_full_output['out_path'].is_file()
 
 
+def _e_gospel_ending_slide(prs):
+    """복음 구간에서 '주님의 말씀입니다' 종료 문구가 있는 슬라이드 (인덱스, 슬라이드)."""
+    import missa_sections as sec_e
+    sections = sec_e.find_sections(prs, mass_type='youth')
+    for i in range(sections['복음_start'], sections['복음_end']):
+        sl = prs.slides[i]
+        if any(sh.has_text_frame and '주님의 말씀입니다' in sh.text_frame.text for sh in sl.shapes):
+            return i, sl
+    return None, None
+
+
+def test_e6_full_pipeline_youth_english_gospel_ending_is_separate_slide(e_full_output):
+    """2026-10-05 사용자 결정: 청년 영문 복음은 마지막 본문 슬라이드가 몇 줄이든 '주님의 말씀입니다/그리스도님, 찬미합니다'가
+    그 다음 별도 슬라이드(템플릿 57쪽과 동일)에 있어야 한다 — 이 픽스처(20260913 복음)는 마지막 슬라이드가 4줄이라
+    예전에는 본문에 병합됐다."""
+    from pptx import Presentation as _P
+    idx, ending = _e_gospel_ending_slide(e_full_output['prs'])
+    assert ending is not None, '복음 종료 문구 슬라이드가 없음'
+    # 종료 슬라이드에는 영문 본문이 없고(본문 상자는 비어 있음), 직전 슬라이드에는 종료 문구가 없다.
+    body_texts = [sh.text_frame.text.strip() for sh in ending.shapes
+                  if sh.has_text_frame and '주님의 말씀입니다' not in sh.text_frame.text
+                  and '전례문 ©' not in sh.text_frame.text]
+    assert all(t == '' for t in body_texts), body_texts
+    prev = e_full_output['prs'].slides[idx - 1]
+    assert not any(sh.has_text_frame and '주님의 말씀입니다' in sh.text_frame.text for sh in prev.shapes)
+    # 위치는 템플릿의 복음 종료 슬라이드(57쪽)와 같다.
+    t_prs = _P(str(_E_YOUTH_TEMPLATE))
+    _t_idx, t_end = _e_gospel_ending_slide(t_prs)
+    geo = lambda sl: sorted((sh.left, sh.top, sh.width, sh.height) for sh in sl.shapes
+                            if sh.has_text_frame and '주님의 말씀입니다' in sh.text_frame.text)
+    assert geo(ending) == geo(t_end), (geo(ending), geo(t_end))
+
+
 def test_e2_full_pipeline_title_slide_shows_input_saturday_date(e_full_output):
     from missa_ooxml_utils import all_slide_texts as _e2_all_texts
     texts = _e2_all_texts(e_full_output['prs'])
