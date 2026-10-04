@@ -62,7 +62,7 @@ _SYSTEM_GAP_MIN = 20
 # 실행 파일 옆 자산 폴더(missa_psalm_score_image._BASE와 동일 관용, PyInstaller onefile 회피).
 _BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 
-# 배포 zip이 원본 PDF 2개를 이 경로에 그대로 포함해 배포한다(tools/build_youth_dist_zip.py).
+# 배포 zip이 원본 PDF 2개를 이 경로에 그대로 포함해 배포한다(tools/build_dist_zip.py).
 # 개발 PC에서도 같은 경로(cache/청년미사_성가원본/)에 원본을 두고 쓴다 — reference/나
 # OneDrive 조회 폴백은 없다(2026-09-27, "성가 원본은 매번 OneDrive에서 곡 단위로 받아오는
 # 것이 아니라 배포 시점에 통째로 포함한다"는 결정 — 상세는 CLAUDE.md 참고).

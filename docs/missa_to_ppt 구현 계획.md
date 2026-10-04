@@ -216,11 +216,14 @@ python-pptx, lxml, Pillow, numpy(화답송 악보 사진 배열 연산), pywin32
 시 Pillow 전용 폴백), requests/beautifulsoup4(크롤링), msal(OneDrive 인증), tkinter(표준
 라이브러리), pytest.
 
-빌드는 **exe(PyInstaller) 방식을 폐기하고 Python 인터프리터 + `.bat` 런처**로 전환했다(§3.1)
-— `run_missa.bat`가 `pythonw.exe missa_to_ppt.py`를 실행한다. `missa_to_ppt.spec`/`dist/`는
-과거 exe 빌드 산출물 경로로 여전히 존재하지만(`PyInstaller.config.CONF['distpath']`를
-`dist/`로 지정), 현재 배포 주력 경로는 zip 소스 배포다(`tools/build_dist_zip.py`,
-`tools/build_youth_dist_zip.py`).
+빌드는 **exe(PyInstaller) 방식을 폐기하고 Python 인터프리터 + `.bat` 런처**로 전환했다(§3.1; 청년은 2026-10-01,
+성인은 2026-10-05) — `run_missa_성인.bat`/`run_missa_청년.bat`가 `pythonw.exe missa_to_ppt.py --미사유형 …`을
+실행한다. 배포는 `tools/build_dist_zip.py [성인|청년|all]` 하나가 유형별 zip(`dist/missa_ppt_성인미사.zip`·
+`dist/missa_ppt_청년미사.zip`)을 만든다(`KINDS` 표: zip 이름·실행 .bat·`docs/README_*미사_운영자.md`·추가 파일 — 청년만
+성가집 PDF 2개). 공용 `install.bat`이 `pip install -r requirements.txt` 후 `create_shortcut.py`(폴더에 있는
+`run_missa_*.bat`으로 유형을 판단해 `성인미사 PPT.lnk`/`청년미사 PPT.lnk` 생성)를 호출한다. 삭제된 exe 전용
+도구(2026-10-05): `missa_to_ppt.spec`, `tools/build_shortcuts.py`, `tools/build_youth_dist_zip.py`, `run_missa.bat`.
+코드의 `sys.frozen` 분기(`_SCRIPT_DIR` 등)는 무해해서 남겨 두었다.
 
 ---
 
@@ -280,10 +283,12 @@ slide_no=None, n_slides=None, label_override=None)`(`CANONICAL_LABEL` 매핑, `l
 - **업데이트 메커니즘**: `missa_updater.py`(leaf) — `get_latest_commit_sha()`(GitHub API,
   인증 불필요·public repo) → `check_for_update()`(config.json의 `last_update_commit`과 비교)
   → `apply_update(sha)`(zip 다운로드 → 압축 해제 → 화이트리스트(`*.py`, `*.spec`, `VERSION`,
-  `assets/`)만 복사). `config.json`/`output/`/`reference/`/`cache/`/`.git/`은 절대 덮어쓰지
+  `assets/`, 그리고 `docs/README_*_운영자.md` → 설치 폴더 최상위(이미 있는 이름만, 2026-10-05))만 복사). `config.json`/`output/`/`reference/`/`cache/`/`.git/`은 절대 덮어쓰지
   않는다. GUI의 "🔄 업데이트 확인" 링크에서 트리거.
 - **배포 형태**: PyInstaller exe를 폐기하고 Python 인터프리터 + `.bat` 런처로 전환(§1.10) —
-  `.py` 교체만으로 갱신되지 않는 exe 방식으로는 업데이트 메커니즘이 성립하지 않기 때문.
+  `.py` 교체만으로 갱신되지 않는 exe 방식으로는 업데이트 메커니즘이 성립하지 않기 때문. 청년이 먼저 전환했고(2026-10-01)
+  성인도 같은 방식으로 통일했다(2026-10-05, 요구사항 §3.1). 업데이터 화이트리스트(`*.py`, `*.spec`, `VERSION`, `assets/`)는
+  성인·청년 공통이다.
 
 ## 3.2 `find_sections()` 청년 전용 3곳
 

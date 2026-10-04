@@ -128,3 +128,20 @@ OneDrive 인증·전체 파이프라인 통합) (2026-10-01 통합 전 원문).m
 만든 나주노/야훼이레 성가 파일이 있어도 제목을 PDF에서 조회(야훼 이레는 574쪽 `search_for` ≈ 2.5초). 조치: `_scan_youth_slides()`로
 슬라이드당 1회 스캔을 5종이 공유, 남는 슬롯이 있을 때만 재탐색, `입당송`/`영성체송` 탐색은 이미 추출한 `texts` 재사용, 제목은
 입력값 → 기존 파일명 → PDF 순. 결과창 '원드라이브로 복사' 버튼은 '파일 열기' 바로 옆·같은 글꼴로 이동(§3.4.2).
+
+## 2026-10-05 — 성인 소스 zip 배포 + 배포 도구 통합
+
+`tools/build_dist_zip.py`를 유형별(`성인|청년|all`) 소스 zip 빌더로 재작성(exe 빌더였음). 신규 `run_missa_성인.bat`·성인
+README, `create_shortcut.py`/`install.bat` 성인·청년 공용화(`run_missa_*.bat` 존재로 유형 판단). 삭제: `missa_to_ppt.spec`,
+`tools/build_shortcuts.py`, `tools/build_youth_dist_zip.py`, `run_missa.bat`. README 2개를 `docs/`로 이동(빌더가 zip 최상위로
+복사). 성인 zip(약 0.8MB)을 압축 해제해 평일 20260624 생성·검증 통과까지 단독 실행 확인.
+
+## 2026-10-05 — 배치 파일 CRLF 보장 + README 자동 갱신
+
+성인 zip의 `install.bat`이 LF만 있는 줄바꿈이라 한글+`chcp 65001`에서 cmd가 줄 경계를 잘못 읽어 오류('issa_ppt is not
+recognized…')가 났다. `tools/build_dist_zip.py`의 `_write_file()`이 `.bat`을 항상 CRLF로 정규화해 zip에 넣고, 저장소에
+`.gitattributes`(`*.bat text eol=crlf`)를 추가. `missa_updater.py`에 `_UPDATE_README_GLOB`(설치 폴더에 이미 있는 안내서만
+갱신) 추가. 옛 exe 산출물(`dist/missa_to_ppt.exe`·`.zip`) 삭제. 테스트: `tests/test_build_dist_zip.py`(신규), updater README 테스트.
+성인·청년 zip을 풀어 `install.bat`을 실제 실행해 오류 없음·유형별 바로가기 생성을 확인.
+
+(같은 날 추가) `install.bat`의 안내 문구가 두 유형을 함께 보여주던 것을, 폴더의 `run_missa_*.bat` 존재로 유형을 판단해 해당 유형("성인미사 PPT"/"청년미사 PPT")만 표시하도록 변경. 실제 cmd 실행 테스트 추가.

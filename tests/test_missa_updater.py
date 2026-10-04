@@ -138,3 +138,24 @@ def test_apply_update_end_to_end_with_zip(monkeypatch, tmp_path):
     install_dir.mkdir()
     mu.apply_update("abc123", install_dir)
     assert (install_dir / "missa_to_ppt.py").read_text(encoding="utf-8") == "code"
+
+
+def test_U_readme_updated_only_when_installed_copy_exists(tmp_path):
+    """운영자 안내서(docs/README_*_운영자.md)는 설치 폴더 최상위로 갱신된다 — 단, 설치 폴더에 이미 있는 이름만
+    (성인 설치에 청년 안내서가 생기지 않게)."""
+    src = tmp_path / "src_root"
+    (src / "docs").mkdir(parents=True)
+    (src / "docs" / "README_성인미사_운영자.md").write_text("새 성인 안내", encoding="utf-8")
+    (src / "docs" / "README_청년미사_운영자.md").write_text("새 청년 안내", encoding="utf-8")
+    (src / "docs" / "다른 문서.md").write_text("x", encoding="utf-8")
+
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
+    (install_dir / "README_성인미사_운영자.md").write_text("옛 성인 안내", encoding="utf-8")
+
+    copied = mu.install_whitelisted(src, install_dir)
+
+    assert (install_dir / "README_성인미사_운영자.md").read_text(encoding="utf-8") == "새 성인 안내"
+    assert not (install_dir / "README_청년미사_운영자.md").exists()
+    assert not (install_dir / "다른 문서.md").exists() and not (install_dir / "docs").exists()
+    assert Path("README_성인미사_운영자.md") in copied

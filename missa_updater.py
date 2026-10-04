@@ -30,6 +30,9 @@ _ARCHIVE_URL_TMPL = f"https://github.com/{REPO}/archive/{{sha}}.zip"
 # 추가되는 로컬 전용 폴더를 깜빡하고 블랙리스트에 빠뜨릴 위험이 없다.
 _UPDATE_FILE_GLOBS = ["*.py", "*.spec", "VERSION"]
 _UPDATE_DIRS = ["assets"]
+# 운영자 안내서: 저장소에서는 docs/ 아래에 있지만 배포 zip에서는 설치 폴더 최상위에 놓인다(tools/build_dist_zip.py).
+# 설치 폴더에 **이미 같은 이름의 파일이 있을 때만** 갱신한다 — 성인 설치에 청년 안내서가 생기는 일이 없게(2026-10-05).
+_UPDATE_README_GLOB = "docs/README_*_운영자.md"
 
 
 class UpdateError(Exception):
@@ -92,6 +95,11 @@ def install_whitelisted(src_root: Path, install_dir: Path) -> list:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(f, dest)
             copied.append(rel)
+    for f in src_root.glob(_UPDATE_README_GLOB):
+        dest = install_dir / f.name
+        if dest.exists():
+            shutil.copy2(f, dest)
+            copied.append(Path(f.name))
     for d in _UPDATE_DIRS:
         src_dir = src_root / d
         if not src_dir.is_dir():

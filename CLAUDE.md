@@ -1,7 +1,7 @@
 # CLAUDE.md — missa_ppt 프로젝트
 
-매일미사 웹데이터로 미사 PPT를 자동 생성하는 도구. 성인미사(exe 배포)와 청년미사(Python
-소스 배포, OneDrive 연동) 두 갈래를 지원한다.
+매일미사 웹데이터로 미사 PPT를 자동 생성하는 도구. 성인미사와 청년미사 두 갈래를 지원하며 둘 다 Python
+소스 zip(+`.bat` 런처)으로 배포한다(2026-10-05부터 성인도 exe 폐기, `python tools/build_dist_zip.py`).
 
 **파이프라인:** `missa_to_json.py`(missa.cbck.or.kr 크롤링 → `missa_YYYYMMDD.json`) →
 `missa_to_ppt.py`(JSON + 성가번호로 참조/템플릿 PPT를 수정해 결과 PPT 생성).
@@ -23,10 +23,11 @@
 - `tests/` — 테스트 전부(`test_missa_progression.py`=신규 동작 명세, `test_missa_regression.py`
   =회귀, 나머지는 OneDrive/GUI/COM/업데이터별 분리). 저장소 루트 `conftest.py`가 `sys.path`에
   루트를 추가해 `tests/`에서 루트의 런타임 모듈을 import할 수 있게 한다.
-- `dist/` — 빌드 산출물(exe/zip) 전용 폴더, git 추적 안 함.
+- `dist/` — 빌드 산출물(배포 zip) 전용 폴더, git 추적 안 함.
 - `docs/` — 요구사항·구현 계획(성인+청년 통합, 공통/성인전용/청년전용 3섹션 구조),
   `archive/`(과거 버전 원문), `ooxml-pitfalls-log.md`(아래 규칙들의 상세 발견 경위),
-  `missa_to_ppt-module-notes.md`(모듈별 구현 상세).
+  `missa_to_ppt-module-notes.md`(모듈별 구현 상세), `README_성인미사_운영자.md`·`README_청년미사_운영자.md`
+  (운영자 안내서 — 배포 zip 최상위로 들어감).
 
 ## OOXML·GUI·캐싱 함정 규칙 (필수 적용)
 

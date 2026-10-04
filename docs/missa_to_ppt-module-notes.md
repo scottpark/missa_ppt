@@ -180,7 +180,9 @@ Graph가 알아서 찾아줄 것"이라고 가정하면 이 함정이 재발한�
 `_UPDATE_DIRS = ["assets"]`)에 해당하는 파일/폴더만 설치 위치에 덮어쓴다 — `config.json`/
 `output/`/`reference/`/`cache/`/`.git/` 등 로컬 전용 상태는 자동으로 보존된다. `VERSION`은
 2026-10-01부터 화이트리스트에 포함돼(이전엔 `.py`/`.spec`만) 업데이트 후 화면에 표시되는
-버전 번호도 함께 동기화된다.
+버전 번호도 함께 동기화된다. 2026-10-05부터 운영자 안내서도 갱신한다: `_UPDATE_README_GLOB = "docs/README_*_운영자.md"`
+(저장소에서는 `docs/` 아래, 설치 폴더에서는 최상위)를 **설치 폴더에 같은 이름의 파일이 이미 있을 때만** 덮어쓴다(성인 설치에 청년
+안내서가 생기지 않게). `.bat`은 화이트리스트가 아니다 — 줄바꿈(CRLF) 보장은 배포 zip 빌더가 맡는다.
 
 ## `ppt_com_verify.py` — PowerPoint COM 실측 검증
 
@@ -194,8 +196,8 @@ Pillow 추정 줄 수를 실제 PowerPoint COM 자동화로 검증. `Application
   그대로 둔다).
 - `conftest.py`(저장소 루트) — `tests/`에서 루트의 `missa_gui` 등을 import할 수 있도록
   `sys.path`에 루트를 추가.
-- `dist/` — `missa_to_ppt.spec`(PyInstaller)과 배포 zip 빌드 스크립트의 산출물
-  (`missa_to_ppt.exe`/`missa_to_ppt.zip`/`missa_ppt_청년미사.zip`) 보관 폴더. 전부
+- `dist/` — `tools/build_dist_zip.py`의 산출물(`missa_ppt_성인미사.zip`/`missa_ppt_청년미사.zip`) 보관 폴더(과거 exe
+  산출물은 폐기). 전부
   재생성 가능한 빌드 결과물이라 git에서 제외(`.gitignore`).
 - `output/YYYYMMDD[_youth]/` — 미사별 작업 디렉터리(`OUTPUT_ROOT`, `missa_gui.py`).
   입력/출력 산출물이라 매번 커밋하지 않으며, 회귀 테스트 픽스처 3개(`20260624` 평일·

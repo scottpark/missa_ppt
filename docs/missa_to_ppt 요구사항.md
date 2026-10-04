@@ -97,10 +97,10 @@
 
 ## 1.7 실행 아이콘·바로가기
 
-미사 유형별로 2줄 배지 아이콘(예: "성인"/"PPT")을 가진 실행 바로가기 3종을 만들 수 있다
-(`tools/build_shortcuts.py`, 배포 담당자 전용). 각 바로가기는 `--미사유형 성인`/`청년`/
-`어린이` 인자로 고정 실행되므로, 사용자는 원하는 유형의 바로가기를 더블클릭하기만 하면 된다
-(날짜 없이 실행되므로 곧바로 파일 선택 화면으로 들어간다).
+미사 유형별로 2줄 배지 아이콘(예: "성인"/"PPT")을 가진 실행 바로가기가 있다(`assets/missa_to_ppt_*.ico`). 배포 zip
+의 `install.bat`이 `create_shortcut.py`를 호출해 설치한 PC에서 "성인미사 PPT"/"청년미사 PPT" 바로가기(`.lnk`)를 만든다
+(zip에 든 `run_missa_성인.bat`/`run_missa_청년.bat` 중 있는 것 기준). 각 바로가기는 `--미사유형 성인`/`청년` 인자로 고정
+실행되므로, 사용자는 해당 바로가기를 더블클릭하기만 하면 된다(날짜 없이 실행되므로 곧바로 파일 선택 화면으로 들어간다).
 
 처리가 시작되면 진행 창 맨 위에 "PowerPoint가 백그라운드에서 실행됩니다" 안내가 **5초 동안** 표시된
 뒤 사라진다(줄 수를 정확히 확인하려고 PowerPoint를 실제로 띄우기 때문). 별도 확인 팝업은 없고(2026-10-03
@@ -267,9 +267,17 @@ leaf 모듈)와 2단계(배포 전환·OneDrive 인증·전체 파이프라인 �
 
 - 웹 인터페이스는 기각, **로컬 실행 + GitHub 자동 업데이트**로 확정. GitHub 저장소는 public
   전환 완료(비밀값 없음을 확인 후 진행).
+- **성인·청년 모두 Python 소스 zip + `.bat` 런처로 배포한다**(2026-10-05부터 성인도 exe 폐기 — PyInstaller exe는
+  코드가 바뀔 때마다 재빌드·재배포해야 하고 `.py` 교체 방식의 자동 업데이트가 먹히지 않는다). 운영자 PC에는 Python과
+  `install.bat`(패키지 설치 + 바로가기 생성)이 필요하다. 배포 담당자는 `python tools/build_dist_zip.py [성인|청년|all]`로
+  `dist/missa_ppt_성인미사.zip`(약 1MB)·`dist/missa_ppt_청년미사.zip`(나주노/야훼이레 성가집 PDF 때문에 약 60MB)을 만든다.
+  zip에는 런타임 `.py` 13개·`assets/`(tessdata 제외)·`requirements.txt`·`install.bat`·`create_shortcut.py`·`VERSION`·
+  해당 유형의 `run_missa_*.bat`과 운영자 안내서(`docs/README_성인미사_운영자.md`/`docs/README_청년미사_운영자.md`, zip
+  최상위로 배치)가 들어가고(`.bat`은 항상 CRLF — LF만 있으면 한글+`chcp 65001`에서 cmd가 줄을 잘못 읽어 설치가 깨진다), `config.json`·토큰 캐시는 들어가지 않는다. 기존 exe 사용자는 exe 폴더의 `config.json`을
+  새 폴더로 복사해 설정을 이어간다(안내서 부록 G).
 - 업데이트는 앱 실행 시 자동이 아니라 "업데이트 확인" 버튼을 눌렀을 때만(`missa_updater.py`,
-  GitHub commit SHA 비교 → zip 다운로드 → `*.py`/`*.spec`/`VERSION`/`assets/` 화이트리스트만
-  교체, `config.json`/`output/`/`reference/`/`cache/`/`.git/`은 절대 덮어쓰지 않음).
+  GitHub commit SHA 비교 → zip 다운로드 → `*.py`/`*.spec`/`VERSION`/`assets/`/운영자 안내서(`README_*미사_운영자.md`,
+  설치 폴더에 이미 있는 것만) 화이트리스트만 교체, `config.json`/`output/`/`reference/`/`cache/`/`.git/`은 절대 덮어쓰지 않음).
 
 > **참고(2026-10-02)**: 아래 §3.3·§3.4의 Graph 로그인/브라우저/온디맨드 조회 서술은 §3.3.1의
 > **폴백 모드** 동작이다. 기본(로컬 모드)은 §3.3.1을 따른다.
@@ -295,7 +303,7 @@ leaf 모듈)와 2단계(배포 전환·OneDrive 인증·전체 파이프라인 �
     표시된다(단일 클릭은 브라우저를 열고, 드래그 선택 중에는 열리지 않음).
   - 로그인 브라우저가 이미 다른 개인 계정으로 로그인돼 있으면 그 계정으로 진행될 수 있다 —
     앱이 계정을 강제할 수 없으므로(기기 코드 로그인 URL은 계정 힌트를 못 받는 고정 페이지),
-    **새 시크릿/InPrivate 창**에서 로그인하도록 안내한다(`README_청년미사_운영자.md` 참고).
+    **새 시크릿/InPrivate 창**에서 로그인하도록 안내한다(`docs/README_청년미사_운영자.md` 참고).
 - **`missa_onedrive.py`**(신규 leaf 모듈): `get_access_token`/`list_children`/`download_file`/
   `upload_file`/`ensure_folder`/`get_item_metadata`. 앱 인스턴스는 프로세스 수명 동안 1회만
   생성해 재사용한다(매번 새로 만들면 생성 자체가 ~1초 걸림).

@@ -1,0 +1,2 @@
+# 배치 파일은 항상 CRLF — LF만 있으면 한글+chcp 65001 조합에서 cmd가 줄 경계를 잘못 읽는다.
+*.bat text eol=crlf
