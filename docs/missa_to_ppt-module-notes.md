@@ -19,7 +19,7 @@ CLI 인자 파싱(`parse_args`)·파일 탐색(`find_files`)·JSON 로드(`get_j
 플래그로만 정해진다. date가 있으면 `main()`(CLI), 없으면 `_run_gui_mode()`(GUI 입력 흐름,
 성인은 최초 1회 'PPT 문서' 폴더 선택 `get_adult_ppt_folder(True)`; PowerPoint 백그라운드 실행 안내는
 진행 창 첫머리 5초 라벨)로 간다. `_build_arg_parser()`가 인자 정의를 `parse_args()`와 공유한다(상세는
-`docs/missa_to_ppt 구현 계획.md` §1).
+`docs/ARCHITECTURE.md` §1).
 
 ## `missa_ooxml_utils.py` — OOXML 저수준 프리미티브
 
@@ -204,9 +204,9 @@ Pillow 추정 줄 수를 실제 PowerPoint COM 자동화로 검증. `Application
   `20260705` 성수축복·`20260712` 주일)의 **입력 파일**(참조 템플릿·JSON·화답송 악보·시작기도)만 git으로
   추적한다. 결과 PPT와 `log/`는 추적하지 않으며(2026-10-04), 테스트는 입력만 임시 폴더로 복사해 결과를 거기에
   생성한다(`tests/_gen_helper.py`, 프로세스당 날짜별 1회 캐시) — 저장소 `output/`은 테스트가 덮어쓰지 않는다.
-- `docs/` — 요구사항·구현 계획(버전 번호 없이 항상 최신 상태 유지, 변경 이력은 별도
-  변경이력 문서 참고), `archive/`(과거 버전 원문), `ooxml-pitfalls-log.md`(OOXML 함정
-  규칙의 상세 본문+발견 경위), 이 문서(모듈별 구현 상세).
+- `docs/` — `PRD.md`·`SPECS/`·`ARCHITECTURE.md`·`IMPLEMENTATION_PLAN.md`(2026-10-06 이후 4단계 문서 체계),
+  `archive/`(과거 버전 원문·`legacy-2026-10-06/`), `ooxml-pitfalls-log.md`(OOXML 함정
+  규칙의 상세 본문+발견 경위), 이 문서(모듈별 구현 상세 + 하네스 변경 이력).
 
 ## 하네스(mass-ppt-dev) 변경 이력
 
@@ -219,3 +219,7 @@ Pillow 추정 줄 수를 실제 PowerPoint COM 자동화로 검증. `Application
 | 2026-08-25 | 초기 구성 (에이전트 3명 + 오케스트레이터 1개 + 스킬 4개) | 전체 | 청년미사·어린이미사·타 성당 확장을 앞두고 설계/구현/검증 역할 분리 필요 |
 | 2026-08-25 | TDD 도입(`tdd-progression-testing` 스킬 신설, `test_missa_progression.py`↔`test_missa_regression.py` 분리, regression-qa에 승격 절차 추가) + 독립 코드 리뷰 단계 추가(`ooxml-code-reviewer` 에이전트 신설, specialist→reviewer→qa 파이프라인으로 확장) | 에이전트 4명, 스킬 5개 | 프로그레션(신규 동작 명세)과 회귀(기존 동작 보호) 테스트의 목적이 다름을 명확히 분리하고, 구현자 본인이 못 보는 사각지대를 잡을 독립 리뷰 단계 필요 |
 | 2026-08-30 | 하네스 첫 실제 기능(화답송 이미지 지원) 완료 후 harness Phase 6(with-skill vs without-skill 비교, `_workspace/04_phase6_validation_report.md`) 실시 → 결과 반영: (1) `ooxml-code-reviewer`에 "검증 우선순위 0"(스펙 자체가 원본 자료와 일치하는지 독립 재검증, 스펙에서 복사된 기대값 신뢰 금지) 추가, (2) `mass-template-architect`에 "실측 검증"의 정의를 통계적 타당성이 아니라 개별 판단 지점의 직접 확인으로 명시, (3) `ooxml-pitfalls`에 "완성 XML 통째 추가"가 append/순서 함정을 구조적으로 피하는 대안이라는 항목과 `validate_pptx_structure()`가 요소 순서를 검사하지 않는다는 주의사항 추가 | ooxml-code-reviewer.md, mass-template-architect.md, ooxml-pitfalls/SKILL.md | with-skill(독립 리뷰 4라운드)조차 1라운드에서 설계 스펙 자체의 오류(바라인 오검출)를 못 잡고 실사용자 육안 검수로 뒤늦게 발견됨 — "스펙과 일치하는가"만 보는 리뷰로는 부족하고 원본 자료 재검증이 필요함을 실측으로 확인. without-skill 베이스라인은 독립 검증 부재로 같은 종류의 결함(3세트 중 2세트가 실제로는 마디 경계 아님)을 "정확함"으로 자체 오판·보고 |
+| 2026-10-06 | (1) 글로벌 `~/.claude/CLAUDE.md`에 4단계 문서 체계(PRD·SPECS·ARCHITECTURE·IMPLEMENTATION_PLAN)·요구사항 변경 승인 절차·Sonnet 기본 규칙 추가. (2) `mass-ppt-dev`에 "Phase A 문서 승인 게이트" 신설(PRD/SPEC→ARCHITECTURE→IMPLEMENTATION_PLAN 각 사용자 승인, PLAN 승인 후 구현·리뷰·검증·문서동기화는 자동 연속, 소규모 변경은 체크리스트 경량 경로), 서브에이전트 모델 `opus`→`sonnet`. (3) `docs-sync`를 새 문서 체계 기준으로 재작성(변경 이력 부록 폐지, git 이력 대체). (4) 에이전트 `mass-template-architect`·`ooxml-code-reviewer`에 `model: sonnet` 추가, `ppt-ooxml-specialist`·`boundary-verification`·`mass-template-analysis`의 옛 문서 경로 갱신. (5) 기존 요구사항·구현 계획을 `docs/PRD.md`·`SPECS/`·`ARCHITECTURE.md`·`IMPLEMENTATION_PLAN.md`로 이관(원문은 `docs/archive/legacy-2026-10-06/`), 프로젝트 `CLAUDE.md` 갱신 | `~/.claude/CLAUDE.md`, mass-ppt-dev·docs-sync 스킬, 에이전트 4종, 프로젝트 CLAUDE.md, docs/ | 요구사항 변경 시 문서 선행·단계별 승인으로 범위 확장과 재작업 방지, 어린이미사 도입에 앞서 문서 체계 정비, 기본 모델 Sonnet 통일 |
+| 2026-10-06 | `harness:harness` 스킬 절차(Phase 0 감사·7-2 피드백→대상 매핑·7-3 이력·7-5 유지보수)로 같은 날 앞선 변경을 **소급 점검**. 감사: 에이전트 4·스킬 6이 CLAUDE.md 구성과 일치(drift 없음), 잔존 `opus` 지정 없음. 매핑: ①문서 체계·승인 게이트→`mass-ppt-dev`(워크플로우)·`docs-sync`(스킬)·글로벌/프로젝트 CLAUDE.md ②Sonnet 기본→에이전트 4종 frontmatter·스킬 내 서브에이전트 호출 ③이력 기록 의무→프로젝트 CLAUDE.md·mass-ppt-dev·docs-sync. 보완: (a) 글로벌 `~/.claude/CLAUDE.md`에 "하네스 요청은 `harness:harness` 스킬 선호출" 규칙 추가, (b) `mass-ppt-dev` Phase 8에 피드백 요청 단계(진화 7-1) 추가. **편차 기록**: 스킬 기본값은 모든 에이전트 `model: "opus"`이나 사용자 지시(Sonnet 기본)를 따름; 변경 이력 위치는 스킬 기본(CLAUDE.md 표)과 달리 이 문서 표(사용자 지정) | 글로벌 CLAUDE.md, mass-ppt-dev/SKILL.md | 같은 날 앞선 하네스 변경을 harness 스킬 없이 직접 수정해 감사·매핑·이력 절차가 누락됨(사용자 지적) — 원인: 요청 문구("하네스 개선")에 스킬을 호출하지 않고 파일 직접 수정으로 처리, 스킬 선호출 규칙이 없었음 |
+| 2026-10-06 | `harness:harness` 스킬 절차(Phase 0 감사→7-5 유지보수)로 하네스 플러그인(`~/.claude/plugins/cache/harness-marketplace/harness/1.2.0`)의 에이전트 모델 기본값을 `opus`→`sonnet`으로 변경(SKILL.md 모델 설정·체크리스트, references/agent-design-patterns.md·orchestrator-template.md). 프로젝트 에이전트 4종·`mass-ppt-dev`는 이미 sonnet이라 변경 없음(감사 확인). 앞선 행의 "스킬 기본값과 편차" 중 모델 편차는 해소됨. 주의: 플러그인 캐시 수정이라 플러그인 업데이트 시 덮어써질 수 있어 글로벌 `~/.claude/CLAUDE.md`의 Sonnet 규칙을 유지(이중 안전장치) | 하네스 플러그인 1.2.0 | 사용자 요청: 하네스에서 모든 에이전트를 Opus로 설정하는 것을 Sonnet으로 변경 |
+

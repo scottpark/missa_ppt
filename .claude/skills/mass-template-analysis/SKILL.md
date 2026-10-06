@@ -35,7 +35,7 @@ python .claude/skills/mass-template-analysis/scripts/dump_slide_text.py "<참조
 
 ### 2. 기존 `find_sections()`와 대조
 
-`missa_to_ppt.py`의 `find_sections()`(전체 함수 목록은 `docs/missa_to_ppt 구현 계획.md` §4
+`missa_to_ppt.py`의 `find_sections()`(전체 함수 목록은 `docs/ARCHITECTURE.md` §4
 참고)가 어떤 텍스트 패턴으로 각 섹션을 탐지하는지 읽는다. 새 템플릿의 실제 슬라이드 텍스트가
 그 패턴과 일치하는지 한 줄씩 확인한다. 예: 복음 제목 슬라이드는 shape 텍스트가 "복 음" 단독으로
 있는 슬라이드를 찾는데, 새 템플릿에 "GOSPEL"이 같은 슬라이드에 병기돼 있으면 텍스트가 "복 음"

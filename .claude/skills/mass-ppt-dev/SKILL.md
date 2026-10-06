@@ -1,6 +1,6 @@
 ---
 name: mass-ppt-dev
-description: "missa_ppt 프로젝트(미사 PPT 자동 생성 도구)의 개발·확장·버그 수정 오케스트레이터. TDD(설계→프로그레션 테스트 선작성→구현→독립 코드 리뷰→회귀 검증) 파이프라인으로 새 미사 유형(청년미사·어린이미사 등) 지원을 코드로 구현, 새 성당/본당 지원 추가, PPT 템플릿 구조 확장, missa_to_ppt.py/missa_to_json.py의 섹션 처리·OOXML 슬라이드 조작 로직 구현 또는 버그 수정 시 반드시 사용. '청년미사 지원 만들어줘/구현해줘', '어린이미사 지원 추가해줘', '이 본당용 템플릿 지원해줘', 'PPT 생성 로직 고쳐줘', '독서 슬라이드 줄바꿈 버그 고쳐줘' 같은 요청에 트리거. 특정 날짜의 미사 PPT를 실제로 생성하는 단순 실행 요청(예: '이번 주 청년미사 PPT 만들어줘', '20260830 미사 PPT 뽑아줘')은 이미 구현된 기능이면 missa_to_ppt.py를 직접 실행하면 되므로 이 스킬의 대상이 아니다 — 아직 지원하지 않는 유형/성당이라 코드 작업이 필요할 때만 트리거. 후속 작업(설계 다시 검토, 일부 미사유형만 재구현, 이전 설계 기반 보완, 프로그레션/회귀 테스트 추가·재실행, 리뷰만 다시, 문서 동기화만 다시)에도 반드시 이 스킬을 사용."
+description: "missa_ppt 프로젝트(미사 PPT 자동 생성 도구)의 개발·확장·버그 수정 오케스트레이터. 문서 승인 게이트(PRD/SPEC→ARCHITECTURE→IMPLEMENTATION_PLAN, 각 단계 사용자 승인) 후 자동 TDD(프로그레션 테스트 선작성→구현→독립 코드 리뷰→회귀 검증→문서 동기화) 파이프라인으로 새 미사 유형(청년미사·어린이미사 등) 지원을 코드로 구현, 새 성당/본당 지원 추가, PPT 템플릿 구조 확장, missa_to_ppt.py/missa_to_json.py의 섹션 처리·OOXML 슬라이드 조작 로직 구현 또는 버그 수정 시 반드시 사용. '청년미사 지원 만들어줘/구현해줘', '어린이미사 지원 추가해줘', '이 본당용 템플릿 지원해줘', 'PPT 생성 로직 고쳐줘', '독서 슬라이드 줄바꿈 버그 고쳐줘' 같은 요청에 트리거. 특정 날짜의 미사 PPT를 실제로 생성하는 단순 실행 요청(예: '이번 주 청년미사 PPT 만들어줘', '20260830 미사 PPT 뽑아줘')은 이미 구현된 기능이면 missa_to_ppt.py를 직접 실행하면 되므로 이 스킬의 대상이 아니다 — 아직 지원하지 않는 유형/성당이라 코드 작업이 필요할 때만 트리거. 후속 작업(설계 다시 검토, 일부 미사유형만 재구현, 이전 설계 기반 보완, 프로그레션/회귀 테스트 추가·재실행, 리뷰만 다시, 문서 동기화만 다시)에도 반드시 이 스킬을 사용."
 ---
 
 # Mass PPT Dev Orchestrator
@@ -15,6 +15,25 @@ missa_ppt 프로젝트의 확장(새 미사 유형·새 성당) 및 유지보수
 동시에 같은 파일을 편집하면 충돌한다. 그래서 **파이프라인 패턴**을 팀 모드로 운영한다 — 순차
 실행이 기본이지만, 구현 중 설계 재검토·리뷰 왕복·검증 실패로 되돌아가는 경우가 실제로 잦으므로
 `SendMessage`로 실시간 왕복이 가능한 팀 모드가 서브 에이전트보다 유리하다.
+
+## 문서 체계와 승인 게이트 (2026-10-06 도입, 글로벌 `~/.claude/CLAUDE.md` "문서 체계" 준수)
+
+`docs/PRD.md`(한 장) · `docs/SPECS/SPEC_<기능>.md` · `docs/ARCHITECTURE.md` · `docs/IMPLEMENTATION_PLAN.md`.
+**Phase A(문서 단계)는 사용자 승인이 필요하고, Phase B(Phase 3~8: 설계 확정 이후 구현·리뷰·검증·문서 동기화)는
+IMPLEMENTATION_PLAN 승인 후 사용자 개입 없이 자동으로 이어진다.** 모든 서브에이전트·팀원은 Sonnet.
+
+### Phase A: 문서 승인 게이트 (구조적 확장 또는 요구사항 변경 시)
+1. **PRD/SPEC**: 새 기능이면 착수 직전에 그 기능의 `SPECS/SPEC_<기능>.md`만 쓴다(동작·인수 기준·범위 밖·열린
+   질문; 구현 방식 금지). 목표/비목표/우선순위가 바뀌면 PRD도 수정(PRD를 고칠 필요 없는 변경은 SPEC만).
+   → **사용자 리뷰·승인 대기.**
+2. **ARCHITECTURE**: `mass-template-architect`가 참조 PPT를 실측 조사해 `ARCHITECTURE.md`에 구조 변경을 반영
+   (조사 상세는 `_workspace/01_architect_design.md`). → **사용자 승인 대기.**
+3. **IMPLEMENTATION_PLAN**: 단계별 체크리스트와 "테스트 대상 행동 목록"을 작성. → **사용자 승인 대기.**
+4. 승인 순서를 건너뛰거나 앞 문서 수정 승인 전에 다음 문서로 넘어가지 않는다. 하위 문서에서 상위 문서의 결함을
+   발견하면 멈추고 상위 문서부터 다시 수정·승인받는다. **IMPLEMENTATION_PLAN 승인 전 코딩 금지.**
+5. **한두 시간짜리 작은 변경·국소 버그 수정**(동작이 SPEC 범위 안): SPEC 신규 작성 없이 IMPLEMENTATION_PLAN에
+   체크리스트 한 단락만 쓰고 승인받은 뒤 경량 경로로 진행. 단 **SPEC이 규정한 동작이 바뀌면** 반드시 SPEC부터 수정.
+6. 승인 이후 구현 중 요구사항이 또 바뀌면 코드를 멈추고 다시 Phase A 해당 단계부터.
 
 ## 에이전트 구성
 
@@ -34,6 +53,9 @@ missa_ppt 프로젝트의 확장(새 미사 유형·새 성당) 및 유지보수
 
 ## 워크플로우
 
+> 아래 Phase 1~8 중 사용자 승인이 필요한 곳은 Phase A뿐이다. Phase 3의 architect 작업은 Phase A-2와 동일
+> 산출물(`ARCHITECTURE.md` 반영)을 만들며, 승인된 계획 이후엔 리더가 Phase 3~8을 멈춤 없이 이어서 실행한다.
+
 ### Phase 0: 컨텍스트 확인 (후속 작업 지원)
 
 1. 프로젝트 루트의 `_workspace/` 존재 여부 확인
@@ -51,7 +73,7 @@ missa_ppt 프로젝트의 확장(새 미사 유형·새 성당) 및 유지보수
 1. 사용자 요청이 다음 중 무엇인지 판단한다:
    - **구조적 확장** (새 미사 유형, 새 성당, 새 섹션, 템플릿 구조 변경) → Phase 2로 진행(전체 팀)
    - **국소적 버그 수정** (기존 함수 1~2개, 새 템플릿/구조 변경 없음) → **경량 경로**: 전체
-     팀을 구성하지 않고 아래 순서로 서브 에이전트(`Agent` 도구, `model: "opus"`)를 순차 호출:
+     팀을 구성하지 않고 아래 순서로 서브 에이전트(`Agent` 도구, `model: "sonnet"`)를 순차 호출:
      `ppt-ooxml-specialist`(TDD로 수정, `test_missa_progression.py`에 재현 테스트 선작성) →
      `ooxml-code-reviewer`(리뷰) → 리더가 `boundary-verification` 절차 직접 수행 또는
      `regression-qa` 1회 호출 → Phase 6(문서 동기화)로 진행. **경량 경로에서도 TDD와 독립
@@ -68,13 +90,13 @@ missa_ppt 프로젝트의 확장(새 미사 유형·새 성당) 및 유지보수
 TeamCreate(
   team_name: "mass-ppt-dev-team",
   members: [
-    { name: "mass-template-architect", agent_type: "mass-template-architect", model: "opus",
+    { name: "mass-template-architect", agent_type: "mass-template-architect", model: "sonnet",
       prompt: "<대상 미사유형/성당명>, 참조 PPT 경로: <경로>. mass-template-analysis 스킬로 조사 후 _workspace/01_architect_design.md 작성" },
-    { name: "ppt-ooxml-specialist", agent_type: "ppt-ooxml-specialist", model: "opus",
+    { name: "ppt-ooxml-specialist", agent_type: "ppt-ooxml-specialist", model: "sonnet",
       prompt: "architect의 설계서(_workspace/01_architect_design.md)가 완성되면 tdd-progression-testing 스킬로 항목별 red→green→refactor 진행. ooxml-pitfalls 스킬 필독. 완료 후 ooxml-code-reviewer에게 리뷰 요청" },
-    { name: "ooxml-code-reviewer", agent_type: "ooxml-code-reviewer", model: "opus",
+    { name: "ooxml-code-reviewer", agent_type: "ooxml-code-reviewer", model: "sonnet",
       prompt: "specialist의 리뷰 요청을 받으면 _workspace/02_specialist_impl_notes.md보다 diff와 _workspace/01_architect_design.md를 먼저 읽고 독립적으로 판단할 것. ooxml-pitfalls 체크리스트를 감사 렌즈로 적용" },
-    { name: "regression-qa", agent_type: "regression-qa", model: "opus",
+    { name: "regression-qa", agent_type: "regression-qa", model: "sonnet",
       prompt: "리뷰 통과 통지를 받으면 boundary-verification 스킬로 검증하고 pytest 전체(회귀+진행중 프로그레션) 실행 후 안정된 프로그레션 테스트를 MASS_CASES로 승격, _workspace/03_qa_report.md 작성" }
   ]
 )
@@ -128,9 +150,9 @@ TaskUpdate로 반영). 모든 항목이 green이 되면 ooxml-code-reviewer에�
 걸려 넘어오는 부수효과로 취급하지 말고, 체크리스트 항목으로 명시적으로 확인한다.
 
 1. `ppt-ooxml-specialist`(경량 경로면 리더 본인)가 `docs-sync` 스킬로
-   `docs/missa_to_ppt 요구사항.md`/`docs/missa_to_ppt 구현 계획.md`/(필요 시) `CLAUDE.md`를
-   갱신
-2. 두 문서의 "부록: 변경 이력"에 오늘 날짜로 항목 추가됐는지 확인
+   `docs/SPECS/`·`docs/ARCHITECTURE.md`·`docs/IMPLEMENTATION_PLAN.md`(완료 체크)·(필요 시) `CLAUDE.md`를
+   구현 결과와 정합하게 갱신(승인된 SPEC 범위를 넘는 차이는 사용자에게 보고)
+2. 변경 이력 부록은 폐지됨 — 이력은 git 커밋이 대신한다
 3. 사용자에게 최종 보고(Phase 8)하기 **직전에** "문서 동기화 완료"를 리더 스스로 체크리스트로
    재확인한다 — 커밋 여부를 묻는 시점에 문서 갱신이 빠져 있으면 이미 늦은 것이다
 
@@ -140,7 +162,10 @@ TaskUpdate로 반영). 모든 항목이 green이 되면 ooxml-code-reviewer에�
 2. `_workspace/` 보존(중간 산출물 삭제하지 않음 — 사후 검증·감사 추적용)
 3. 사용자에게 요약 보고: 무엇을 구현했는지, 리뷰에서 발견/수정된 사항, 회귀 테스트 결과,
    승격된 프로그레션 테스트 목록, 갱신된 문서 목록
-4. **커밋/푸시는 사용자가 명시적으로 요청할 때만** 수행한다(git 안전 정책, 이 하네스의 어떤
+4. **피드백 요청(하네스 진화 7-1)**: 보고 끝에 "결과·에이전트 팀 구성·워크플로우에서 바꾸고 싶은 점이 있나요?"를
+   한 번 묻는다(강요 금지). 피드백이 오면 `harness:harness` 스킬의 진화 절차(반영 대상 매핑 → 수정 → 변경 이력)로
+   처리한다 — 에이전트·스킬을 직접 고치기 전에 그 스킬을 먼저 호출한다.
+5. **커밋/푸시는 사용자가 명시적으로 요청할 때만** 수행한다(git 안전 정책, 이 하네스의 어떤
    에이전트도 자동으로 커밋하지 않는다)
 
 ## 데이터 흐름
@@ -215,3 +240,9 @@ TaskUpdate로 반영). 모든 항목이 green이 되면 ooxml-code-reviewer에�
 6. 2회 재시도 소진 → qa가 리더에게 에스컬레이션
 7. 리더가 사용자에게 "회귀 실패가 해결 안 됨, architect 재설계 필요할 수 있음"으로 보고하고
    계속 여부 확인
+
+## 하네스 변경 이력 (필수)
+
+이 스킬·다른 스킬·에이전트 정의·하네스 관련 CLAUDE.md·모델 설정을 바꿀 때마다 **같은 작업 단위에서**
+`docs/missa_to_ppt-module-notes.md` 마지막 절 "하네스(mass-ppt-dev) 변경 이력" 표에 행(날짜|변경 내용|대상|사유)을
+추가한다. 보고 직전 체크리스트로 재확인한다(순수 기능 구현은 대상 아님).

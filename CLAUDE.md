@@ -24,10 +24,15 @@
   =회귀, 나머지는 OneDrive/GUI/COM/업데이터별 분리). 저장소 루트 `conftest.py`가 `sys.path`에
   루트를 추가해 `tests/`에서 루트의 런타임 모듈을 import할 수 있게 한다.
 - `dist/` — 빌드 산출물(배포 zip) 전용 폴더, git 추적 안 함.
-- `docs/` — 요구사항·구현 계획(성인+청년 통합, 공통/성인전용/청년전용 3섹션 구조),
-  `archive/`(과거 버전 원문), `ooxml-pitfalls-log.md`(아래 규칙들의 상세 발견 경위),
-  `missa_to_ppt-module-notes.md`(모듈별 구현 상세), `README_성인미사_운영자.md`·`README_청년미사_운영자.md`
-  (운영자 안내서 — 배포 zip 최상위로 들어감).
+- `docs/` — 4단계 문서 체계(2026-10-06~): `PRD.md`(한 장) · `SPECS/SPEC_*.md`(기능별 명세, 절 번호 매핑은
+  `SPECS/README.md`) · `ARCHITECTURE.md`(구조·기술 사양) · `IMPLEMENTATION_PLAN.md`(진행 중 작업, 임시).
+  `archive/`(과거 버전 원문 + `legacy-2026-10-06/` 이관 전 요구사항·구현 계획·변경이력),
+  `ooxml-pitfalls-log.md`(아래 규칙들의 상세 발견 경위), `missa_to_ppt-module-notes.md`(모듈별 구현 상세),
+  `README_성인미사_운영자.md`·`README_청년미사_운영자.md`(운영자 안내서 — 배포 zip 최상위로 들어감).
+
+**요구사항이 바뀌면 코드부터 고치지 않는다**: PRD/SPEC → ARCHITECTURE → IMPLEMENTATION_PLAN 순으로 수정하되 각
+문서마다 사용자 승인을 받고, PLAN 승인 후 코딩한다(승인 후 설계→테스트→구현→리뷰→검증은 자동 연속). 상세는
+글로벌 `~/.claude/CLAUDE.md`와 `mass-ppt-dev` 스킬 Phase A. 서브에이전트는 모두 Sonnet.
 
 ## OOXML·GUI·캐싱 함정 규칙 (필수 적용)
 
@@ -123,4 +128,11 @@ GUI-OneDrive/COM검증/업데이터)로 이미 나뉘어 있다. 작업 중엔 �
 **구성:** `.claude/agents/`(mass-template-architect·ppt-ooxml-specialist·
 ooxml-code-reviewer·regression-qa), `.claude/skills/`(mass-ppt-dev 오케스트레이터 +
 mass-template-analysis·tdd-progression-testing·ooxml-pitfalls·boundary-verification·
-docs-sync). 변경 이력은 `docs/missa_to_ppt 구현 계획 변경이력.md` 참고.
+docs-sync). 과거 변경 이력은 `docs/archive/legacy-2026-10-06/`의 변경이력 파일, 이후는 git 이력.
+
+**하네스 변경 이력 기록 필수**: 에이전트·스킬·하네스 관련 CLAUDE.md/글로벌 규칙·모델 설정이 바뀔 때마다, 같은
+작업 단위 안에서 `docs/missa_to_ppt-module-notes.md` 마지막 절 "하네스(mass-ppt-dev) 변경 이력" 표에
+행(날짜 | 변경 내용 | 대상 | 사유)을 추가한다. 작업 완료 보고 전에 이 기록 여부를 스스로 확인한다.
+
+**다음 미사 유형(어린이미사) 도입 시:** 새 문서 체계로 이관이 끝났으므로 `docs/SPECS/SPEC_어린이미사.md`
+작성(+PRD 우선순위 갱신) 승인부터 시작해 위 승인 게이트를 따른다.

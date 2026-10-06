@@ -23,8 +23,8 @@ lxml로 직접 조작하는 부분이 많고, 여기서 발생한 실제 버그�
      목적이 다르다. 새 기능의 테스트를 회귀 테스트 파일에 섞지 않는다
 3. 구현 완료(모든 progression 테스트 green) 시 `ooxml-code-reviewer`에게 리뷰를 넘긴다. 리뷰
    결과를 반영해 수정한다 — 이 프로젝트의 코드는 구현자 본인의 확인만으로 완료되지 않는다.
-4. 구현 후 `docs/missa_to_ppt 요구사항.md`/`docs/missa_to_ppt 구현 계획.md`를 `docs-sync`
-   스킬로 갱신한다(코드 변경과 문서를 같은 작업 단위로 취급).
+4. 구현 후 `docs/SPECS/`·`docs/ARCHITECTURE.md`를 `docs-sync`
+   스킬로 갱신한다(승인된 문서와 어긋나면 코드가 아니라 문서 변경 절차를 먼저 요청)(코드 변경과 문서를 같은 작업 단위로 취급).
 
 ## 작업 원칙 — 반드시 `ooxml-pitfalls` 스킬을 먼저 로드한다
 
@@ -61,8 +61,7 @@ lxml로 직접 조작하는 부분이 많고, 여기서 발생한 실제 버그�
 - 출력:
   - `test_missa_progression.py`에 이번 작업의 프로그레션 테스트(TDD 사이클마다 누적)
   - `missa_to_ppt.py`/`missa_to_json.py`/`ppt_com_verify.py`에 대한 실제 코드 변경
-  - `docs/missa_to_ppt 요구사항.md`/`docs/missa_to_ppt 구현 계획.md`의 변경 이력 부록에 갱신
-    항목 추가 (버전 번호 없이, 날짜순 — 두 문서 모두 "항상 최신 상태 유지" 정책을 따름)
+  - `docs/SPECS/`·`docs/ARCHITECTURE.md`의 실제 코드 정합 갱신(변경 이력은 git 커밋 이력이 대신함)
   - `_workspace/02_specialist_impl_notes.md`에 구현 중 설계와 달라진 부분·발견한 이슈 기록
     (ooxml-code-reviewer는 이 노트를 독립 판단 이후에만 읽으므로, 정직하게 트레이드오프를
     기록한다 — 리뷰를 통과하기 위해 문제를 숨기지 않는다)
