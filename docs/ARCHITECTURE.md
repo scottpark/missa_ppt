@@ -195,9 +195,6 @@ content_updaters 순환 임포트 방지용) + `_safe_next_slide_partname`(pytho
 `assets/청년미사_성가_template.pptx`, `assets/나주노_copyright_bbox_cache.json`(개발자 1회
 OCR 생성, 런타임은 캐시만 읽음).
 
-**`missa_onedrive.py`**(leaf): §3.3. `get_access_token`/`list_children`/`download_file`/
-`upload_file`/`ensure_folder`/`get_item_metadata`/`_resolve_remote_base`/`_ensure_base_resolved`.
-
 **`missa_updater.py`**(leaf): §3.1. `check_for_update`/`apply_update`/`get_latest_commit_sha`.
 
 **`ppt_com_verify.py`**(별도 모듈): `is_available`/`count_slide_lines`/`shutdown`.
@@ -205,7 +202,7 @@ OCR 생성, 런타임은 캐시만 읽음).
 ## 1.10 의존성 / 빌드
 
 python-pptx, lxml, Pillow, numpy(화답송 악보 사진 배열 연산), pywin32(PowerPoint COM, 미설치
-시 Pillow 전용 폴백), requests/beautifulsoup4(크롤링), msal(OneDrive 인증), tkinter(표준
+시 Pillow 전용 폴백), requests/beautifulsoup4(크롤링), tkinter(표준
 라이브러리), pytest.
 
 빌드는 **exe(PyInstaller) 방식을 폐기하고 Python 인터프리터 + `.bat` 런처**로 전환했다(§3.1; 청년은 2026-10-01,
@@ -299,139 +296,73 @@ slide_no=None, n_slides=None, label_override=None)`(`CANONICAL_LABEL` 매핑, `l
 112=2차봉헌 뒤 구분(`insert_공지사항()` 참조 지점), 114=파견 인사(PLACEHOLDER, title
 아님), 116=파견title(AUTO_SHAPE), 117-119=파견content.
 
-## 3.3 OneDrive 인증 (`missa_onedrive.py`)
+## 3.3 OneDrive 폴더 루트 3종 (2026-10-18 폴더 구조 개편)
 
-- Device Code Flow(MSAL Python), `AUTHORITY="https://login.microsoftonline.com/consumers"`,
-  `SCOPES=["Files.ReadWrite"]`. App ID `21b7d1a4-87bb-4148-8ae8-8b57231c125b`(퍼블릭 클라이언트,
-  client secret 불필요 — public repo 노출 안전). 토큰 캐시 `msal_token_cache.bin`
-  (`MSAL SerializableTokenCache`, `has_state_changed`일 때만 쓰기, `.gitignore` 등록).
-- `_APP_CACHE = [app, cache]`(모듈 레벨) + `_get_app()`로 `PublicClientApplication` 인스턴스를
-  프로세스 수명 동안 1회만 생성(매번 생성하면 ~1초 걸림 — instance discovery 재수행 추정).
-  `_headers()`를 거치는 모든 공개 함수가 이 캐시로 자동 이득.
-- **remoteItem 함정**: 공용 계정 OneDrive의 최상위 `PPT 문서`는 진짜 폴더가 아니라 다른
-  드라이브를 가리키는 **공유 바로가기**다. `_resolve_remote_base(first_segment)`가 실제 GET으로
-  remoteItem 여부를 확인해 `(driveId, itemId)`를 `_REMOTE_ITEM_CACHE`(프로세스 수명)에 저장하고,
-  `_ensure_base_resolved(path)`를 4개 공개 함수 모두 URL 생성 전에 호출한다. `_item_url()`
-  자체는 순수 함수로 유지(캐시를 읽기만 함) — 네트워크 GET과 URL 조립을 분리해 기존 순수
-  문자열 변환 테스트를 보존한다. 404는 여기서 raise하지 않고 `None` 처리(진짜 "경로 없음"은
-  호출부의 기존 404 처리가 담당).
+OneDrive 접근은 **로컬 동기화 폴더 전용**이다. Graph API(`missa_onedrive.py`, MSAL 기기 코드 로그인)·원격 파일
+브라우저·프리페치·다운로드 캐시·로그인 폴백은 모두 폐지·삭제됐다(`msal` 의존도 제거). 명세는
+`SPECS/SPEC_OneDrive_폴더구조_개편.md`. 코드는 `missa_gui.py`의 한 절('OneDrive 폴더 루트 3종')에 모았고 하위 폴더
+이름 상수는 이 절에만 있다.
 
-## 3.4 `config.json` 스키마
+- **루트 3종**: 공용(`00.공용 PPT`, 표지 하위 폴더 `09.가톨릭 성가`) · 성인(`10.성인 미사`, `10.기타 PPT문서`) ·
+  청년(`20.청년 미사`, `2.성가`). `_ROOT_SPECS`(role → config 키·폴더명·표지·안내명), `_MASS_ROOT_ROLES`
+  (성인=공용+성인, 청년=공용+청년), 프로세스 캐시 `_ROOTS`. 새 미사 유형은 두 표에 한 줄씩 추가한다.
+- **조회·확정**: `get_root(role)`은 선택창 없이 캐시 → config(유효할 때만)를 반환한다. 선택창은 GUI 진입점
+  `_run_gui_mode()`만 `ensure_ppt_roots(mass_type, ask_if_missing=True)`로 띄운다(CLAUDE.md 규칙 20). 필요한 루트만
+  묻는다. 사용자가 상위 'PPT 문서'를 고르면 `_derive_roots()`가 `00./10./20.`을 찾아 모두 저장한다. 무효 선택은 안내
+  후 재선택, 취소는 `False` → `_run_gui_mode()`가 안내(`_show_root_required_message`) 후 종료한다.
+- **유효성**: `is_valid_ppt_root(role, path)` = 디렉터리 + 표지 하위 폴더 존재(`_find_child_dir`가 공백 유무 무시).
+- **이관**: `_migrate_legacy_ppt_folder()`가 옛 `onedrive_ppt_folder`가 새 구조를 품은 경우에만 세 루트를 채우고 옛
+  키를 지운다. 옛 구조('PPT 문서' 아래 `09.`/`10.`가 바로 있는 형태)는 유도 결과가 비어 선택창으로 간다.
+  `onedrive_hymn_folder`/`onedrive_youth_hymn_folder`는 더 이상 읽지 않는다.
+- **경로 규칙**: `ppt_subdir(kind, subfolder, year)`(`catholic_hymn`=`{공용}/09.가톨릭 성가/성가-악보버전`,
+  `youth_hymn`=`{청년}/2.성가/{나주노 성가|야훼이레 성가}`, `adult_output`/`youth_output`=`{성인|청년}/{YYYY}`). 이미
+  있는 폴더는 공백 차이를 무시한 실제 이름을 쓰고 없는 곳부터는 그대로 이어 붙인다(신규 폴더 생성 겸용). 루트가 없으면
+  `RuntimeError`. `get_onedrive_hymn_folder()`는 이를 감싼 성인 호출부용 이름이다.
+- **테스트**: 명세는 `tests/test_missa_progression.py`의 `test_fs_*`, 소비 동작은
+  `tests/test_missa_youth_local_mode.py`. 루트 `conftest.py`가 모든 테스트의 `CONFIG_FILE`을 임시 파일로 바꾸고
+  `_ROOTS`를 격리한다. 서브프로세스 실행(`tests/_gen_helper.py`)은 환경변수 `MISSA_CONFIG_FILE`로 임시 설정을 쓴다.
 
-로컬 절대경로 키(1순위, 기존)와 원격 상대경로 키(2순위, 신규)가 공존한다
-(`missa_gui._resolve_onedrive_folder()`):
+## 3.4 `config.json` 스키마 (OneDrive 관련)
 
-| 로컬 절대경로 키 | 원격 상대경로 키(기본값) |
+| 키 | 의미 |
 |---|---|
-| `onedrive_hymn_folder` | `onedrive_hymn_path` (`PPT 문서/09.가톨릭 성가/성가-악보버전`) |
-| `onedrive_youth_hymn_folder` | `onedrive_youth_hymn_path` (`PPT 문서/20.청년 미사/2.성가`) |
+| `onedrive_common_folder` / `onedrive_adult_folder` / `onedrive_youth_folder` | 세 루트의 로컬 절대경로 |
+| `browse_dirs` | `{행 id: 폴더}` — 첫 화면 '찾아보기'로 고른 폴더를 행별로 기억(행 id: `시작기도`·`미사후기도`·`공지사항`·`화답송_pptx`·`adult.ref_pptx`·`youth.ref_pptx`) |
 
-우선순위: (1) 로컬 키가 유효한 폴더면 그대로(Graph API 전혀 안 탐) → (2) 없으면 원격 경로로
-미러링/조회 → (3) 그래도 실패하면 수동 선택 팝업.
+옛 키(`onedrive_ppt_folder`·`onedrive_hymn_folder`·`onedrive_youth_hymn_folder`·`onedrive_hymn_path`·
+`onedrive_youth_hymn_path`·`last_psalm_dir`)는 읽지 않는다(`onedrive_ppt_folder`는 이관 대상, `last_psalm_dir`은
+화답송 행의 첫 시작 폴더로만 흡수된 뒤 삭제).
 
-> **청년미사는 §3.4.1로 대체 예정**(2026-10-02 요구사항 확정, 구현 대기): 위 표의
-> `onedrive_youth_hymn_folder`는 청년미사에서 더 이상 읽지 않고 신규 키 `onedrive_ppt_folder` 하나로
-> 판정한다. 성인미사(`onedrive_hymn_folder`)는 그대로.
+## 3.4.2 찾아보기 시작 폴더·행별 기억·결과창 복사 버튼
 
-## 3.4.1 청년미사 접속 모드(로컬 폴더 우선 / 로그인 폴백) — 설계·구현 완료(2026-10-02)
+- **시작 폴더**: `browse_initial_dir(mass_type, key)` 우선순위 = `browse_dirs`(존재할 때만) → `_BROWSE_DEFAULTS`
+  (행 id → 루트 role + 하위 경로: 시작기도·미사후기도 `{공용}/13.기도문`, 공지사항 `{공용}/11.공지사항 PPT문서`, 참조 PPT
+  성인 `{성인}/10.기타 PPT문서/PPT 자동화/1.Template`·청년 `{청년}/1.Template`, 화답송 `{성인}/14.화답송 악보`; 없는
+  하위 폴더는 `resolve_browse_start_dir`가 있는 곳까지) → 루트 → `None`(OS 기본). `_browse()`가 모든 행에서
+  `askopenfilename(initialdir=…)` 후 `remember_browse_dir()`로 선택 파일의 폴더를 저장한다.
+- **결과 복사**: `result_copy_dir`/`result_copy_exists`/`copy_result_to_onedrive`(`shutil.copy2`, OneDrive 앱이 동기화) +
+  버튼 핸들러 `_copy_result_with_ui`(루트 미설정이면 선택창 → 덮어쓰기 확인 → 복사 → 안내). `_show_result_window()`는
+  '파일 열기' 바로 옆에 같은 글꼴의 복사 버튼을 둔다(색은 `_RESULT_BTN_COLORS`). `main()`이 `_last_output_mass[0]`에
+  미사 유형을 기록한다.
+- **PowerPoint 안내**: `_run_with_progress_window()`가 진행 창 첫머리에 `_POWERPOINT_NOTICE_TEXT` 라벨을 만들어
+  `_POWERPOINT_NOTICE_SECONDS`(5)초 뒤 `after()`로 제거한다.
 
-요구사항은 `docs/missa_to_ppt 요구사항.md` §3.3.1. 아래는 코드 전수 조사(2026-10-02) 결과로
-확정해 구현한 변경 지점이다. 테스트는 `tests/test_missa_youth_local_mode.py`(14개), 테스트 간 모드
-상태 격리는 루트 `conftest.py`의 autouse 픽스처(`_youth_ppt_mode_isolated`)가 맡는다.
-구현 시 `find_youth_onedrive_hymn_file()`에 `local_kind` 인자를 추가했고, 구 청년 성가 폴더 키
-(`onedrive_youth_hymn_folder`)를 읽던 `_youth_onedrive_local_sync_dir()`는 청년 경로에서 더 이상
-호출되지 않는다(함수 자체는 기존 테스트 호환을 위해 남김).
+## 3.5 성가 PPT 조회
 
-**1) 모드 판정 단일 지점 — `missa_gui.py`**
-- `get_youth_ppt_mode(ask_if_missing: bool) -> str`(`'local'`/`'fallback'`)과 모듈 상태
-  `_YOUTH_PPT_FOLDER = [None]`(Path|None). 호출 순서: `config['onedrive_ppt_folder']`가 유효한
-  디렉터리면 `'local'` → 아니면 `ask_if_missing`일 때 `_ask_youth_ppt_folder_popup()`(기존
-  `_ask_onedrive_path_popup()`의 안내문만 바꿔 재사용) → 선택한 폴더가 디렉터리면 `_save_config`
-  후 `'local'`, 취소/무효면 `'fallback'`(저장 안 함 — 다음 실행에 다시 묻는다).
-- `ask_if_missing=False`는 GUI 없는 CLI 실행(`--y입당` 등 인자 직접 지정)용 — 팝업 없이 설정이
-  있으면 local, 없으면 fallback(로그인).
-- 시작 시 1회만 호출하고 이후 모든 단계는 `_YOUTH_PPT_FOLDER[0]`/`get_youth_ppt_mode()`의 **저장된
-  결과**를 읽는다(`get_onedrive_youth_hymn_remote_path()`가 겪은 "두 곳이 따로 판정해 어긋남"
-  버그 재발 방지, CLAUDE.md 규칙 23·19). 경로 조합은 순수 헬퍼 `youth_local_subdir(kind)`
-  (`'catholic_hymn'|'naju'|'yahweh'|'output'|'start_dir'`)가 담당하고 하드코딩 문자열은 이곳에만
-  둔다(`'09.가톨릭 성가/성가-악보버전'`, `'20.청년 미사/2.성가/{나주노 성가|야훼이레 성가}'`,
-  `'20.청년 미사/{YYYY}'`).
-
-**2) 변경 대상 코드(전수 조사 결과)**
-
-| 파일·위치 | 현재 | 변경 |
-|---|---|---|
-| `missa_to_ppt.py` `_run_gui_mode()` 1454~1474 | 청년이면 항상 `ensure_onedrive_login()` | 청년이면 먼저 `get_youth_ppt_mode(True)`; `'fallback'`일 때만 `ensure_onedrive_login()` |
-| `missa_gui.py` `_ask_combined_input_popup()` ~1754~1800, ~1839, ~1996 | 청년이면 OneDrive 브라우저·다운로드 대기·프리페치 스레드 | `'local'`이면 3곳 모두 건너뛰고 일반 `askopenfilename(initialdir=PPT폴더)` 사용 |
-| `missa_gui.py` `find_youth_onedrive_hymn_file()` 335~367 | 로컬 캐시 → Graph 재귀 검색 | `'local'`이면 `youth_local_subdir()` 폴더를 `rglob`으로 직접 검색(캐시/Graph 생략) |
-| `missa_content_updaters.py` `resolve_youth_hymn_pptx()` 1644~1723 | `_youth_onedrive_local_sync_dir('onedrive_youth_hymn_folder')` | 새 키·모드 기준으로 교체(`'local'`: 새로 만든 성가를 `나주노 성가`/`야훼이레 성가` 폴더에 저장, 업로드 없음) |
-| `missa_to_ppt.py` `_upload_youth_output_to_onedrive()` | (2026-10-02) 모드별 복사/업로드 | **2026-10-03 삭제** — 결과창 버튼 `copy_result_to_onedrive()`로 대체(§3.4.2) |
-| `missa_gui.py` `_resolve_onedrive_folder()`/`get_onedrive_youth_hymn_root()`/`get_onedrive_youth_hymn_remote_path()` | 구 청년 성가 폴더 해석 | 청년 경로에서는 더 이상 호출하지 않음(폴백 모드 전용으로 남기거나 데드코드 정리 — 구현 중 grep으로 호출부 0건 확인 후 결정) |
-| 성인미사 경로 | `get_onedrive_hymn_folder()` | **변경 없음** |
-
-**3) 지켜야 할 제약**
-- 로컬 모드에서는 `missa_onedrive`/`msal`을 import조차 하지 않는다(msal 미설치 PC 보호, 기존
-  `_mirror_onedrive_folder` 주석과 같은 원칙) — 모든 Graph 호출은 폴백 분기 안에서 지연 import.
-- 새 폴더 선택 팝업은 Tk 모달이라, `_run_gui_mode()`·`resolve_youth_hymn_pptx()`를 모킹 없이
-  실행하는 기존 테스트(`test_y2m_*`, 청년 OneDrive/GUI 관련 테스트)가 실제 창 앞에서 무한 대기하지
-  않도록 구현 시 해당 테스트를 먼저 찾아 모드를 `'fallback'`/`'local'`로 고정하는 monkeypatch를
-  추가한다(CLAUDE.md 규칙 20).
-- 폴더 검증 `_is_valid_youth_ppt_folder(path)`(= 디렉터리이며 `20.청년 미사` 하위 폴더 존재)를
-  **선택 직후와 매 실행 시작 시 모두** 호출한다. 선택 직후 실패하면 경고 후 재선택, 재선택에서
-  취소하면 폴백. 저장된 값이 검증에 실패하면 "설정 없음"과 동일하게 선택창을 다시 띄운다.
-- 로컬 파일 선택창의 `filetypes`·공지사항 `.pptx` 검증·필수/선택 규칙은 성인 행과 동일 코드를
-  재사용한다.
-
-**4) 테스트 계획(프로그레션 → 안정화 후 회귀 승격)**
-- 모드 판정: 유효 경로→local / 키 없음+선택→저장 후 local / 키 없음+취소→fallback(미저장) /
-  저장 경로가 사라짐→선택창 재표시.
-- `youth_local_subdir()` 경로 조합(3종 + 연도 폴더).
-- 로컬 모드에서 성가 조회·생성 저장 위치, `missa_onedrive` 미호출(import 감시).
-- 결과 PPT 복사: 연도 폴더 생성, 기존 `output/` 저장 유지, 복사 실패 시 경고만.
-- 폴백 모드 회귀: 기존 K/L·`test_y2m_` 동작 불변.
-
-## 3.5 OneDrive 파일 획득 — 두 메커니즘
-
-**(A) 개별 파일 브라우저** (참조 PPT·화답송·시작기도·공지사항·미사후기도,
-`_ask_onedrive_file_browser_popup()`): Treeview 탐색, 최상위 3개 허용 루트(`_ONEDRIVE_ROOT_
-ALLOWED_FOLDERS`)만 노출, 하위는 무제한. 폴더 확장은 더블클릭·확장 화살표 모두
-`<<TreeviewOpen>>` 가상 이벤트로 통일 처리(`_ensure_folder_children_loaded(iid)`) — 물리
-이벤트별로 따로 걸면 확장 화살표 단일 클릭 경로를 놓친다. `_start_onedrive_prefetch_thread()`
-가 입력창이 뜨는 즉시(청년미사만, 논블로킹) 3개 루트의 모든 하위 폴더/파일을 재귀
-프리페치(`_prefetch_onedrive_children()`)해 캐시를 채운다. 선택한 파일은 공유 캐시 폴더
-(`_ONEDRIVE_CACHE_ROOT = 'onedrive_cache'`, 날짜 폴더와 별개)에 원본 1부 보관 — 매니페스트
-(`onedrive_cache/manifest.json`)의 `lastModifiedDateTime`이 **문자열 완전일치**할 때만
-재다운로드 스킵(`_resolve_onedrive_download()`). **이 신선도 판단은 항상
-`missa_onedrive.get_item_metadata()`를 실시간 호출한다 — 프리페치 캐시(트리 표시용 스냅샷)를
-절대 재사용하지 않는다**(두 캐시 계층은 "무엇에 답하는 캐시인지"가 다름, CLAUDE.md "서로 다른
-목적의 캐시 계층이 겹칠 때" 참고). 파일 선택(`_on_choose()`)은 다운로드를 기다리지 않고
-목적지 경로만 계산해 즉시 반환하고, `_download_worker`(generation 추적 백그라운드 스레드)가
-실제 다운로드를 맡는다 — 같은 파일명 재선택 시 구세대의 느린 다운로드가 최신 선택을 덮어쓰지
-않도록 **커밋(`_commit_onedrive_blob_to_dest()`)은 `_download_lock` 안에서 generation을
-재확인한 경우에만** 수행한다("확인" 클릭 시 `_wait_for_pending_downloads_or_report_failure()`가
-미완료 다운로드를 전부 대기).
-
-**(B) 성가 PPT 온디맨드 조회** (나주노/야훼이레/가톨릭성가, `find_youth_onedrive_hymn_file
-(remote_path_key, default_remote_path, subfolder, pattern, cache_subdir)`, 2026-09-27
-도입 — §3.5의 §6.2 이전에는 두 함수 모두 `get_onedrive_hymn_folder()`/
-`get_onedrive_youth_hymn_root()`로 **폴더 전체**를 미러링했었다): 우선순위 (1) 로컬 캐시
-(`cache/{cache_subdir}/`, 성가 PPT는 불변이므로 매번 재확인 안 함) → (2) `_find_onedrive_
-file(remote_path, pattern)`으로 OneDrive를 재귀 검색(다운로드 없이 `list_children()`만,
-개별 폴더 실패는 그 아래만 건너뛰고 나머지는 계속 탐색)해 매칭 파일 하나만 다운로드. 성인
-미사의 `get_onedrive_hymn_folder()`(가톨릭성가 공유)는 이 전환과 무관하게 계속 전체 미러링
-그대로다 — `mass_type == 'adult'`로 좁혀진 `missa_to_ppt.py` 호출부에서만 쓰인다.
-`get_onedrive_youth_hymn_remote_path(root)`(캐시 역업로드 판단용, §3.9)만 여전히
-`get_onedrive_youth_hymn_root()`의 반환값과 비교하는 용도로 남아 있다.
+`find_youth_hymn_file(kind, subfolder, pattern)`가 `ppt_subdir(kind, subfolder)`를 `rglob('*.pptx')`로 검색해 패턴에
+맞는 첫 파일을 반환한다(없으면 `None`, 잠금 파일 `~$` 제외). 가톨릭성가는 `catholic_hymn`, 나주노·야훼이레는
+`youth_hymn`. 나주노·야훼이레를 새로 만들면 같은 폴더(`{청년}/2.성가/{출처 폴더}`)에 저장한다(업로드 없음). 성인
+주일은 `get_onedrive_hymn_folder()`를 `rglob`한다.
 
 ## 3.6 성가 5종 × 4출처 — `replace_성가_youth(prs, 성가_선택)`
 
 `resolve_youth_hymn_pptx(entry, htype) -> (Presentation|None, resolved_title)`가 출처별로
 분기(`entry = {'출처', '번호', '제목'}`):
 
-- **나주노/야훼이레**: §3.5(B)로 기존 PPT 탐색, 없으면 `missa_youth_hymn_pdf.build_hymn_
-  pptx()`로 생성 후 같은 캐시에 저장. 캐시 적중 여부와 무관하게 매번 `build_header_runs()`를
+- **나주노/야훼이레**: §3.5로 기존 PPT 탐색, 없으면 `missa_youth_hymn_pdf.build_hymn_
+  pptx()`로 생성 후 같은 폴더에 저장. 캐시 적중 여부와 무관하게 매번 `build_header_runs()`를
   다시 호출해 헤더를 이번 주 값(htype/제목)으로 강제 갱신.
-- **가톨릭성가**: §3.5(B)로 `'성가 {번호}(?!\\d)'` 패턴 검색. 제목 미입력 시 파일명
+- **가톨릭성가**: §3.5로 `'성가 {번호}(?!\\d)'` 패턴 검색. 제목 미입력 시 파일명
   (`성가 {번호} {제목}.pptx` 관례)에서 파싱해 폴백(2026-09-24 수정 — PDF 인덱스가 없어
   자동조회 불가능하므로 빈 문자열 방지). 헤더는 `_update_성가_header(..., label_override=
   _YOUTH_HEADER_LABEL.get(htype))`로 처리(청년 템플릿의 '2차봉헌' 콘텐츠 헤더가 공백 없는
@@ -469,36 +400,6 @@ file(remote_path, pattern)`으로 OneDrive를 재귀 검색(다운로드 없이 
   메모리에서만 쓰이고 파일로 저장되지 않았다). 성인 호출부는 `input_date_str=None`이라 100%
   하위호환.
 
-## 3.4.2 'PPT 문서' 루트·찾아보기 시작 폴더·결과창 복사 버튼 — 구현 완료(2026-10-03)
-
-요구사항은 `docs/missa_to_ppt 요구사항.md` §1.9(공통)·§2.1(C)(성인)·§3.3.1/§3.8(청년). 코드는 전부
-`missa_gui.py`의 한 절('PPT 문서' 루트…)에 모았고 하위 폴더명 하드코딩은 그 절에만 있다.
-
-- **루트 상태**: 청년은 기존 `_YOUTH_PPT_STATE`, 성인은 신규 `_ADULT_PPT_STATE['folder']`. 공용 조회 헬퍼
-  `get_ppt_root(mass_type)`(청년은 `mode=='local'`일 때만 폴더, 아니면 None). 성인 선택·검증은
-  `get_adult_ppt_folder(ask_if_missing)`/`_is_valid_adult_ppt_folder`(`09.가톨릭 성가` 포함 여부)/
-  `_select_adult_ppt_folder_interactively`. 우선순위: 캐시 → `onedrive_ppt_folder` →
-  `onedrive_hymn_folder`의 두 단계 위(기존 설정 역산, 저장은 안 함) → 선택창(선택 시
-  `onedrive_ppt_folder`+`onedrive_hymn_folder` 저장). 선택창은 `_run_gui_mode()`(성인)만
-  `ask_if_missing=True`로 호출한다(CLAUDE.md 규칙 20 — 다른 호출이 모달 앞에서 멈추지 않게).
-- **시작 폴더**: `_BROWSE_START_SUBPATHS`(공통/성인/청년 표) → `browse_start_subpath(mass_type, key)` →
-  `resolve_browse_start_dir(root, subpath)`(`_find_child_dir`가 공백 무시 비교, 없으면 있는 곳까지) →
-  `browse_initial_dir(mass_type, key)`가 `_browse()`의 `askopenfilename(initialdir=…)`에 쓰인다. 화답송(성인)은
-  `psalm_browse_start_dir()`(`last_psalm_dir` 우선) + 선택 후 `remember_psalm_dir()`. 청년 폴백 브라우저는
-  `_ask_onedrive_file_browser_popup(start_subpath=…)`가 `_expand_start_path()`로 해당 폴더까지 펼친다.
-  Graph 허용 폴더 상수는 실제 이름 `13.기도문`으로 정정.
-- **결과 복사**: `result_copy_dir`/`result_copy_exists`/`copy_result_to_onedrive`(순수 로직, 로컬이면
-  `shutil.copy2`, 청년 폴백이면 `ensure_folder`+`upload_file`) + 버튼 핸들러 `_copy_result_with_ui`(성인 루트
-  미설정 시 선택창 → 덮어쓰기 확인 → 복사 → 저장 폴더 안내/오류 안내). `_show_result_window()`가 `btn_frame`에서
-  '파일 열기' 바로 옆에 같은 글꼴(10pt bold)·폭 16의 버튼을 둔다(2026-10-04: 처음엔 3버튼 아래 작은 버튼이었음). 버튼 색은 `_RESULT_BTN_COLORS`(목업 C안: 파일 열기 #59001d, 복사 #871b24, 폴더 열기 #3f5a73, 닫기 흰 배경+#59001d 테두리). `main()`이
-  `_last_output_mass[0]`에 미사 유형을 기록한다. `main()`의 `[8.5] OneDrive 업로드`와
-  `_upload_youth_output_to_onedrive()`는 삭제됐다.
-- **PowerPoint 안내**: `_show_powerpoint_background_notice()`(messagebox)와 그 호출을 삭제하고,
-  `_run_with_progress_window()`가 진행 창 첫머리에 `_POWERPOINT_NOTICE_TEXT` 라벨을 만들어
-  `_POWERPOINT_NOTICE_SECONDS`(5)초 뒤 `after()`로 제거한다(진행 메시지 라벨과 별개라 동시 표시).
-- **테스트**: `tests/test_missa_youth_local_mode.py`(복사·성인 루트·시작 폴더·화답송), 진행 테스트 `j7a~c`·
-  `e1`(파이프라인이 업로드하지 않음) 갱신. `conftest.py`의 autouse 픽스처가 성인 루트·`_last_output_mass`도 격리.
-
 ## 3.8 `main()` 청년 배선
 
 - 미사 유형은 `--미사유형` CLI 플래그(`_dispatch_cli_or_gui()`가 `__main__` 최상단에서 처리)로
@@ -513,21 +414,10 @@ file(remote_path, pattern)`으로 OneDrive를 재귀 검색(다운로드 없이 
 - 결과 PPT는 `output/`에만 저장한다. 이전의 `_upload_youth_output_to_onedrive()`(자동 복사·Graph 업로드)는
   2026-10-03 삭제됐고, OneDrive 저장은 결과창 '원드라이브로 복사' 버튼(§3.4.2)이 맡는다.
 
-## 3.9 범위 밖 — Graph 미러링 캐시 역방향 업로드
-
-`resolve_youth_hymn_pptx()`가 나주노/야훼이레 PDF로 새 성가를 생성할 때, 지금 쓰는 `root`가
-Graph 미러링 캐시 폴더(§3.4의 구(舊) 전체 미러링 경로)와 정확히 같으면
-`missa_onedrive.upload_file()`로 되올리는 기능이 있다(`get_onedrive_youth_hymn_remote_path
-(root)`가 판단). §3.5(B)의 온디맨드 전환 이후 나주노/야훼이레가 더 이상 이 미러링 경로를
-기본으로 타지 않으므로, 실무에서 이 역업로드가 트리거되는 빈도는 줄었다 — 로컬 동기화 폴더가
-있는 개발 PC에서는 OneDrive 앱이 자동 업로드해주고, Graph 미러링 캐시로만 동작하는 PC에서는
-로컬 캐시에만 남아 다른 PC와 공유되지 않는다(회귀가 아니라 원래 "아직 완성하지 않은 개선").
-
 ## 3.10 청년 전용 테스트
 
 `tests/test_missa_regression.py`에 `test_y2_`(25개, F/S/H/G/C군) +
-`test_y2m_`(9개, main() 통합) 접두 테스트가 승격되어 있다. K/L그룹(OneDrive 프리페치·캐시)과
-E~J그룹(실사용자 검수 후속) 다수는 청년미사 전용 경로라 관련 스코프 테스트로만 검증되고
+`test_y2m_`(9개, main() 통합) 접두 테스트가 승격되어 있다. E~J그룹(실사용자 검수 후속) 다수는 청년미사 전용 경로라 관련 스코프 테스트로만 검증되고
 (사용자 지시로 전체 회귀 실행이 매번 생략된 라운드가 많음), 최종적으로 B/A/C/D 그룹 승격
 시점(2026-09-24)에 전체 스위트 322개 중 319 passed·3 deselected로 무회귀가 확인됐다. 상세
 목록·리뷰 왕복은 `docs/missa_to_ppt 구현 계획 변경이력.md` 참고.

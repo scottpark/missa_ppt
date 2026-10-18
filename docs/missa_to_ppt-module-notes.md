@@ -38,46 +38,12 @@ Tkinter 팝업 전부 + `is_sunday_mass`/config.json 로드·저장/`get_onedriv
 `_ask_combined_input_popup()`의 확인 버튼 아래 새 행(`_get_app_version()`이 읽은 버전
 텍스트 + `tk.Label(cursor='hand2')` 링크)에 재배선됐다.
 
-**2026-09-27(K1)**: `_prefetch_onedrive_children()`이 재귀로 확장돼 3개 허용 루트 폴더의
-모든 하위 폴더/파일을 한 번에 캐시에 채운다(실측: API 호출 9회·하위폴더 6개·파일 31개·
-최대 깊이 2·순차 총 22초 — 이 규모면 병렬화 불필요). `<<TreeviewOpen>>`이 거치는
-`_cached_onedrive_children()`의 "캐시에 있으면 네트워크 스킵" 계약 덕분에 재귀로 캐시를
-더 깊이 채우는 것만으로 하위 폴더 탐색도 캐시 히트가 된다.
-
-**2026-09-27(K2)**: OneDrive에서 받는 파일(공지사항/시작기도/미사후기도/성가 PPT 등)을
-날짜 폴더와 별개인 공유 캐시 폴더(`_ONEDRIVE_CACHE_ROOT = 'onedrive_cache'`)에 원본
-1부로 보관해, 매니페스트(`onedrive_cache/manifest.json`)에 기록된 lastModifiedDateTime이
-OneDrive 쪽과 **문자열 완전일치**할 때만 재다운로드를 스킵한다(`_resolve_onedrive_
-download()`). 신선도 판단은 K1의 프리페치 캐시와 무관하게 매번
-`missa_onedrive.get_item_metadata()`로 실시간 재확인한다 — K1 캐시 스냅샷을 실시간값으로
-오인해 "OneDrive가 더 최신이면 무조건 재다운로드" 불변조건이 깨지는 버그가 리뷰에서
-발견됐다(상세 사고 경위: `docs/ooxml-pitfalls-log.md` "서로 다른 목적의 캐시 계층이
-겹칠 때" 절).
-
-**2026-09-27(L1)**: `_start_onedrive_prefetch_thread()` 신설 — K1 재귀 프리페치를
-`_ask_combined_input_popup()`이 창을 띄우는 시점(청년미사만)으로 앞당겨, 로그인/네트워크
-상태와 무관하게 첫 입력창이 항상 즉시 뜨도록 보장한다(스레드 시작 자체가 논블로킹).
-`_ask_onedrive_file_browser_popup()`도 같은 헬퍼를 호출해 2차 안전망을 유지.
-
-**2026-09-27(L2)**: OneDrive 파일 선택(`_on_choose()`)이 다운로드를 기다리지 않고 결정적
-목적지 경로만 계산해 즉시 반환하고, 실제 다운로드는 generation 추적 백그라운드 스레드
-(`_download_worker`)로 넘긴다 — `_ensure_onedrive_blob_fresh()`(공유 캐시 blob만 최신화)
-와 `_commit_onedrive_blob_to_dest()`(순수 복사)로 분리해, 같은 슬롯을 같은 파일명으로
-재선택해도(시작기도/미사후기도/공지사항 등이 매주 다른 폴더에서 같은 이름으로 반복되는
-이 앱의 정상 관례) 구세대(느린) 다운로드가 최신 파일을 덮어쓰지 못하게 한다. 커밋은
-`_download_worker`가 `_download_lock` 안에서 generation을 재확인한 경우에만 수행한다 —
-최초 구현은 재확인이 메모리 상태만 보호하고 디스크 커밋은 무조건 수행해, "확인 성공 선언
-후 최신 파일이 조용히 구식 내용으로 역전"되는 버그가 있었다(서브프로세스 Tk 프로브로
-직접 재현·수정 확인).
-
-**2026-09-27(2차)**: 가톨릭성가/나주노/야훼이레 성가 조회가 폴더 전체 미러링에서 곡 단위
-온디맨드 조회로 전환됐다. `find_youth_onedrive_hymn_file()`이 (1) 로컬 캐시
-(`_SCRIPT_DIR/cache/...`) → (2) `_find_onedrive_file()`로 OneDrive 실시간 검색, 2단계만
-수행한다(로컬 동기화 폴더 우선검색 단계는 사용자 요청으로 제거됨). `get_onedrive_hymn_
-folder()`(성인미사 전용, 여전히 폴더 전체 미러링)는 이 변경과 무관 — `missa_to_ppt.py`의
-`mass_type == 'adult'` 경로에서만 쓰인다. `get_onedrive_youth_hymn_root()`/`get_onedrive_
-youth_hymn_remote_path()`는 이 전환 이후 프로덕션 코드에서 더 이상 호출되지 않는다(테스트
-전용으로만 남음 — 삭제 여부는 아직 결정 안 됨).
+**2026-10-18 (OneDrive 폴더 구조 개편)**: OneDrive 접근은 로컬 동기화 폴더 전용으로 단순화됐다. Graph 로그인 폴백·원격
+파일 브라우저(`_ask_onedrive_file_browser_popup`)·재귀 프리페치·다운로드 캐시(`onedrive_cache/`)·`ensure_onedrive_login`·
+Graph 미러링(`_mirror_onedrive_folder`/`_resolve_onedrive_folder`)과 그 K1/K2/L1/L2 계열 로직은 모두 삭제됐다. 대신
+루트 3종 관리(`get_root`/`ensure_ppt_roots`/`_ROOTS`), 경로 규칙(`ppt_subdir`), 성가 검색(`find_youth_hymn_file`), 찾아보기 시작
+폴더·행별 기억(`browse_initial_dir`/`remember_browse_dir`), 결과 복사(`result_copy_dir` 등)가 한 절에 모여 있다. 상세는
+`ARCHITECTURE.md` §3.3~3.5, 명세는 `SPECS/SPEC_OneDrive_폴더구조_개편.md`. 과거 설계 메모(2026-09-27 K/L 그룹)는 git 이력에 있다.
 
 ## `missa_reading_layout.py` — 독서·복음 레이아웃 엔진
 
@@ -144,32 +110,6 @@ Tesseract OCR 1회 생성 — 재생성 툴 `tools/build_나주노_copyright_cac
 경로에서 이 모듈을 호출해 새 성가 PPT를 만든다(2026-09-27부터: OneDrive/로컬 캐시 어디서도
 곡을 못 찾았을 때만).
 
-## `missa_onedrive.py` — Microsoft Graph API 접근
-
-성당 공용 계정(brokenbaykccppt@gmail.com) 하나로 Microsoft Graph API(Device Code Flow)에
-접근하는 완전 독립 leaf 모듈(다른 프로젝트 모듈을 import하지 않는다). `list_children`/
-`ensure_folder`/`upload_file`/`download_file`/`get_item_metadata`.
-
-**주의**: 이 계정의 OneDrive에서 최상위 경로 `PPT 문서`는 진짜 폴더가 아니라 **다른
-드라이브를 가리키는 공유 바로가기(remoteItem)**다 — 경로 기반 주소(`root:/PPT 문서/...:`)
-는 이 바로가기를 통과하지 못해 하위 경로 조회가 404/422로 실패한다. `_resolve_remote_
-base()`/`_ensure_base_resolved()`가 첫 경로 세그먼트의 remoteItem 여부를 실제 GET으로
-확인해 `_REMOTE_ITEM_CACHE`(프로세스 수명 캐시)에 저장하고, remoteItem이면 `_item_url()`이
-`/drives/{driveId}/items/{itemId}/...` 주소로 전환한다. "경로 문자열만 올바르게 이어붙이면
-Graph가 알아서 찾아줄 것"이라고 가정하면 이 함정이 재발한다 — 최상위 경로가 공유
-바로가기인지 아닌지는 실제 API 응답(`remoteItem` 파셋 유무)으로만 알 수 있다.
-
-**성능(2026-09-26)**: `get_access_token()`이 호출마다 `msal.PublicClientApplication(...)`을
-새로 생성하면 그 생성 자체가 약 0.9~1.0초 걸린다(`AUTHORITY`가 네트워크 기반이라 생성자
-안에서 매번 instance discovery를 재수행하는 것으로 추정). `_APP_CACHE`(모듈 레벨
-`[app, cache]`)와 `_get_app()`으로 프로세스 수명 동안 앱 인스턴스를 1회만 생성해 재사용
-하도록 수정(MSAL 공식 권장 패턴). 실측: 앱 생성 단독 1.131초 → 캐시 재사용 0.000000초.
-
-**2026-09-27**: `get_item_metadata(path)` 신설 — children 없이 항목 메타데이터만 GET
-(404→FileNotFoundError, `list_children`/`download_file`과 동일 에러 관례).
-`missa_gui._resolve_onedrive_download()`가 로컬 캐시 재사용 여부를 판단할 때
-`lastModifiedDateTime`/`eTag`를 실시간으로 확인하는 용도.
-
 ## `missa_updater.py` — GitHub 기반 자동 업데이트
 
 배포 형태를 PyInstaller exe에서 "Python 인터프리터 + run_missa.bat 런처"로 전환하면서
@@ -222,4 +162,4 @@ Pillow 추정 줄 수를 실제 PowerPoint COM 자동화로 검증. `Application
 | 2026-10-06 | (1) 글로벌 `~/.claude/CLAUDE.md`에 4단계 문서 체계(PRD·SPECS·ARCHITECTURE·IMPLEMENTATION_PLAN)·요구사항 변경 승인 절차·Sonnet 기본 규칙 추가. (2) `mass-ppt-dev`에 "Phase A 문서 승인 게이트" 신설(PRD/SPEC→ARCHITECTURE→IMPLEMENTATION_PLAN 각 사용자 승인, PLAN 승인 후 구현·리뷰·검증·문서동기화는 자동 연속, 소규모 변경은 체크리스트 경량 경로), 서브에이전트 모델 `opus`→`sonnet`. (3) `docs-sync`를 새 문서 체계 기준으로 재작성(변경 이력 부록 폐지, git 이력 대체). (4) 에이전트 `mass-template-architect`·`ooxml-code-reviewer`에 `model: sonnet` 추가, `ppt-ooxml-specialist`·`boundary-verification`·`mass-template-analysis`의 옛 문서 경로 갱신. (5) 기존 요구사항·구현 계획을 `docs/PRD.md`·`SPECS/`·`ARCHITECTURE.md`·`IMPLEMENTATION_PLAN.md`로 이관(원문은 `docs/archive/legacy-2026-10-06/`), 프로젝트 `CLAUDE.md` 갱신 | `~/.claude/CLAUDE.md`, mass-ppt-dev·docs-sync 스킬, 에이전트 4종, 프로젝트 CLAUDE.md, docs/ | 요구사항 변경 시 문서 선행·단계별 승인으로 범위 확장과 재작업 방지, 어린이미사 도입에 앞서 문서 체계 정비, 기본 모델 Sonnet 통일 |
 | 2026-10-06 | `harness:harness` 스킬 절차(Phase 0 감사·7-2 피드백→대상 매핑·7-3 이력·7-5 유지보수)로 같은 날 앞선 변경을 **소급 점검**. 감사: 에이전트 4·스킬 6이 CLAUDE.md 구성과 일치(drift 없음), 잔존 `opus` 지정 없음. 매핑: ①문서 체계·승인 게이트→`mass-ppt-dev`(워크플로우)·`docs-sync`(스킬)·글로벌/프로젝트 CLAUDE.md ②Sonnet 기본→에이전트 4종 frontmatter·스킬 내 서브에이전트 호출 ③이력 기록 의무→프로젝트 CLAUDE.md·mass-ppt-dev·docs-sync. 보완: (a) 글로벌 `~/.claude/CLAUDE.md`에 "하네스 요청은 `harness:harness` 스킬 선호출" 규칙 추가, (b) `mass-ppt-dev` Phase 8에 피드백 요청 단계(진화 7-1) 추가. **편차 기록**: 스킬 기본값은 모든 에이전트 `model: "opus"`이나 사용자 지시(Sonnet 기본)를 따름; 변경 이력 위치는 스킬 기본(CLAUDE.md 표)과 달리 이 문서 표(사용자 지정) | 글로벌 CLAUDE.md, mass-ppt-dev/SKILL.md | 같은 날 앞선 하네스 변경을 harness 스킬 없이 직접 수정해 감사·매핑·이력 절차가 누락됨(사용자 지적) — 원인: 요청 문구("하네스 개선")에 스킬을 호출하지 않고 파일 직접 수정으로 처리, 스킬 선호출 규칙이 없었음 |
 | 2026-10-06 | `harness:harness` 스킬 절차(Phase 0 감사→7-5 유지보수)로 하네스 플러그인(`~/.claude/plugins/cache/harness-marketplace/harness/1.2.0`)의 에이전트 모델 기본값을 `opus`→`sonnet`으로 변경(SKILL.md 모델 설정·체크리스트, references/agent-design-patterns.md·orchestrator-template.md). 프로젝트 에이전트 4종·`mass-ppt-dev`는 이미 sonnet이라 변경 없음(감사 확인). 앞선 행의 "스킬 기본값과 편차" 중 모델 편차는 해소됨. 주의: 플러그인 캐시 수정이라 플러그인 업데이트 시 덮어써질 수 있어 글로벌 `~/.claude/CLAUDE.md`의 Sonnet 규칙을 유지(이중 안전장치) | 하네스 플러그인 1.2.0 | 사용자 요청: 하네스에서 모든 에이전트를 Opus로 설정하는 것을 Sonnet으로 변경 |
-
+| 2026-10-18 | `harness:harness` 스킬 절차(Phase 0 감사→7-5)로 **"질문 선행" 단계 도입**: 새 기능/변경 요구 시 ①옵션(권장안 첫 번째) 포함 열린 질문(AskUserQuestion)→②답변→③답변 반영한 요구사항·SPEC 작성(확정 결정 기록, 열린 질문 잔존 금지)→④사용자 리뷰. 감사: 에이전트 4·스킬 6 구성 drift 없음. 매핑: 워크플로우 순서 변경→`mass-ppt-dev`(Phase A 0단계 신설)·harness 스킬 Phase 0-A(local-marketplaces/harness-custom)·글로벌 `~/.claude/CLAUDE.md`(문서 체계 + 플러그인 변경 이력 표). **편차 없음**(모델 Sonnet 유지) | `mass-ppt-dev/SKILL.md`, harness SKILL.md, 글로벌 CLAUDE.md, 프로젝트 CLAUDE.md | 스펙 문서 끝에 열린 질문을 남기고 리뷰를 요청하던 방식이 번거롭다는 사용자 요청 |

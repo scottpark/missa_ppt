@@ -24,4 +24,6 @@ leaf 모듈)와 2단계(배포 전환·OneDrive 인증·전체 파이프라인 �
 - 업데이트는 앱 실행 시 자동이 아니라 "업데이트 확인" 버튼을 눌렀을 때만(`missa_updater.py`,
   GitHub commit SHA 비교 → zip 다운로드 → `*.py`/`*.spec`/`VERSION`/`assets/`/운영자 안내서(`README_*미사_운영자.md`,
   설치 폴더에 이미 있는 것만) 화이트리스트만 교체, `config.json`/`output/`/`reference/`/`cache/`/`.git/`은 절대 덮어쓰지 않음).
+  확인·내려받기·압축 풀기·파일 교체 전 과정은 취소할 수 없는 모달 진행 창(단계 문구 + 프로그레스 바 + MB/파일 수 상세)으로
+  표시한다(`SPEC_업데이트_진행바.md`).
 

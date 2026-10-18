@@ -54,7 +54,7 @@ from missa_gui import (
     output_folder_key, get_onedrive_hymn_folder, is_sunday_mass, _ask_numbers_popup,
     _ask_date_popup, _ask_input_files_popup, _ask_combined_input_popup,
     _ask_youth_hymn_popup, _report_progress, _run_with_progress_window, _show_result_window,
-    ensure_onedrive_login, get_youth_ppt_mode, get_adult_ppt_folder,
+    ensure_ppt_roots,
 )
 from missa_reading_layout import (
     parse_into_verse_units,
@@ -1343,6 +1343,19 @@ def _show_children_mass_not_supported_message() -> None:
     _root.destroy()
 
 
+def _show_root_required_message(mass_type: str) -> None:
+    """OneDrive 폴더 선택이 취소됐을 때의 종료 안내. 성가 조회·결과 복사·찾아보기 시작 위치가 모두 이 폴더에
+    의존하므로 폴더 없이는 진행하지 않는다."""
+    import tkinter as tk
+    from tkinter import messagebox
+    _root = tk.Tk()
+    _root.withdraw()
+    messagebox.showinfo('OneDrive 폴더 필요',
+                        'OneDrive 폴더가 선택되지 않아 프로그램을 종료합니다.\n'
+                        '다시 실행해 폴더를 선택해 주세요.')
+    _root.destroy()
+
+
 def _run_gui_mode(mass_type_kr: str) -> None:
     """CLI에서 date 없이 실행됐을 때(§J3) GUI 입력 흐름 전체를 담당한다. 원래는 `__main__`
     이 먼저 `_ask_mass_type_popup()`으로 미사 유형을 물은 뒤 이 흐름을 이어갔는데, 그
@@ -1352,39 +1365,13 @@ def _run_gui_mode(mass_type_kr: str) -> None:
     성가선택 팝업 → 진행률 창 → 결과 창)은 기존과 완전히 동일하다."""
     _mass_type = _resolve_mass_type(mass_type_kr)
 
-    # 청년미사는 통합 입력 팝업(_ask_combined_input_popup) 자체가 OneDrive 커스텀 파일
-    # 브라우저(§A5)를 쓰므로, 로그인은 그 팝업을 열기 **전에** 끝나 있어야 한다 — 원래는
-    # 성가 교체 워커 스레드 시작 직전(아래)에만 로그인했는데, 그러면 이 팝업이 먼저 열려
-    # 로그인 안 된 상태로 '찾아보기'를 누르게 된다(청년미사 성가 자료 조회와 별개로,
-    # 파일 브라우저도 같은 access token을 쓰므로 이 시점에 한 번만 끝내면 아래
-    # ensure_onedrive_login() 재호출은 캐시 히트로 조용히 통과한다).
-    if _mass_type == 'youth' and get_youth_ppt_mode(ask_if_missing=True) == 'fallback':
+    # OneDrive 폴더 루트(공용+해당 미사 유형)를 입력창보다 먼저 확보한다 — 첫 화면 '찾아보기' 시작 폴더와
+    # 성가 조회·결과 복사가 모두 이 루트를 쓴다. 취소하면 안내 후 종료(로그인 폴백은 폐지됐다).
+    if not ensure_ppt_roots(_mass_type, ask_if_missing=True):
 
-        try:
+        _show_root_required_message(_mass_type)
 
-            ensure_onedrive_login()
-
-        except Exception as e:
-
-            import tkinter as tk
-
-            from tkinter import messagebox
-
-            _err_root = tk.Tk()
-
-            _err_root.withdraw()
-
-            messagebox.showerror('OneDrive 로그인 실패', f'OneDrive 로그인에 실패했습니다:\n{e}')
-
-            _err_root.destroy()
-
-            sys.exit(0)
-
-    if _mass_type == 'adult':
-
-        # 최초 1회 'PPT 문서' 폴더 선택(취소해도 기존 방식으로 진행). 첫 화면 시작 폴더·결과 복사에 쓰인다.
-
-        get_adult_ppt_folder(ask_if_missing=True)
+        sys.exit(0)
 
     try:
 
@@ -1425,11 +1412,6 @@ def _run_gui_mode(mass_type_kr: str) -> None:
         '성가_선택':     _성가_선택,
 
     }
-
-    # 성가 자료(OneDrive) 로그인은 이제 위(_ask_combined_input_popup 호출 전)에서 이미
-    # 끝냈다 — 캐시된 토큰이 있으므로 워커 스레드 안에서 다시 필요해져도 조용히
-    # 통과한다(2026-09-19 "성가 교체..." 88% 무한 대기 버그 수정 원칙 유지, §A5로 로그인
-    # 시점만 더 앞으로 당김).
 
     _out_text, _err_text = _run_with_progress_window(main)
 

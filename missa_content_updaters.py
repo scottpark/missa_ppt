@@ -1621,11 +1621,9 @@ def resolve_youth_hymn_pptx(entry: dict, htype: str):
       build_header_runs()와 _update_성가_header()는 run 구조 전제가 달라 서로의 자리에
       쓰면 안 됨).
 
-    세 출처 모두 2026-09-27부터 `missa_gui.find_youth_onedrive_hymn_file()`로 "필요한 곡
-    하나만" 찾아 받는다 — 이전에는 `get_onedrive_hymn_folder()`/`get_onedrive_youth_hymn_
-    root()`가 폴더 전체를 미러링해서(가톨릭성가 34곡 등) 그날 실제로 쓰는 5곡만 필요한데도
-    전부 내려받았다. 성인미사는 이 변경과 무관하다(get_onedrive_hymn_folder()는 여전히
-    `mass_type == 'adult'`로 좁혀진 missa_to_ppt.py 호출부에서만 쓰인다).
+    세 출처 모두 로컬 OneDrive 폴더에서 "필요한 곡 하나만" 찾는다(`missa_gui.find_youth_hymn_file()`):
+    가톨릭성가는 `{공용}/09.가톨릭 성가/성가-악보버전`, 나주노·야훼이레는 `{청년}/2.성가/{출처 폴더}`
+    (2026-10-18 폴더 구조 개편 — OneDrive 로그인 폴백은 폐지됐다).
     """
     출처 = entry.get('출처')
     번호 = entry.get('번호')
@@ -1641,20 +1639,13 @@ def resolve_youth_hymn_pptx(entry: dict, htype: str):
     if 번호 is None:
         raise ValueError(f"{출처} 출처는 번호가 필수입니다.")
 
-    from missa_gui import (
-        find_youth_onedrive_hymn_file, get_youth_ppt_mode, youth_local_subdir,
-        _DEFAULT_ONEDRIVE_HYMN_PATH, _DEFAULT_ONEDRIVE_YOUTH_HYMN_PATH, _load_config,
-    )
+    from missa_gui import find_youth_hymn_file, ppt_subdir
 
     if 출처 == '가톨릭성가':
         pattern = rf'성가 {번호}(?!\d)'
-        found = find_youth_onedrive_hymn_file(
-            remote_path_key='onedrive_hymn_path',
-            default_remote_path=_DEFAULT_ONEDRIVE_HYMN_PATH, subfolder=None,
-            pattern=pattern, cache_subdir='청년_가톨릭성가', local_kind='catholic_hymn',
-        )
+        found = find_youth_hymn_file('catholic_hymn', None, pattern)
         if not found:
-            raise FileNotFoundError(f'가톨릭성가 {번호} 성가 PPT를 OneDrive에서 찾을 수 없습니다.')
+            raise FileNotFoundError(f'가톨릭성가 {번호} 성가 PPT를 OneDrive 폴더에서 찾을 수 없습니다.')
         # 가톨릭성가는 나주노/야훼이레(PDF 인덱스)와 달리 제목을 조회할 소스 자체가 없고,
         # UI(_ask_youth_hymn_popup, §A6)도 이 출처는 번호만 받아 제목 입력칸을 보여주지
         # 않는다 — `제목 or ''`만 쓰면 항상 빈 문자열이 되어 title 슬라이드에 제목이
@@ -1671,12 +1662,7 @@ def resolve_youth_hymn_pptx(entry: dict, htype: str):
 
     subfolder = yh.SOURCES[출처]['onedrive_subfolder']
     prefix = f'{출처} 성가 {번호} '
-    existing = find_youth_onedrive_hymn_file(
-        remote_path_key='onedrive_youth_hymn_path',
-        default_remote_path=_DEFAULT_ONEDRIVE_YOUTH_HYMN_PATH, subfolder=subfolder,
-        pattern='^' + re.escape(prefix), cache_subdir=f'청년미사_성가/{subfolder}',
-        local_kind='youth_hymn',
-    )
+    existing = find_youth_hymn_file('youth_hymn', subfolder, '^' + re.escape(prefix))
 
     # 제목: 입력값 → (이미 만든 파일이 있으면) 그 파일명 → PDF 조회 순. 저장 때 파일명을
     # '{prefix}{제목}.pptx'로 만들었으므로 파일명 제목이 곧 PDF 제목이다. PDF 조회(나주노는 TOC, 야훼 이레는
@@ -1693,34 +1679,13 @@ def resolve_youth_hymn_pptx(entry: dict, htype: str):
         src_prs = yh.build_hymn_pptx(htype, 출처, 번호, resolved_title)
         filename = f'{prefix}{resolved_title}.pptx'
 
-        # 저장 위치도 find_youth_onedrive_hymn_file()과 같은 모드를 따른다(§3.3.1) — 로컬
-        # 모드면 'PPT 문서' 아래 성가 폴더에 저장하고(OneDrive 앱이 동기화하므로 직접 업로드
-        # 하지 않음), 폴백 모드면 로컬 캐시에 저장한 뒤 Graph로 업로드한다.
-        local_mode = get_youth_ppt_mode() == 'local'
-        if local_mode:
-            dest_dir = youth_local_subdir('youth_hymn', subfolder)
-        else:
-            from missa_gui import _SCRIPT_DIR
-            dest_dir = _SCRIPT_DIR / 'cache' / '청년미사_성가' / subfolder
-        local_path = dest_dir / filename
+        # `{청년}/2.성가/{출처 폴더}`에 저장한다(OneDrive 앱이 동기화하므로 직접 업로드하지 않는다).
+        local_path = ppt_subdir('youth_hymn', subfolder) / filename
         try:
-            dest_dir.mkdir(parents=True, exist_ok=True)
+            local_path.parent.mkdir(parents=True, exist_ok=True)
             src_prs.save(str(local_path))
         except Exception as e:
-            print(f'  [경고] {출처} {번호} 성가 PPT 캐시 저장 실패: {e}')
-        else:
-            if not local_mode:
-                config = _load_config()
-                remote_root = config.get('onedrive_youth_hymn_path', _DEFAULT_ONEDRIVE_YOUTH_HYMN_PATH)
-                import missa_onedrive as od
-                remote_path = f'{remote_root}/{subfolder}/{filename}'
-                try:
-                    od.upload_file(remote_path, local_path)
-                    print(f'  [OneDrive] {출처} {번호} 성가 PPT를 OneDrive에 업로드했습니다.')
-                except Exception as e:
-                    print(f'  [경고] {출처} {번호} 성가 PPT를 OneDrive에 업로드하지 못했습니다'
-                          f'({e}) — 이 PC에는 저장돼 계속 쓸 수 있지만, 다른 PC와는 공유되지'
-                          f' 않습니다. OneDrive 로그인/네트워크 상태를 확인해 주세요.')
+            print(f'  [경고] {출처} {번호} 성가 PPT 저장 실패: {e}')
 
     for slide in src_prs.slides:
         yh.build_header_runs(slide, htype, 출처, 번호, resolved_title)

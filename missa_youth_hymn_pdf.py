@@ -59,6 +59,25 @@ _MIN_STAFF_ROWS = 8           # 세그먼트에 오선행이 이만큼 있으면
 _SYSTEM_GAP_RATIO = 0.017
 _SYSTEM_GAP_MIN = 20
 
+# 오선 시스템 판정 보강(2026-10-18, 나주노 697곡 전수 실측). 스캔이 기울거나 흐린 곡(479/123/127/
+# 495 등)은 오선이 여러 행에 번져 row_fill이 0.4를 못 넘어 진짜 시스템이 _MIN_STAFF_ROWS 미만으로
+# 탈락했다(479는 5줄 중 3줄만 생성). row_fill 대신 **열 연속 커버리지**(세그먼트 안에서 잉크가
+# 끊김 없이 이어지는 가장 긴 가로 구간 / 콘텐츠 폭)로 오선을 판정한다: 오선은 기울어도 전폭에
+# 걸쳐 이어지지만(실측 시스템 99% 이상 ≥0.89) 제목·작곡가·저작권 텍스트는 단어 사이 공백 때문에
+# 낮다(실측 저작권 ≤0.889, 대부분 ≤0.78, 제목 ≤0.52). 저작권(≤85px)과 겹치는 0.85~0.89 구간은
+# 높이로 가른다: 흐린 진짜 시스템은 높이 ≥190px, 저작권 줄은 ≤85px.
+_SYSTEM_MIN_COVERAGE = 0.80
+_SYSTEM_MIN_HEIGHT = 150
+_SYSTEM_MIN_PEAK_FILL = 0.30   # 높이 경로의 오선 밀도 하한(가사 줄 row_fill은 이보다 낮다)
+_TRAILING_TEXT_MAX_HEIGHT = 200  # 흡수할 보충줄 블록의 최대 높이(가사 3~4줄 ≈127px, 359번). 다음 곡 제목은 곡 영역 절단으로 이미 제외
+_COVERAGE_BRIDGE_PX = 8       # 이보다 짧은 잉크 끊김(스캔 드롭아웃)은 이어진 것으로 본다
+# 시스템 바로 아래에 붙은 가사 보충줄(2절 가사 "2.예--수" 등, 공백행 ≥_SYSTEM_GAP_MIN로 분리돼
+# 별도 세그먼트가 된 것)을 앞 시스템에 흡수하는 최대 간격(px@300dpi). 468번 2절 가사가 잘렸던
+# 원인. 페이지 하단 _COPYRIGHT_ZONE_RATIO 아래(저작권 줄)는 흡수하지 않는다.
+_TRAILING_TEXT_MAX_GAP = 120
+_COPYRIGHT_ZONE_RATIO = 0.90
+_COPYRIGHT_LINE_MAX_H = 45      # 저작권 한 줄의 최대 높이(px@300dpi) — 넘으면 2줄 블록으로 본다
+
 # 실행 파일 옆 자산 폴더(missa_psalm_score_image._BASE와 동일 관용, PyInstaller onefile 회피).
 _BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 
@@ -307,10 +326,47 @@ def _nonblank_runs(row_ink: np.ndarray):
 _SYSTEM_LINE_MERGE_GAP = 40
 
 
-def _split_merged_systems(row_fill: np.ndarray, row_ink: np.ndarray, t: int, b: int) -> list:
+def _staff_threshold(row_fill: np.ndarray, t: int, b: int) -> float:
+    """세그먼트 [t,b]의 오선행 임계. 기본 _STAFF_ROW_FILL이되, 오선이 번진 흐린 스캔은 그
+    세그먼트 최대 row_fill의 60%까지 낮춘다(479 시스템4·5는 max 0.44라 0.40 기준으로는 2~4행)."""
+    return min(_STAFF_ROW_FILL, 0.6 * float(row_fill[t:b + 1].max()))
+
+
+_CHORD_MAX_GAP = 35   # 다음 시스템 오선 바로 위 화음 줄로 볼 수 있는 최대 간격(px@300dpi)
+_THIN_BLOCK_H = 8      # 이 높이 이하의 글줄 블록은 글자가 아니라 가로선(볼타 괄호 등)으로 본다
+_BLOCK_MIN_INK = 5    # 이 이상 잉크가 있는 행만 '글줄'로 센다(스캔 얼룩 행 ≤7px 무시용 하한)
+
+
+def _system_boundary(row_ink: np.ndarray, lo: int, hi: int) -> int:
+    """오선 군집 사이 구간 (lo, hi)에서 두 시스템의 경계 행.
+
+    사이 구간을 글줄 블록(행 잉크 ≥ _BLOCK_MIN_INK의 연속 구간)으로 나눈다. 마지막 블록이 다음
+    시스템 오선 바로 위(≤ _CHORD_MAX_GAP)면 그것은 다음 시스템의 화음 줄이므로 그 위에서 자르고
+    (앞 블록들=가사 1·2째 줄 등은 윗 시스템 몫), 아니면 모든 블록이 윗 시스템 가사이므로 마지막
+    블록 아래에서 자른다. 블록이 없으면 중간점.
+
+    이전 방식(군집 중간점 → 692 가사 2째 줄 잘림, 가장 긴 공백 런 → 212 가사줄이 아랫 시스템으로
+    넘어감)은 줄 간격이 곡마다 달라 어긋났다. 화음 줄은 항상 오선에 바짝 붙는다는 구조적 단서를 쓴다."""
+    blocks = _nonblank_runs((row_ink[lo + 1:hi] >= _BLOCK_MIN_INK).astype(int))
+    if not blocks:
+        return (lo + hi) // 2
+    ls, le = blocks[-1]
+    last_start, last_end = lo + 1 + ls, lo + 1 + le
+    if hi - last_end <= _CHORD_MAX_GAP:
+        # 화음 줄 바로 위의 얇은 선(반복 종지 괄호 '1.'/'2.'의 가로선, ≤_THIN_BLOCK_H)도 다음 시스템 몫
+        k = len(blocks) - 1
+        while k > 0 and blocks[k - 1][1] - blocks[k - 1][0] + 1 <= _THIN_BLOCK_H                 and blocks[k][0] - blocks[k - 1][1] <= _CHORD_MAX_GAP:
+            k -= 1
+            last_start = lo + 1 + blocks[k][0]
+        return max(lo + 1, last_start - 1)
+    return min(hi - 1, last_end + 1)
+
+
+def _split_merged_systems(row_fill: np.ndarray, row_ink: np.ndarray, t: int, b: int,
+                          ink: np.ndarray = None, left: int = 0, right: int = 0) -> list:
     """[t, b] 세그먼트가 실제로는 여러 시스템인데 공백행 연속 길이 기반 1차 분할
-    (detect_system_bands의 _SYSTEM_GAP_MIN/RATIO)이 하나로 합쳐버린 경우, 오선행
-    (row_fill>_STAFF_ROW_FILL) 밀도 군집으로 다시 쪼갠다.
+    (_page_segments의 _SYSTEM_GAP_MIN/RATIO)이 하나로 합쳐버린 경우, 오선행
+    (row_fill>_staff_threshold) 밀도 군집으로 다시 쪼갠다.
 
     1차 분할이 이미 시스템 하나만 올바르게 담고 있으면(대다수 곡) 오선행 군집도 하나뿐이라
     [(t, b)] 그대로(입력과 동일) 반환해 기존 동작과 완전히 같다 — 여러 시스템이 실제로
@@ -319,12 +375,16 @@ def _split_merged_systems(row_fill: np.ndarray, row_ink: np.ndarray, t: int, b: 
     **발견 경위 (2026-10-04):** 나주노 172번("나의 고백") 페이지에서 시스템 2~9 사이의
     여백 구간에 가사 꼬리 등 미세한 잉크가 산발적으로 섞여 있어, 공백행(row_fill<0.005)
     연속 런이 전부 _SYSTEM_GAP_MIN(45px) 밑으로 끊겼다(실측 최대 36px) — 그 결과
-    detect_system_bands()가 시스템 8개를 세그먼트 하나로 합쳐, 생성된 PPT가 슬라이드 1장에
+    시스템 8개가 세그먼트 하나로 합쳐져, 생성된 PPT가 슬라이드 1장에
     시스템 1개(정상), 슬라이드 2장째에 8개를 욱여넣은(가독 불가) 결과를 냈다. 오선행
     밀도만 보는 군집화는 가사/화음 텍스트의 잉크 유무에 흔들리지 않는다(시스템 내부 간격
     21px 이하 vs 시스템 사이 간격 60px 이상 — 10배 이상 margin, 실측 상세는
-    docs/ooxml-pitfalls-log.md 참고)."""
-    staff_rows = np.where(row_fill[t:b + 1] > _STAFF_ROW_FILL)[0] + t
+    docs/ooxml-pitfalls-log.md 참고).
+
+    **경계 보정 (2026-10-18):** 시스템 사이 경계는 군집 중간점이 아니라 두 군집 사이 가장 긴
+    화음 줄 단서로 정한다(`_system_boundary`; 692번 가사 2째 줄 잘림, 212번 가사줄 이동)."""
+    thr = _staff_threshold(row_fill, t, b)
+    staff_rows = np.where(row_fill[t:b + 1] > thr)[0] + t
     if not len(staff_rows):
         return [(t, b)]
 
@@ -343,24 +403,27 @@ def _split_merged_systems(row_fill: np.ndarray, row_ink: np.ndarray, t: int, b: 
     # 막던 것과 동일한 기준(_MIN_STAFF_ROWS)을 재사용한다.
     accepted = [
         (gs, ge) for gs, ge in groups
-        if int(np.sum(row_fill[gs:ge + 1] > _STAFF_ROW_FILL)) >= _MIN_STAFF_ROWS
+        if int(np.sum(row_fill[gs:ge + 1] > thr)) >= _MIN_STAFF_ROWS
+        # 굵은 제목 숫자 행 군집이 오선으로 세어지지 않게 열 커버리지도 확인한다
+        and (ink is None or _column_coverage(ink, left, right, gs, ge) >= _SYSTEM_MIN_COVERAGE)
     ]
 
     if len(accepted) <= 1:
         return [(t, b)]
 
-    # 시스템 사이 경계는 인접 군집의 중간점. 첫/마지막 시스템은 원래 세그먼트 경계(t/b)까지
-    # 확장한 뒤, 각 구간 안의 실제 잉크 범위로 다시 트림한다(1차 분할의 seg_rows 트림과
-    # 동일한 원칙).
+    # 첫/마지막 시스템은 원래 세그먼트 경계(t/b)까지 확장한 뒤, 각 구간 안의 실제 잉크
+    # 범위로 다시 트림한다(1차 분할의 seg_rows 트림과 동일한 원칙).
     bounds = (
         [t]
-        + [(accepted[i][1] + accepted[i + 1][0]) // 2 for i in range(len(accepted) - 1)]
+        + [_system_boundary(row_ink, accepted[i][1], accepted[i + 1][0])
+           for i in range(len(accepted) - 1)]
         + [b]
     )
 
     result = []
     for i in range(len(accepted)):
-        win_t, win_b = bounds[i], bounds[i + 1]
+        win_t = bounds[i] + (1 if i else 0)   # 경계 행은 윗 시스템 몫 — 인접 밴드가 한 행도 겹치지 않게
+        win_b = bounds[i + 1]
         ink_rows = np.where(row_ink[win_t:win_b + 1] > 0)[0]
         if not len(ink_rows):
             continue
@@ -385,16 +448,58 @@ def _trim_top_above_chords(row_ink: np.ndarray, t: int, staff_top: int) -> int:
     return t + blocks[-1][0]
 
 
-def detect_system_bands(gray: np.ndarray) -> list:
-    """오선보 시스템별 세로 밴드 [(top, bottom), …]를 반환(상단 제목/작곡가·하단 저작권 제외).
+def _system_top(ink: np.ndarray, row_ink: np.ndarray, row_fill: np.ndarray,
+                left: int, right: int, t: int, b: int, first: bool = True) -> int:
+    """시스템 밴드 [t,b]의 crop 상단(오선 위 작곡가/제목 제외, 화음 줄은 포함).
 
-    1) 콘텐츠 좌우 경계로 트리밍한 폭 기준 행별 잉크 비율(row_fill)을 구한다.
-    2) 공백 밴드(row_fill<0.005)가 시스템 간격(_SYSTEM_GAP_MIN 이상)이면 세그먼트 경계로 삼아
-       콘텐츠를 세그먼트로 분할한다(그보다 짧은 공백은 시스템 내부로 병합).
-    3) 세그먼트 중 오선행(row_fill>0.5)이 _MIN_STAFF_ROWS 이상인 것만 '시스템'으로 인정.
-       오선이 없는 세그먼트(상단 제목/작곡가 줄, 하단 저작권 줄)는 자연히 제외된다 — 번호가
-       좌/우 어디 있든 동일(146 제목·번호 좌우 반대여도 동작, 요구사항 §추가 검증).
-    """
+    [t,b]를 잉크 없는 행 기준 블록으로 나눠 **오선을 담은 첫 블록**(열 커버리지 ≥
+    _SYSTEM_MIN_COVERAGE, 높이 ≥ _SYSTEM_MIN_HEIGHT//5)을 찾고, 그 블록 **자신의** row_fill 최대값
+    기준 임계(_staff_threshold)로 첫 오선행(staff_top)을 잡은 뒤 _trim_top_above_chords로 위쪽
+    블록을 정리한다. 임계를 세그먼트 전체가 아니라 오선 블록 안에서만 계산하므로 굵은 제목 숫자
+    행(122)이 오선으로 오인되지 않고, 오선에 화음이 붙은 블록 앞의 작곡가 블록(173·362·146)도
+    예전처럼 잘려 나간다. 오선 블록을 못 찾으면 t.
+
+    **첫 시스템에서만** 쓴다(`first`): 작곡가·제목은 곡 맨 위에만 있다. 둘째 이후 시스템은 시스템 경계
+    (`_system_boundary`)나 세그먼트 첫 잉크 행이 이미 상단이므로, 여기서 위 블록을 또 버리면 반복 종지
+    괄호(1./2. 볼타 선)가 잘려 나간다(독립 재리뷰 지적: 107·332·255 등 약 30곡)."""
+    if not first:
+        return t
+    blocks = _nonblank_runs(row_ink[t:b + 1])
+    for bs, be in blocks:
+        if be - bs + 1 < _SYSTEM_MIN_HEIGHT // 5:
+            continue
+        if _column_coverage(ink, left, right, t + bs, t + be) < _SYSTEM_MIN_COVERAGE:
+            continue
+        top, bot = t + bs, t + be
+        thr = _staff_threshold(row_fill, top, bot)
+        rows = np.where(row_fill[top:bot + 1] > thr)[0]
+        staff_top = top + int(rows.min()) if len(rows) else top
+        return _trim_top_above_chords(row_ink, t, staff_top)
+    return t
+
+
+def _column_coverage(ink: np.ndarray, left: int, right: int, t: int, b: int) -> float:
+    """[t,b] 행 범위에서 잉크가 끊김 없이(<=_COVERAGE_BRIDGE_PX 틈은 이어 붙임) 이어지는 가장
+    긴 가로 구간 / 콘텐츠 폭. 오선은 기울거나 흐려도 전폭에 걸쳐 이어져 ~1.0, 텍스트 줄은 단어
+    사이 공백 때문에 낮다."""
+    col = ink[t:b + 1, left:right + 1].any(axis=0)
+    best = 0
+    run_start = last_end = None
+    for s, e in _nonblank_runs(col.astype(int)):
+        if run_start is not None and s - last_end - 1 <= _COVERAGE_BRIDGE_PX:
+            last_end = e
+        else:
+            run_start = s
+            last_end = e
+        best = max(best, last_end - run_start + 1)
+    return best / max(1, len(col))
+
+
+def _page_segments(gray: np.ndarray) -> dict:
+    """페이지(또는 곡 영역) 그레이 이미지를 공백 간격으로 세그먼트 분할하고 각 세그먼트가
+    오선 시스템인지 판정한다. detect_system_bands와 저작권 폴백 탐지가 공유한다.
+
+    반환: {'segments': [(t, b, is_system), ...], 'row_ink', 'row_fill', 'left', 'right', 'ink'}"""
     ink = gray < _INK
     h, w = gray.shape
     left, right, _t, _b = ps.detect_content_bounds(gray)
@@ -409,35 +514,76 @@ def detect_system_bands(gray: np.ndarray) -> list:
         if length >= min_gap:
             is_gap[s:s + length] = True
 
-    systems = []
+    segments = []
     i = 0
     while i < h:
-        if not is_gap[i]:
-            s = i
-            while i < h and not is_gap[i]:
-                i += 1
-            seg_top, seg_bot = s, i - 1
-            # 세그먼트 안의 실제 잉크 범위로 상하 여백 트림
-            seg_rows = np.where(row_ink[seg_top:seg_bot + 1] > 0)[0]
-            if not len(seg_rows):
-                continue
-            t = seg_top + int(seg_rows.min())
-            b = seg_top + int(seg_rows.max())
-            staff_line_rows = np.where(row_fill[t:b + 1] > _STAFF_ROW_FILL)[0]
-            if len(staff_line_rows) >= _MIN_STAFF_ROWS:
-                # 공백행 연속 길이 기반 분할이 여러 시스템을 세그먼트 하나로 합쳤을 수
-                # 있으므로(나주노 172), 오선행 밀도 군집으로 한 번 더 쪼갠다. 세그먼트가
-                # 이미 시스템 하나만 담고 있으면 [(t, b)] 그대로 돌아와 기존 동작과 같다.
-                for sub_t, sub_b in _split_merged_systems(row_fill, row_ink, t, b):
-                    sub_staff_rows = np.where(row_fill[sub_t:sub_b + 1] > _STAFF_ROW_FILL)[0]
-                    if not len(sub_staff_rows):
-                        continue
-                    staff_top = sub_t + int(sub_staff_rows.min())
-                    sub_t = _trim_top_above_chords(row_ink, sub_t, staff_top)
-                    systems.append((sub_t, sub_b))
-        else:
+        if is_gap[i]:
             i += 1
-    return systems
+            continue
+        s = i
+        while i < h and not is_gap[i]:
+            i += 1
+        seg_rows = np.where(row_ink[s:i] > 0)[0]
+        if not len(seg_rows):
+            continue
+        t, b = s + int(seg_rows.min()), s + int(seg_rows.max())
+        staff_rows = int(np.sum(row_fill[t:b + 1] > _STAFF_ROW_FILL))
+        coverage = _column_coverage(ink, left, right, t, b)
+        # 높이 경로(흐린 오선)는 오선 밀도 하한도 요구한다 — 가사만 여러 줄 쌓인 블록(커버리지는
+        # 줄 수가 늘면 올라간다)이 시스템으로 오인되지 않게(독립 리뷰 지적, 2026-10-18).
+        is_system = coverage >= _SYSTEM_MIN_COVERAGE and (
+            staff_rows >= _MIN_STAFF_ROWS
+            or ((b - t + 1) >= _SYSTEM_MIN_HEIGHT
+                and float(row_fill[t:b + 1].max()) >= _SYSTEM_MIN_PEAK_FILL))
+        segments.append((t, b, is_system))
+    return {"segments": segments, "row_ink": row_ink, "row_fill": row_fill,
+            "left": left, "right": right, "ink": ink}
+
+
+def detect_system_bands(gray: np.ndarray, copyright_zone: bool = True) -> list:
+    """오선보 시스템별 세로 밴드 [(top, bottom), …]를 반환(상단 제목/작곡가·하단 저작권 제외).
+
+    1) 콘텐츠 좌우 경계로 트리밍한 폭 기준 행별 잉크 비율(row_fill)을 구한다.
+    2) 공백 밴드(row_fill<0.005)가 시스템 간격(_SYSTEM_GAP_MIN 이상)이면 세그먼트 경계로 삼아
+       콘텐츠를 세그먼트로 분할한다(그보다 짧은 공백은 시스템 내부로 병합).
+    3) 열 연속 커버리지(_column_coverage)로 오선 세그먼트만 '시스템'으로 인정한다
+       (_page_segments). 오선이 없는 세그먼트(상단 제목/작곡가 줄, 하단 저작권 줄)는 자연히
+       제외된다 — 번호가 좌/우 어디 있든 동일(146 제목·번호 좌우 반대여도 동작).
+    4) 시스템 바로 아래(≤_TRAILING_TEXT_MAX_GAP)의 비-시스템 세그먼트(2절 가사 등)는 앞
+       시스템에 흡수한다. `copyright_zone`이면 페이지 하단 저작권 영역은 흡수하지 않는다 — 곡 영역이
+       이미 저작권 위에서 잘려 있는 경우(`naju_song_bands`, 캐시 등록 곡)에는 False로 끈다. 잘린 영역의
+       높이 기준 비율을 쓰면 마지막 가사줄이 '저작권 영역'으로 오인돼 빠진다(358·359·68·78, 35번).
+    """
+    h = gray.shape[0]
+    info = _page_segments(gray)
+    segs = info["segments"]
+    row_fill, row_ink = info["row_fill"], info["row_ink"]
+
+    systems = []          # [top, bottom] — 흡수 단계에서 bottom을 늘리므로 list
+    owner = {}            # 세그먼트 인덱스 → systems 내 마지막 시스템 인덱스
+    for si, (t, b, is_system) in enumerate(segs):
+        if not is_system:
+            continue
+        # 공백행 연속 길이 기반 분할이 여러 시스템을 세그먼트 하나로 합쳤을 수 있으므로
+        # (나주노 172), 오선행 밀도 군집으로 한 번 더 쪼갠다. 세그먼트가 이미 시스템 하나만
+        # 담고 있으면 [(t, b)] 그대로 돌아와 기존 동작과 같다.
+        for sub_t, sub_b in _split_merged_systems(row_fill, row_ink, t, b, info["ink"], info["left"], info["right"]):
+            sub_t = _system_top(info["ink"], row_ink, row_fill, info["left"], info["right"], sub_t, sub_b,
+                                first=not systems)
+            systems.append([sub_t, sub_b])
+            owner[si] = len(systems) - 1
+
+    # 비-시스템 세그먼트를 바로 앞 시스템 세그먼트에 흡수(가사 보충줄). 저작권 영역 제외.
+    for si, (t, b, is_system) in enumerate(segs):
+        if is_system or (copyright_zone and b >= h * _COPYRIGHT_ZONE_RATIO):
+            continue
+        prev_si = si - 1
+        if prev_si in owner:
+            k = owner[prev_si]
+            if 0 < t - systems[k][1] <= _TRAILING_TEXT_MAX_GAP and (b - t + 1) <= _TRAILING_TEXT_MAX_HEIGHT:
+                systems[k][1] = b
+                owner[si] = k   # 연속 보충줄도 같은 시스템에 이어 붙인다
+    return [(t, b) for t, b in systems]
 
 
 def group_systems(bands: list, per_slide: int = 2) -> list:
@@ -478,7 +624,8 @@ def _group_content_bbox(gray: np.ndarray, group: list) -> tuple:
 # 구간에서 그룹 크기 불변(합성곡 테스트 S7~S10도 동일) — 810형 "97% 빡빡 3-pack" 케이스는
 # 종횡비 자체가 아니라 균형 타이브레이크([2,2]가 [3,1]과 슬라이드 수가 같으면 균형 우선)로
 # 여전히 보호되므로 안전.
-_PACK_SAFETY = 1.05
+# 2026-10-18: 1.05→1.069 — 허용 한도 ch/cw를 0.486→약 0.495로 완화(사용자 지시, 나주노 603번 3줄 묶음).
+_PACK_SAFETY = 1.069
 _PACK_MAX_PER_SLIDE = 3
 
 
@@ -616,11 +763,62 @@ def _yahwe_copyright_crop(number: int, page) -> Image.Image:
     return _trim_trailing_period_px(_render_pt_rect(page, rect))
 
 
+def naju_page_is_shared(page_index: int) -> bool:
+    """TOC상 이 페이지(0-based)에 곡이 둘 이상 실려 있나(예: 14·15번). 공유 페이지는 저작권이
+    곡마다 페이지 중간/하단에 따로 있어 하단 기하 탐지로 곡을 구분할 수 없다."""
+    n = 0
+    with _open("나주노") as d:
+        for _lvl, title, page in d.get_toc():
+            if page - 1 == page_index and re.match(r"^\s*\d+\b", title):
+                n += 1
+    return n > 1
+
+
+def _naju_copyright_fallback(page):
+    """캐시 없이 나주노 페이지 하단의 저작권 첫 줄을 크롭한다. 없으면 None.
+
+    _page_segments의 비-시스템 세그먼트 중 페이지 하단(_COPYRIGHT_ZONE_RATIO 아래)에 걸친
+    마지막 것을 저작권 블록으로 보고, 그 안의 첫 잉크 행 런(=첫 줄)을 좌우 잉크 경계로 자른다."""
+    if naju_page_is_shared(page.number):
+        return None   # 공유 페이지: 어느 곡의 저작권인지 기하만으로 알 수 없다(수동 등록 필요)
+    img = render_region(page, None, RENDER_DPI)
+    gray = np.asarray(img.convert("L"))
+    h = gray.shape[0]
+    info = _page_segments(gray)
+    cands = [(t, b) for t, b, is_sys in info["segments"]
+             if not is_sys and b >= h * _COPYRIGHT_ZONE_RATIO]
+    if not cands:
+        return None
+    t, b = cands[-1]
+    runs = _nonblank_runs(info["row_ink"][t:b + 1])
+    if not runs:
+        return None
+    y0, y1 = t + runs[0][0], t + runs[0][1]
+    # 줄 사이에 빈 행이 없을 만큼 붙은 2줄 블록(479·692)은 행 잉크 골짜기에서 첫 줄만 남긴다.
+    if y1 - y0 + 1 > _COPYRIGHT_LINE_MAX_H:
+        prof = info["row_ink"][y0:y1 + 1].astype(float)
+        lo, hi = int(len(prof) * 0.3), int(len(prof) * 0.7) + 1
+        valley = lo + int(np.argmin(prof[lo:hi]))
+        if prof[valley] <= 0.25 * prof.max():
+            y1 = y0 + valley - 1
+    cols = np.where((gray[y0:y1 + 1] < _INK).any(axis=0))[0]
+    if not len(cols):
+        return None
+    return _trim_trailing_period_px(img.crop((max(0, int(cols.min()) - 3), max(0, y0 - 2),
+                                              int(cols.max()) + 4, y1 + 3)))
+
+
 def _naju_copyright_crop(number: int, page) -> Image.Image:
     entry = _load_naju_cache().get(str(number))
     if entry is None:
-        logger.warning("[경고] 성가 %s: Copyright 자동 인식 실패 — 수동 확인 필요", number)
-        return None
+        # 캐시 미등록 곡(캐시는 개발자 OCR로 곡마다 채우는 방식이라 새 곡이 누락될 수 있다 —
+        # 2026-10-18 479/519/692 저작권이 통째로 빠진 원인). 요소를 조용히 생략하는 대신
+        # 하단 텍스트 세그먼트의 첫 줄을 기하학적으로 잘라 쓴다(OCR 없음, 트리거 이후 문구까지
+        # 포함될 수 있으므로 경고를 남겨 캐시 등록을 유도).
+        crop = _naju_copyright_fallback(page)
+        logger.warning("[경고] 성가 %s: 저작권 캐시 미등록 — %s (tools/build_나주노_copyright_cache.py로 등록 권장)",
+                       number, "하단 첫 줄 폴백 크롭 사용" if crop is not None else "하단 텍스트 없음, 생략")
+        return crop
     if not entry.get("has_copyright"):
         return None
     x0, y0, x1, y1 = entry["bbox"]
@@ -810,6 +1008,46 @@ def _place_copyright(slide, pil_img):
     slide.shapes.add_picture(buf, left, top, w, h)
 
 
+_MIN_REGION_H = 200   # 곡 영역 최소 높이(px@300dpi) — 시스템 1개(~200px)보다 작으면 잘못된 절단
+
+
+def naju_song_region_image(page, number: int) -> Image.Image:
+    """나주노 곡 하나의 악보 영역 이미지(300dpi). 페이지 전체가 아니라 **이 곡만** 담는다.
+
+    - 캐시 항목에 `y_range`(페이지 대비 0~1 세로 구간)가 있으면 그 구간만 잘라 쓴다 — 한 페이지에
+      곡이 2~3개 실린 공유 페이지(14·15번 등)에서 14번을 요청해도 15번 악보가 섞이지 않게 한다.
+    - 캐시에 저작권 bbox가 있으면 그 상단 위까지만 쓴다 — 저작권 줄이 마지막 시스템의 가사 보충줄로
+      오인돼 악보 크롭에 들어가는 일을 막는다(14번 등).
+    - 공유 페이지인데 `y_range`가 없으면 다른 곡 악보가 섞이므로 조용히 진행하지 않고 예외를 낸다."""
+    full = render_region(page, None, RENDER_DPI)
+    entry = _load_naju_cache().get(str(number)) or {}
+    W, H = full.size
+    top, bottom = 0, H
+    yr = entry.get("y_range")
+    if yr:
+        top, bottom = int(round(yr[0] * H)), int(round(yr[1] * H))
+    elif naju_page_is_shared(page.number):
+        raise RuntimeError(
+            f"성가 {number}: 한 페이지에 곡이 여러 개인데 곡별 영역(y_range)이 캐시에 없습니다 — "
+            "tools/build_나주노_copyright_cache.py --shared 로 등록해 주세요.")
+    if entry.get("has_copyright") and entry.get("bbox"):
+        cut = int(round(entry["bbox"][1] * H)) - 3
+        if cut - top >= _MIN_REGION_H:   # bbox가 영역 밖/너무 위면 무시(1px 영역으로 무너지지 않게)
+            bottom = min(bottom, cut)
+    if (top, bottom) == (0, H):
+        return full
+    return full.crop((0, top, W, bottom))
+
+
+def naju_song_bands(page, number: int):
+    """(곡 영역 이미지, 시스템 밴드 목록). `build_hymn_pptx`와 테스트가 같은 경로를 쓴다.
+    캐시에 이 곡 항목이 있으면(저작권 위치·곡 영역이 이미 확정) 저작권 영역 흡수 제외는 끈다."""
+    region = naju_song_region_image(page, number)
+    gray = np.asarray(region.convert("L"))
+    known = str(number) in _load_naju_cache()
+    return region, detect_system_bands(gray, copyright_zone=not known)
+
+
 def build_hymn_pptx(구분: str, 출처: str, number: int, title: str = None) -> Presentation:
     """성가 구분·출처·번호 → 샘플과 동일 포맷의 슬라이드 여러 장짜리 Presentation.
 
@@ -828,10 +1066,13 @@ def build_hymn_pptx(구분: str, 출처: str, number: int, title: str = None) ->
     doc = fitz.open(str(_resolve_pdf_path(출처)))
     try:
         page = doc[pi]
-        y_range = None if SOURCES[출처]["kind"] == "scan" else find_song_y_range(page, 출처, number)
-        region_img = render_region(page, y_range, RENDER_DPI)
-        gray = np.asarray(region_img.convert("L"))
-        bands = detect_system_bands(gray)
+        if SOURCES[출처]["kind"] == "scan":
+            region_img, bands = naju_song_bands(page, number)
+            gray = np.asarray(region_img.convert("L"))
+        else:
+            region_img = render_region(page, find_song_y_range(page, 출처, number), RENDER_DPI)
+            gray = np.asarray(region_img.convert("L"))
+            bands = detect_system_bands(gray)
         if not bands:
             raise RuntimeError(f"{출처} {number}: 시스템 밴드 미검출")
         groups = pack_systems(bands, gray)

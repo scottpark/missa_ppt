@@ -1656,8 +1656,6 @@ def test_M9_get_youth_mass_schema(monkeypatch):
     assert "복음" not in out
 
 
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # 2026-09-26 실사용자 산출물 후속 요청 5건 (청년미사, output/20260926_youth/토요일 저녁
 # 청년 주일미사_20260926_연중 제26주일.pptx 육안 검수로 발견) — 코디네이터 지시 직접 반영,
@@ -1824,19 +1822,7 @@ def e_full_output(tmp_path_factory):
     orig_get_youth_mass = mtp.missa_youth_gospel.get_youth_mass
     mtp.missa_youth_gospel.get_youth_mass = lambda d: en_fixture
 
-    orig_modules_onedrive = _e_sys.modules.get('missa_onedrive')
-    upload_calls = []
-
-    class _StubOD:
-        @staticmethod
-        def ensure_folder(path):
-            upload_calls.append(('ensure_folder', path))
-
-        @staticmethod
-        def upload_file(path, local_path):
-            upload_calls.append(('upload_file', path, local_path))
-
-    _e_sys.modules['missa_onedrive'] = _StubOD
+    upload_calls = []  # missa_onedrive 폐지 — 업로드 경로 자체가 없다(e1은 빈 목록을 확인).
 
     files = {
         'ref_pptx': ref_dst, '시작기도': None, '화답송_pptx': None, '화답송_img': None,
@@ -1861,22 +1847,12 @@ def e_full_output(tmp_path_factory):
         expected_liturgy = _e_json.loads(_E_KO_JSON_20260913.read_text(encoding='utf-8'))['liturgy']
         out_path = tmp_path / f'{date_str}_youth' / f"토요일 저녁 청년 주일미사_{date_str}_{expected_liturgy}.pptx"
         prs = mtp.Presentation(str(out_path))
-        # main() 실행이 끝났으니 스텁을 즉시 되돌린다 — 모듈 스코프 yield 동안 유지하면 같은 모듈의
-        # 뒤 테스트(k2g/k2h 등)가 실제 missa_onedrive 대신 스텁을 import하는 순서 오염이 생긴다.
-        if orig_modules_onedrive is not None:
-            _e_sys.modules['missa_onedrive'] = orig_modules_onedrive
-        else:
-            _e_sys.modules.pop('missa_onedrive', None)
         yield {'prs': prs, 'out_path': out_path, 'date_str': date_str, 'upload_calls': upload_calls}
     finally:
         _e_sys.argv = orig_argv
         mtp._preloaded_inputs[0] = None
         mtp.OUTPUT_ROOT = orig_output_root
         mtp.missa_youth_gospel.get_youth_mass = orig_get_youth_mass
-        if orig_modules_onedrive is not None:
-            _e_sys.modules['missa_onedrive'] = orig_modules_onedrive
-        else:
-            _e_sys.modules.pop('missa_onedrive', None)
 
 
 def test_e1_full_pipeline_does_not_upload_result_to_onedrive(e_full_output):
@@ -2157,17 +2133,6 @@ def test_f3_log_dir_wiring_points_to_youth_output_folder_after_main_run(tmp_path
     en_fixture = _e_json.loads(_E_EN_GOSPEL_FIXTURE.read_text(encoding='utf-8'))
     monkeypatch.setattr(mtp.missa_youth_gospel, 'get_youth_mass', lambda d: en_fixture)
 
-    class _StubOD:
-        @staticmethod
-        def ensure_folder(path):
-            pass
-
-        @staticmethod
-        def upload_file(path, local_path):
-            pass
-
-    monkeypatch.setitem(_f3_sys.modules, 'missa_onedrive', _StubOD)
-
     files = {
         'ref_pptx': ref_dst, '시작기도': None, '화답송_pptx': None, '화답송_img': None,
         '미사후기도': None, '공지사항': None, '성가': {},
@@ -2232,136 +2197,6 @@ def test_f3_log_dir_wiring_points_to_youth_output_folder_after_main_run(tmp_path
 # G2: OneDrive 커스텀 파일 브라우저 폴더 열 때마다 느린 버그(MSAL 앱 매번 재생성) 수정
 # ---------------------------------------------------------------------------
 
-def test_g2a_get_access_token_reuses_msal_app_across_calls(monkeypatch, tmp_path):
-    """G2a: get_access_token()을 두 번 호출해도 msal.PublicClientApplication 생성자는
-    한 번만 호출돼야 한다(프로세스 수명 캐시 재사용) — 매번 새로 만드는 것 자체가
-    호출당 약 0.9~1.0초 오버헤드였다(코디네이터 실측)."""
-    import missa_onedrive as od_g2
-
-    monkeypatch.setattr(od_g2, '_APP_CACHE', [None, None])
-    monkeypatch.setattr(od_g2, 'TOKEN_CACHE_FILE', tmp_path / 'cache.bin')
-
-    init_calls = []
-
-    class _FakeApp:
-        def __init__(self, *a, **k):
-            init_calls.append((a, k))
-
-        def get_accounts(self):
-            return [{'username': 'brokenbaykccppt@gmail.com'}]
-
-        def acquire_token_silent(self, scopes, account):
-            return {'access_token': f'tok-{len(init_calls)}'}
-
-    monkeypatch.setattr(od_g2.msal, 'PublicClientApplication', _FakeApp)
-
-    od_g2.get_access_token()
-    od_g2.get_access_token()
-
-    assert len(init_calls) == 1, f"PublicClientApplication이 {len(init_calls)}번 생성됨(1번이어야 함)"
-
-
-def test_g2b_get_access_token_cache_is_process_lifetime_not_per_call(monkeypatch, tmp_path):
-    """G2b: 캐시된 app 인스턴스가 실제로 재사용되는지(같은 객체 identity) 직접 확인 —
-    g2a가 생성 횟수만 셌다면 이 테스트는 반환된 app 자체가 동일 객체인지까지 검증한다."""
-    import missa_onedrive as od_g2b
-
-    monkeypatch.setattr(od_g2b, '_APP_CACHE', [None, None])
-    monkeypatch.setattr(od_g2b, 'TOKEN_CACHE_FILE', tmp_path / 'cache.bin')
-
-    created_apps = []
-
-    class _FakeApp:
-        def __init__(self, *a, **k):
-            created_apps.append(self)
-
-        def get_accounts(self):
-            return []
-
-        def initiate_device_flow(self, scopes):
-            return {'user_code': 'X', 'message': 'm'}
-
-        def acquire_token_by_device_flow(self, flow):
-            return {'access_token': 'tok'}
-
-    monkeypatch.setattr(od_g2b.msal, 'PublicClientApplication', _FakeApp)
-
-    od_g2b.get_access_token()
-    od_g2b.get_access_token()
-
-    assert len(created_apps) == 1
-    assert created_apps[0] is od_g2b._APP_CACHE[0]
-
-
-def test_g2c_headers_reuses_app_across_multiple_requests_in_one_session(monkeypatch, tmp_path):
-    """G2c: 실제 사용 패턴(list_children 등이 매 HTTP 요청마다 _headers()→get_access_token()
-    을 호출)을 흉내내 여러 차례 _headers()를 불러도 app 생성이 1회로 유지되는지 확인 —
-    폴더 하나를 열 때 children GET + remoteItem 해석 GET처럼 여러 요청이 겹치는 실제
-    시나리오를 반영."""
-    import missa_onedrive as od_g2c
-
-    monkeypatch.setattr(od_g2c, '_APP_CACHE', [None, None])
-    monkeypatch.setattr(od_g2c, 'TOKEN_CACHE_FILE', tmp_path / 'cache.bin')
-
-    init_calls = []
-
-    class _FakeApp:
-        def __init__(self, *a, **k):
-            init_calls.append(1)
-
-        def get_accounts(self):
-            return [{'username': 'x'}]
-
-        def acquire_token_silent(self, scopes, account):
-            return {'access_token': 'tok'}
-
-    monkeypatch.setattr(od_g2c.msal, 'PublicClientApplication', _FakeApp)
-
-    for _ in range(5):
-        od_g2c._headers()
-
-    assert len(init_calls) == 1
-
-
-def test_g2d_load_cache_still_called_to_pick_up_disk_state_on_first_creation(monkeypatch, tmp_path):
-    """G2d(회귀 가드): 캐싱을 도입해도 최초 1회는 여전히 디스크의 msal_token_cache.bin을
-    읽어 SerializableTokenCache에 반영해야 한다 — 캐시 재사용이 "디스크에 저장된 토큰을
-    아예 무시한다"는 뜻이 되면 매 프로세스 시작 시 재로그인을 유발하는 퇴행이 된다."""
-    import missa_onedrive as od_g2d
-
-    cache_file = tmp_path / 'cache.bin'
-    cache_file.write_text('{"Account": {}}', encoding='utf-8')
-    monkeypatch.setattr(od_g2d, '_APP_CACHE', [None, None])
-    monkeypatch.setattr(od_g2d, 'TOKEN_CACHE_FILE', cache_file)
-
-    load_calls = []
-    orig_load = od_g2d._load_cache
-
-    def _spy_load(*a, **k):
-        load_calls.append(1)
-        return orig_load(*a, **k)
-
-    monkeypatch.setattr(od_g2d, '_load_cache', _spy_load)
-
-    class _FakeApp:
-        def __init__(self, *a, **k):
-            pass
-
-        def get_accounts(self):
-            return []
-
-        def initiate_device_flow(self, scopes):
-            return {'user_code': 'X', 'message': 'm'}
-
-        def acquire_token_by_device_flow(self, flow):
-            return {'access_token': 'tok'}
-
-    monkeypatch.setattr(od_g2d.msal, 'PublicClientApplication', _FakeApp)
-
-    od_g2d.get_access_token()
-
-    assert load_calls, "_load_cache()가 한 번도 호출되지 않음 — 디스크 토큰 캐시를 무시하게 됨"
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # H그룹 — 2026-09-26 (G그룹 후속) OneDrive 파일 브라우저: 폴더 확장 화살표 클릭이
@@ -2376,139 +2211,6 @@ def test_g2d_load_cache_still_called_to_pick_up_disk_state_on_first_creation(mon
 # 항상 발생**)로 lazy-load 트리거를 옮겨 고친다. 기존 더블클릭 핸들러는 그대로 유지하고,
 # 두 경로가 겹쳐 호출돼도 이미 있던 already_loaded 가드가 중복 fetch를 막는다.
 # ═══════════════════════════════════════════════════════════════════════════
-
-def _h_run_onedrive_browser_open_event_probe(tmp_path, stub_children_code: str,
-                                              open_times: int = 1) -> list:
-    """`_ask_onedrive_file_browser_popup()`을 서브프로세스에서 열고, 최상위 첫 폴더
-    노드에 대해 `<<TreeviewOpen>>` 가상 이벤트를 `open_times`회 직접 발생시켜(`tree.focus(iid)`
-    후 `event_generate`) — 이것이 바로 ttk.Treeview가 화살표 클릭이든 더블클릭이든 키보드
-    조작이든 "펼쳐질 때" 실제로 발생시키는 이벤트이므로, 사용자가 어떤 방식으로 펼쳤든 이
-    프로브로 충실히 재현된다 — 트리 덤프를 반환한다. `_a_run_onedrive_browser_probe`
-    (test_missa_regression.py, A5)와 같은 서브프로세스 위젯 프로브 기법이나, 이 파일은
-    회귀 파일에 의존하지 않고 자기 완결적으로 유지하기 위해 별도로 둔다."""
-    out_file = tmp_path / 'h_probe_result.json'
-    dest_dir = tmp_path / 'dest'
-    script = f'''
-import sys, json, types
-sys.path.insert(0, {str(BASE)!r})
-import tkinter as tk
-import missa_gui as gui
-
-_od_stub = types.ModuleType("missa_onedrive")
-_od_stub.list_children = {stub_children_code}
-_od_stub.download_file = lambda path, dest: dest
-sys.modules["missa_onedrive"] = _od_stub
-
-def _h_find_treeview(w):
-    if w.winfo_class() == "Treeview":
-        return w
-    for c in w.winfo_children():
-        found = _h_find_treeview(c)
-        if found:
-            return found
-    return None
-
-def _h_dump_tree(tree, parent=""):
-    out = []
-    for iid in tree.get_children(parent):
-        item = tree.item(iid)
-        out.append({{"iid": iid, "text": item["text"], "children": _h_dump_tree(tree, iid)}})
-    return out
-
-_dump = []
-_orig_wait_window = tk.Toplevel.wait_window
-
-def _fake_wait_window(self, *a, **k):
-    def _probe():
-        try:
-            tv = _h_find_treeview(self)
-            if tv is not None:
-                top = tv.get_children("")
-                folder_iid = next(
-                    (iid for iid in top if tv.item(iid, "text").startswith("\U0001F4C1")), None,
-                )
-                if folder_iid is not None:
-                    for _ in range({open_times}):
-                        tv.focus(folder_iid)
-                        tv.event_generate("<<TreeviewOpen>>")
-                        self.update()
-                _dump.extend(_h_dump_tree(tv))
-        finally:
-            self.destroy()
-    self.after(60, _probe)
-    return _orig_wait_window(self, *a, **k)
-
-tk.Toplevel.wait_window = _fake_wait_window
-
-root = tk.Tk()
-root.withdraw()
-gui._ask_onedrive_file_browser_popup(root, {str(dest_dir)!r}, cache={{}})
-root.destroy()
-
-with open({str(out_file)!r}, 'w', encoding='utf-8') as f:
-    json.dump(_dump, f)
-'''
-    script_path = tmp_path / 'h_probe_script.py'
-    script_path.write_text(script, encoding='utf-8')
-    import subprocess as _h_subprocess
-    import sys as _h_sys
-    import json as _h_json
-    try:
-        result = _h_subprocess.run(
-            [_h_sys.executable, str(script_path)],
-            cwd=str(BASE), capture_output=True, text=True, encoding='utf-8', errors='replace',
-            timeout=30,
-        )
-    except _h_subprocess.TimeoutExpired as e:
-        raise AssertionError(
-            f"OneDrive 브라우저 <<TreeviewOpen>> 프로브가 30초 내에 끝나지 않음\n"
-            f"stdout:\n{e.stdout}\nstderr:\n{e.stderr}"
-        )
-    assert out_file.is_file(), (
-        f"트리 덤프 실패(exit={result.returncode})\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-    return _h_json.loads(out_file.read_text(encoding='utf-8'))
-
-
-def test_h1_folder_expand_via_treeviewopen_event_loads_real_children(tmp_path):
-    """H1: 실사용자 버그 재현 — 더블클릭이 아니라 <<TreeviewOpen>>(화살표 클릭 등 어떤
-    펼침 방식이든 실제로 발생하는 이벤트)으로 폴더를 열면, 자리표시자 "(불러오는 중...)"가
-    실제 자식으로 교체돼야 한다. 수정 전에는 lazy-load가 <Double-1>에만 걸려 있어 이
-    이벤트로는 아무 일도 일어나지 않고 플레이스홀더가 영구히 남았다."""
-    stub = (
-        "lambda path: {"
-        "'PPT 문서': [{'name': '20.청년 미사', 'folder': {}}],"
-        "'PPT 문서/20.청년 미사': [{'name': '2.성가', 'folder': {}}, {'name': 'a.pptx'}],"
-        "}.get(path, [])"
-    )
-    top_level = _h_run_onedrive_browser_open_event_probe(tmp_path, stub)
-    folder_node = next(n for n in top_level if '20.청년 미사' in n['text'])
-    child_texts = [c['text'] for c in folder_node['children']]
-    assert '(불러오는 중...)' not in child_texts, (
-        "<<TreeviewOpen>>으로 열어도 실제 자식이 로드되지 않음 — 여전히 플레이스홀더로 남음",
-        child_texts,
-    )
-    assert any('2.성가' in t for t in child_texts), child_texts
-    assert any('a.pptx' in t for t in child_texts), child_texts
-    assert len(child_texts) == 2, ("자식 개수가 기대와 다름(중복 삽입 의심)", child_texts)
-
-
-def test_h2_reopening_already_loaded_folder_via_treeviewopen_does_not_duplicate(tmp_path):
-    """H2(회귀 가드): 같은 폴더에 대해 <<TreeviewOpen>>이 두 번 발생해도(예: 화살표를 두 번
-    누르거나, 더블클릭의 네이티브 토글과 겹치는 경우) 자식이 중복되지 않아야 한다 —
-    already_loaded 가드가 새 트리거 경로에서도 여전히 idempotent해야 한다."""
-    stub = (
-        "lambda path: {"
-        "'PPT 문서': [{'name': '20.청년 미사', 'folder': {}}],"
-        "'PPT 문서/20.청년 미사': [{'name': 'a.pptx'}],"
-        "}.get(path, [])"
-    )
-    top_level = _h_run_onedrive_browser_open_event_probe(tmp_path, stub, open_times=2)
-    folder_node = next(n for n in top_level if '20.청년 미사' in n['text'])
-    child_texts = [c['text'] for c in folder_node['children']]
-    assert len([t for t in child_texts if 'a.pptx' in t]) == 1, (
-        "<<TreeviewOpen>>을 두 번 발생시켰더니 자식이 중복 삽입됨", child_texts,
-    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2533,53 +2235,6 @@ def test_h2_reopening_already_loaded_folder_via_treeviewopen_does_not_duplicate(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def test_i1_onedrive_display_path_strips_root_prefix_and_uses_backslash():
-    """요구사항 예시 그대로: 'PPT 문서/13. 기도문/위령 성월 기도.pptx'로 골랐다면
-    표시는 '13. 기도문\\위령 성월 기도.pptx'."""
-    import missa_gui as gui
-    result = gui._onedrive_display_path('PPT 문서/13. 기도문/위령 성월 기도.pptx')
-    assert result == '13. 기도문\\위령 성월 기도.pptx', result
-
-
-def test_i2_onedrive_display_path_uses_root_constant_not_hardcoded_string():
-    """하드코딩 문자열이 아니라 `_ONEDRIVE_BROWSER_ROOT` 상수를 실제로 참조해야 한다 —
-    이 상수 값을 바꿔도(예: 다른 계정의 루트 폴더명이 다르면) 접두사 제거 로직이 따라가야
-    한다는 뜻. `root_remote_path` 파라미터로 override 가능함을 직접 확인한다."""
-    import missa_gui as gui
-    assert gui._ONEDRIVE_BROWSER_ROOT == 'PPT 문서'
-    result = gui._onedrive_display_path('다른루트/A/b.pptx', root_remote_path='다른루트')
-    assert result == 'A\\b.pptx', result
-
-
-def test_i3_onedrive_display_path_no_prefix_match_falls_back_to_slash_conversion():
-    """방어적 동작 — remote_path가 예상 접두사로 시작하지 않으면(예: 향후 다른 루트에서
-    호출) 그대로 두되 표시 일관성을 위해 구분자만 백슬래시로 바꾼다(예외를 던져 팝업을
-    깨뜨리지 않음)."""
-    import missa_gui as gui
-    result = gui._onedrive_display_path('다른경로/x.pptx')
-    assert result == '다른경로\\x.pptx', result
-
-
-def test_i4_onedrive_display_path_nested_subfolders():
-    import missa_gui as gui
-    result = gui._onedrive_display_path('PPT 문서/20.청년 미사/2.성가/나주노/151.pptx')
-    assert result == '20.청년 미사\\2.성가\\나주노\\151.pptx', result
-
-
-class _I_FakeVar:
-    """실제 tk.StringVar 없이 `_resolved_field_value`/`_apply_onedrive_selection`을
-    GUI 없이 단위 테스트하기 위한 duck-typed 대역."""
-
-    def __init__(self, value=None):
-        self._value = value
-
-    def get(self):
-        return self._value
-
-    def set(self, value):
-        self._value = value
-
-
 class _I_FakeEntry:
     """`entry.xview_moveto(1.0)` 호출 여부만 기록하는 대역 — 실제 Tk Entry 위젯 없이도
     "파일명이 보이도록 스크롤했는지"를 검증할 수 있게 한다."""
@@ -2589,269 +2244,6 @@ class _I_FakeEntry:
 
     def xview_moveto(self, frac):
         self.xview_calls.append(frac)
-
-
-def test_i5_resolved_field_value_prefers_real_path_over_displayed_var():
-    """버그4의 핵심 불변조건: on_ok()가 최종적으로 쓰는 값은 Entry에 보이는 표시용
-    상대경로가 아니라, `_od_real_paths`에 저장된 실제 로컬 다운로드 경로여야 한다."""
-    import missa_gui as gui
-    vars_ = {'ref_pptx': _I_FakeVar('13. 기도문\\위령 성월 기도.pptx')}
-    od_real_paths = {'ref_pptx': 'output\\20260926_youth\\위령 성월 기도.pptx'}
-    result = gui._resolved_field_value('ref_pptx', vars_, od_real_paths)
-    assert result == 'output\\20260926_youth\\위령 성월 기도.pptx', result
-
-
-def test_i6_resolved_field_value_falls_back_to_var_when_not_from_onedrive():
-    """로컬 `filedialog.askopenfilename()`으로 고른 경우(성인미사 또는 청년미사에서도
-    OneDrive를 거치지 않은 필드)엔 `_od_real_paths`에 키가 없다 — 이때는 표시=실제값이
-    같으므로 기존 그대로 `vars_[key].get()`을 그대로 반환해야 한다(회귀 방지)."""
-    import missa_gui as gui
-    vars_ = {'시작기도': _I_FakeVar('C:\\Users\\me\\Desktop\\시작기도.pptx')}
-    od_real_paths = {}
-    result = gui._resolved_field_value('시작기도', vars_, od_real_paths)
-    assert result == 'C:\\Users\\me\\Desktop\\시작기도.pptx', result
-
-
-def test_i7_resolved_field_value_missing_key_returns_empty_string():
-    """청년미사는 '화답송_pptx' 행 자체가 `vars_`에 없다(기존 필터링) — on_ok()가 이
-    경우 빈 문자열을 기대하는 기존 동작을 그대로 보존해야 한다."""
-    import missa_gui as gui
-    result = gui._resolved_field_value('화답송_pptx', {}, {})
-    assert result == '', result
-
-
-def test_i8_apply_onedrive_selection_sets_display_var_and_real_path_and_scrolls_entry():
-    """`_browse()` 클로저가 실제로 해야 하는 3가지 부작용을 GUI 없이 검증: (1) 표시용
-    StringVar엔 다듬은 상대경로, (2) `_od_real_paths`엔 실제 로컬 경로, (3) Entry를
-    파일명 쪽(끝)으로 스크롤."""
-    import missa_gui as gui
-    var = _I_FakeVar()
-    entry = _I_FakeEntry()
-    vars_ = {'ref_pptx': var}
-    entries = {'ref_pptx': entry}
-    od_real_paths = {}
-    gui._apply_onedrive_selection(
-        'ref_pptx',
-        'output\\20260926_youth\\위령 성월 기도.pptx',
-        'PPT 문서/13. 기도문/위령 성월 기도.pptx',
-        vars_, od_real_paths, entries,
-    )
-    assert var.get() == '13. 기도문\\위령 성월 기도.pptx', var.get()
-    assert od_real_paths['ref_pptx'] == 'output\\20260926_youth\\위령 성월 기도.pptx'
-    assert entry.xview_calls == [1.0], entry.xview_calls
-
-
-def test_i9_apply_onedrive_selection_noop_when_local_path_empty():
-    """취소(`('', '')`)로 돌아온 경우엔 아무 것도 건드리면 안 된다 — 기존 값을 지우거나
-    빈 상태로 덮어쓰지 않는다(기존 `if path: v.set(path)` 관례와 동일한 정신)."""
-    import missa_gui as gui
-    var = _I_FakeVar('이전 선택값')
-    entry = _I_FakeEntry()
-    vars_ = {'ref_pptx': var}
-    entries = {'ref_pptx': entry}
-    od_real_paths = {}
-    gui._apply_onedrive_selection('ref_pptx', '', '', vars_, od_real_paths, entries)
-    assert var.get() == '이전 선택값', var.get()
-    assert od_real_paths == {}
-    assert entry.xview_calls == []
-
-
-def _i_run_onedrive_browser_choose_probe(tmp_path, stub_children_code: str) -> dict:
-    """`_ask_onedrive_file_browser_popup()`을 서브프로세스에서 열어, 최상위 첫 폴더를
-    <<TreeviewOpen>>으로 펼치고 그 안의 첫 파일을 선택한 뒤 '선택' 버튼을 눌러 실제
-    반환값((local_path, remote_path) 튜플)을 덤프한다. H그룹의 `_h_run_onedrive_browser_
-    open_event_probe`(test_missa_progression.py)와 같은 서브프로세스 위젯 프로브 기법을
-    재사용하되, 이번엔 트리 내용이 아니라 함수의 **반환값**이 검증 대상이라 별도로 둔다."""
-    out_file = tmp_path / 'i_probe_result.json'
-    dest_dir = tmp_path / 'dest'
-    script = f'''
-import sys, json, types
-sys.path.insert(0, {str(BASE)!r})
-import tkinter as tk
-import missa_gui as gui
-
-# K2(2026-09-27): 공유 캐시 폴더는 기본적으로 cwd 기준 상대경로('onedrive_cache')다 — 이
-# 서브프로세스 프로브는 cwd=BASE(실제 프로젝트 폴더)로 실행되므로, 오버라이드하지 않으면
-# 테스트가 실제 저장소에 캐시 파일을 남기게 된다. tmp_path 하위로 격리한다.
-gui._ONEDRIVE_CACHE_ROOT = {str(tmp_path / 'onedrive_cache')!r}
-
-def _i_stub_download_file(path, dest):
-    # K2(2026-09-27) 이후 `_resolve_onedrive_download()`가 캐시 폴더에서 dest_dir로
-    # `shutil.copyfile()`을 하므로, 이 스텁도 실제 `missa_onedrive.download_file()`처럼
-    # 파일을 실제로 써야 한다 — 그냥 dest를 돌려주기만 하면(파일 없이) copyfile이
-    # FileNotFoundError로 죽는다.
-    import pathlib
-    p = pathlib.Path(dest)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(b"STUB-DOWNLOAD")
-    return dest
-
-_od_stub = types.ModuleType("missa_onedrive")
-_od_stub.list_children = {stub_children_code}
-_od_stub.download_file = _i_stub_download_file
-sys.modules["missa_onedrive"] = _od_stub
-
-def _i_find_treeview(w):
-    if w.winfo_class() == "Treeview":
-        return w
-    for c in w.winfo_children():
-        found = _i_find_treeview(c)
-        if found:
-            return found
-    return None
-
-def _i_find_button(w, text):
-    if w.winfo_class() == "Button" and w.cget("text") == text:
-        return w
-    for c in w.winfo_children():
-        found = _i_find_button(c, text)
-        if found:
-            return found
-    return None
-
-_orig_wait_window = tk.Toplevel.wait_window
-
-def _fake_wait_window(self, *a, **k):
-    def _probe():
-        try:
-            tv = _i_find_treeview(self)
-            if tv is not None:
-                top = tv.get_children("")
-                folder_iid = next(
-                    (iid for iid in top if tv.item(iid, "text").startswith("\\U0001F4C1")), None,
-                )
-                if folder_iid is not None:
-                    tv.focus(folder_iid)
-                    tv.event_generate("<<TreeviewOpen>>")
-                    self.update()
-                    file_iid = next(
-                        (iid for iid in tv.get_children(folder_iid)
-                         if tv.item(iid, "text").startswith("\\U0001F4C4")), None,
-                    )
-                    if file_iid is not None:
-                        tv.focus(file_iid)
-                        tv.selection_set(file_iid)
-                        tv.event_generate("<<TreeviewSelect>>")
-                        self.update()
-                        btn = _i_find_button(self, "선택")
-                        if btn is not None:
-                            btn.invoke()
-        finally:
-            try:
-                self.destroy()
-            except tk.TclError:
-                pass
-    self.after(60, _probe)
-    return _orig_wait_window(self, *a, **k)
-
-tk.Toplevel.wait_window = _fake_wait_window
-
-root = tk.Tk()
-root.withdraw()
-result = gui._ask_onedrive_file_browser_popup(root, {str(dest_dir)!r}, cache={{}})
-root.destroy()
-
-with open({str(out_file)!r}, 'w', encoding='utf-8') as f:
-    json.dump({{"result": list(result)}}, f)
-'''
-    script_path = tmp_path / 'i_probe_script.py'
-    script_path.write_text(script, encoding='utf-8')
-    import subprocess as _i_subprocess
-    import sys as _i_sys
-    import json as _i_json
-    try:
-        result = _i_subprocess.run(
-            [_i_sys.executable, str(script_path)],
-            cwd=str(BASE), capture_output=True, text=True, encoding='utf-8', errors='replace',
-            timeout=30,
-        )
-    except _i_subprocess.TimeoutExpired as e:
-        raise AssertionError(
-            f"OneDrive 브라우저 선택 프로브가 30초 내에 끝나지 않음\n"
-            f"stdout:\n{e.stdout}\nstderr:\n{e.stderr}"
-        )
-    assert out_file.is_file(), (
-        f"선택 결과 덤프 실패(exit={result.returncode})\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-    return _i_json.loads(out_file.read_text(encoding='utf-8'))
-
-
-def test_i10_browser_popup_returns_local_and_remote_path_tuple_on_selection(tmp_path):
-    """버그4 수정의 계약 변경: `_ask_onedrive_file_browser_popup()`은 이제 local_path
-    문자열 하나가 아니라 (local_path, remote_path) 튜플을 반환해야 한다 — 표시용
-    상대경로를 만들려면 호출부가 remote_path도 알아야 하기 때문."""
-    stub = (
-        "lambda path: {"
-        "'PPT 문서': [{'name': '13. 기도문', 'folder': {}}],"
-        "'PPT 문서/13. 기도문': [{'name': '위령 성월 기도.pptx'}],"
-        "}.get(path, [])"
-    )
-    dumped = _i_run_onedrive_browser_choose_probe(tmp_path, stub)
-    result = dumped['result']
-    assert isinstance(result, list) and len(result) == 2, result
-    local_path, remote_path = result
-    assert remote_path == 'PPT 문서/13. 기도문/위령 성월 기도.pptx', remote_path
-    assert local_path.endswith('위령 성월 기도.pptx'), local_path
-    assert 'output' not in remote_path, (
-        "remote_path에 로컬 다운로드 경로가 섞여 들어감", remote_path,
-    )
-
-
-def test_i11_browser_popup_returns_empty_tuple_on_cancel(tmp_path):
-    """취소 시 기존 관례(빈 문자열)를 튜플로 확장: ('', '')."""
-    out_file = tmp_path / 'i11_probe_result.json'
-    dest_dir = tmp_path / 'dest'
-    stub = "lambda path: []"
-    script = f'''
-import sys, json, types
-sys.path.insert(0, {str(BASE)!r})
-import tkinter as tk
-import missa_gui as gui
-
-_od_stub = types.ModuleType("missa_onedrive")
-_od_stub.list_children = {stub}
-_od_stub.download_file = lambda path, dest: dest
-sys.modules["missa_onedrive"] = _od_stub
-
-_orig_wait_window = tk.Toplevel.wait_window
-
-def _fake_wait_window(self, *a, **k):
-    def _probe():
-        self.destroy()
-    self.after(60, _probe)
-    return _orig_wait_window(self, *a, **k)
-
-tk.Toplevel.wait_window = _fake_wait_window
-
-root = tk.Tk()
-root.withdraw()
-result = gui._ask_onedrive_file_browser_popup(root, {str(dest_dir)!r}, cache={{}})
-root.destroy()
-
-with open({str(out_file)!r}, 'w', encoding='utf-8') as f:
-    json.dump({{"result": list(result)}}, f)
-'''
-    script_path = tmp_path / 'i11_probe_script.py'
-    script_path.write_text(script, encoding='utf-8')
-    import subprocess as _i11_subprocess
-    import sys as _i11_sys
-    import json as _i11_json
-    try:
-        result = _i11_subprocess.run(
-            [_i11_sys.executable, str(script_path)],
-            cwd=str(BASE), capture_output=True, text=True, encoding='utf-8', errors='replace',
-            timeout=30,
-        )
-    except _i11_subprocess.TimeoutExpired as e:
-        raise AssertionError(
-            f"OneDrive 브라우저 취소 프로브가 30초 내에 끝나지 않음\n"
-            f"stdout:\n{e.stdout}\nstderr:\n{e.stderr}"
-        )
-    assert out_file.is_file(), (
-        f"취소 결과 덤프 실패(exit={result.returncode})\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-    dumped = _i11_json.loads(out_file.read_text(encoding='utf-8'))
-    assert dumped['result'] == ['', ''], dumped['result']
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2866,243 +2258,6 @@ with open({str(out_file)!r}, 'w', encoding='utf-8') as f:
 # J5(선택 구현): 팝업이 열리는 시점에 위 3개 폴더의 자식 목록을 백그라운드 스레드로
 # prefetch해 캐시를 미리 채운다 — 사용자가 실제로 펼칠 때 캐시 히트로 즉시 뜨게 함.
 # ═══════════════════════════════════════════════════════════════════════════
-
-
-def _j_run_onedrive_browser_label_probe(tmp_path, stub_children_code: str) -> list:
-    """`_ask_onedrive_file_browser_popup()`을 서브프로세스에서 열어 그 안의 모든
-    `tk.Label` 텍스트를 재귀적으로 덤프한다(J1 검증). H그룹의 서브프로세스 위젯 프로브
-    기법(`tk.Toplevel.wait_window` 몽키패치)을 재사용하되, ttk.Treeview가 아니라 일반
-    Label 위젯을 대상으로 하므로 이 파일에서 별도로 자기 완결적으로 정의한다."""
-    out_file = tmp_path / 'j1_probe_result.json'
-    dest_dir = tmp_path / 'dest'
-    script = f'''
-import sys, json, types
-sys.path.insert(0, {str(BASE)!r})
-import tkinter as tk
-import missa_gui as gui
-
-_od_stub = types.ModuleType("missa_onedrive")
-_od_stub.list_children = {stub_children_code}
-_od_stub.download_file = lambda path, dest: dest
-sys.modules["missa_onedrive"] = _od_stub
-
-def _j_dump_labels(w, out):
-    if w.winfo_class() == "Label":
-        out.append(w.cget("text"))
-    for c in w.winfo_children():
-        _j_dump_labels(c, out)
-
-_dump = []
-_orig_wait_window = tk.Toplevel.wait_window
-
-def _fake_wait_window(self, *a, **k):
-    def _probe():
-        try:
-            _j_dump_labels(self, _dump)
-        finally:
-            self.destroy()
-    self.after(60, _probe)
-    return _orig_wait_window(self, *a, **k)
-
-tk.Toplevel.wait_window = _fake_wait_window
-
-root = tk.Tk()
-root.withdraw()
-gui._ask_onedrive_file_browser_popup(root, {str(dest_dir)!r}, cache={{}})
-root.destroy()
-
-with open({str(out_file)!r}, 'w', encoding='utf-8') as f:
-    json.dump(_dump, f)
-'''
-    script_path = tmp_path / 'j1_probe_script.py'
-    script_path.write_text(script, encoding='utf-8')
-    import subprocess as _j_subprocess
-    import sys as _j_sys
-    import json as _j_json
-    try:
-        result = _j_subprocess.run(
-            [_j_sys.executable, str(script_path)],
-            cwd=str(BASE), capture_output=True, text=True, encoding='utf-8', errors='replace',
-            timeout=30,
-        )
-    except _j_subprocess.TimeoutExpired as e:
-        raise AssertionError(
-            f"OneDrive 브라우저 Label 프로브가 30초 내에 끝나지 않음\n"
-            f"stdout:\n{e.stdout}\nstderr:\n{e.stderr}"
-        )
-    assert out_file.is_file(), (
-        f"Label 덤프 실패(exit={result.returncode})\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-    return _j_json.loads(out_file.read_text(encoding='utf-8'))
-
-
-def test_j1_onedrive_browser_label_text_is_simplified(tmp_path):
-    """J1: 안내 문구가 root_remote_path("PPT 문서")나 "더블클릭" 같은 세부 설명 없이
-    단순히 "파일을 선택해 주세요"여야 한다."""
-    labels = _j_run_onedrive_browser_label_probe(tmp_path, "lambda path: []")
-    assert labels == ['파일을 선택해 주세요'], labels
-
-
-def test_j2a_onedrive_root_visible_children_keeps_only_allowed_three():
-    """J2: 실측된 3개 폴더명만 최상위에서 허용한다 — 그 외(예: '09.가톨릭 성가')는
-    최상위 필터 함수에서 제외돼야 한다."""
-    import missa_gui as gui
-    items = [
-        {'name': '11.공지사항 PPT문서', 'folder': {}},
-        {'name': '13. 기도문', 'folder': {}},
-        {'name': '20.청년 미사', 'folder': {}},
-        {'name': '09.가톨릭 성가', 'folder': {}},
-        {'name': 'random.pptx'},
-    ]
-    kept = gui._onedrive_root_visible_children(items)
-    assert [k['name'] for k in kept] == [
-        '11.공지사항 PPT문서', '13. 기도문', '20.청년 미사',
-    ], kept
-
-
-def test_j2b_onedrive_root_visible_children_normalizes_whitespace_differences():
-    """실측 폴더명과 사용자가 말한 이름이 공백 유무로 미세하게 다를 수 있다 — 비교 시
-    공백을 제거해 정규화해야 안전하다."""
-    import missa_gui as gui
-    items = [{'name': '11.공지사항PPT문서', 'folder': {}}]  # 공백 없는 변형
-    kept = gui._onedrive_root_visible_children(items)
-    assert len(kept) == 1, kept
-
-
-def test_j2c_browser_top_level_shows_only_three_folders_but_subfolder_shows_all(tmp_path):
-    """통합 확인: 최상위 트리에는 정확히 3개 폴더만 보이고('09.가톨릭 성가'는 숨겨짐),
-    그중 하나를 <<TreeviewOpen>>으로 펼치면 그 안의 자식은 필터 없이 전부 보여야 한다
-    (J2 요구사항 — 하위 폴더 탐색은 기존 그대로). `_h_run_onedrive_browser_open_event_
-    probe`는 최상위에서 알파벳/사전순 정렬상 첫 폴더('11.공지사항 PPT문서')를 여니, 그
-    폴더에 자식을 채워둔다."""
-    stub = (
-        "lambda path: {"
-        "'PPT 문서': ["
-        "{'name': '11.공지사항 PPT문서', 'folder': {}},"
-        "{'name': '13. 기도문', 'folder': {}},"
-        "{'name': '20.청년 미사', 'folder': {}},"
-        "{'name': '09.가톨릭 성가', 'folder': {}},"
-        "],"
-        "'PPT 문서/11.공지사항 PPT문서': ["
-        "{'name': '2026년', 'folder': {}},"
-        "{'name': 'a.pptx'},"
-        "],"
-        "}.get(path, [])"
-    )
-    top_level = _h_run_onedrive_browser_open_event_probe(tmp_path, stub)
-    top_texts = [n['text'] for n in top_level]
-    assert len(top_texts) == 3, ("최상위 폴더 개수가 3개가 아님", top_texts)
-    assert not any('가톨릭 성가' in t for t in top_texts), (
-        "허용 목록 밖의 폴더가 최상위에 노출됨", top_texts,
-    )
-    folder_node = next(n for n in top_level if '공지사항' in n['text'])
-    child_texts = [c['text'] for c in folder_node['children']]
-    assert any('2026년' in t for t in child_texts), child_texts
-    assert any('a.pptx' in t for t in child_texts), (
-        "하위 폴더 탐색까지 최상위 3개 필터가 잘못 적용됨", child_texts,
-    )
-
-
-def test_j5a_prefetch_onedrive_children_populates_cache_for_each_path(monkeypatch):
-    """J5: 여러 remote_path를 받아 각각 캐시에 채운다. 개별 폴더 조회가 실패해도(네트워크
-    오류 시뮬레이션) 나머지 폴더는 계속 시도해야 한다 — 순수 성능 최적화라 실패해도
-    사용자가 실제로 펼칠 때 정상 동기 경로로 폴백되므로 예외를 삼켜도 안전하다."""
-    import sys
-    import missa_gui as gui
-
-    calls = []
-
-    class _StubOD:
-        @staticmethod
-        def list_children(path):
-            calls.append(path)
-            if path == 'PPT 문서/13. 기도문':
-                raise RuntimeError('네트워크 오류(시뮬레이션)')
-            return [{'name': f'{path}-item'}]
-
-    monkeypatch.setitem(sys.modules, 'missa_onedrive', _StubOD)
-    cache = {}
-    gui._prefetch_onedrive_children(
-        ['PPT 문서/11.공지사항 PPT문서', 'PPT 문서/13. 기도문', 'PPT 문서/20.청년 미사'],
-        cache,
-    )
-    assert 'PPT 문서/11.공지사항 PPT문서' in cache
-    assert 'PPT 문서/20.청년 미사' in cache
-    assert 'PPT 문서/13. 기도문' not in cache, (
-        "실패한 폴더가 캐시에 잘못 남음(예외를 삼키지 못함)", cache,
-    )
-    assert calls.count('PPT 문서/11.공지사항 PPT문서') == 1
-
-
-def test_j5b_popup_prefetches_root_folder_children_in_background(tmp_path):
-    """통합 확인: 팝업이 열리면 J2의 3개 최상위 폴더 자식이 백그라운드로 캐시에 채워져야
-    한다 — 사용자가 직접 펼치지 않았는데도(이 테스트는 <<TreeviewOpen>>을 발생시키지
-    않음) 캐시에 그 3개 경로가 들어가 있어야 prefetch가 실제로 동작했다고 볼 수 있다."""
-    out_file = tmp_path / 'j5_probe_result.json'
-    dest_dir = tmp_path / 'dest'
-    script = f'''
-import sys, json, types, time
-sys.path.insert(0, {str(BASE)!r})
-import tkinter as tk
-import missa_gui as gui
-
-_od_stub = types.ModuleType("missa_onedrive")
-_od_stub.list_children = lambda path: {{
-    "PPT 문서": [
-        {{"name": "11.공지사항 PPT문서", "folder": {{}}}},
-        {{"name": "13.기도문", "folder": {{}}}},
-        {{"name": "20.청년 미사", "folder": {{}}}},
-    ],
-    "PPT 문서/11.공지사항 PPT문서": [{{"name": "x.pptx"}}],
-    "PPT 문서/13.기도문": [{{"name": "y.pptx"}}],
-    "PPT 문서/20.청년 미사": [{{"name": "z.pptx"}}],
-}}.get(path, [])
-_od_stub.download_file = lambda path, dest: dest
-sys.modules["missa_onedrive"] = _od_stub
-
-_orig_wait_window = tk.Toplevel.wait_window
-
-def _fake_wait_window(self, *a, **k):
-    def _probe():
-        time.sleep(0.5)
-        self.destroy()
-    self.after(60, _probe)
-    return _orig_wait_window(self, *a, **k)
-
-tk.Toplevel.wait_window = _fake_wait_window
-
-my_cache = {{}}
-root = tk.Tk()
-root.withdraw()
-gui._ask_onedrive_file_browser_popup(root, {str(dest_dir)!r}, cache=my_cache)
-root.destroy()
-
-with open({str(out_file)!r}, 'w', encoding='utf-8') as f:
-    json.dump(sorted(my_cache.keys()), f)
-'''
-    script_path = tmp_path / 'j5_probe_script.py'
-    script_path.write_text(script, encoding='utf-8')
-    import subprocess as _j5_subprocess
-    import sys as _j5_sys
-    import json as _j5_json
-    try:
-        result = _j5_subprocess.run(
-            [_j5_sys.executable, str(script_path)],
-            cwd=str(BASE), capture_output=True, text=True, encoding='utf-8', errors='replace',
-            timeout=30,
-        )
-    except _j5_subprocess.TimeoutExpired as e:
-        raise AssertionError(
-            f"OneDrive 브라우저 prefetch 프로브가 30초 내에 끝나지 않음\n"
-            f"stdout:\n{e.stdout}\nstderr:\n{e.stderr}"
-        )
-    assert out_file.is_file(), (
-        f"캐시 키 덤프 실패(exit={result.returncode})\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-    cached_keys = _j5_json.loads(out_file.read_text(encoding='utf-8'))
-    assert 'PPT 문서/11.공지사항 PPT문서' in cached_keys, cached_keys
-    assert 'PPT 문서/13.기도문' in cached_keys, cached_keys
-    assert 'PPT 문서/20.청년 미사' in cached_keys, cached_keys
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3397,10 +2552,10 @@ def test_j3l_last_mass_type_no_longer_written_by_gui_module():
 
 def test_j3m_run_gui_mode_skips_mass_type_popup_and_uses_given_kr(monkeypatch):
     """`_run_gui_mode('청년')`을 호출하면 (더 이상 존재하지 않을) 미사유형 팝업을 부르지
-    않고, 주어진 '청년'을 그대로 mass_type으로 써서 청년 흐름(ensure_onedrive_login →
+    않고, 주어진 '청년'을 그대로 mass_type으로 써서 청년 흐름(ensure_ppt_roots →
     _ask_combined_input_popup(mass_type='youth') → _ask_youth_hymn_popup)을 타야 한다."""
     calls = []
-    monkeypatch.setattr(mtp, 'ensure_onedrive_login', lambda: calls.append('login'))
+    monkeypatch.setattr(mtp, 'ensure_ppt_roots', lambda mt, ask_if_missing=False: (calls.append('login'), True)[1])
     monkeypatch.setattr(
         mtp, '_ask_combined_input_popup',
         lambda mass_type: (calls.append(('combined', mass_type)), ('20260927', {}))[1],
@@ -3729,423 +2884,6 @@ def test_j10f_version_row_not_counted_by_j4_gridded_label_filter(tmp_path):
 # 경로 가정을 깨지 않는다.
 # ═══════════════════════════════════════════════════════════════════════════
 
-def test_k1a_prefetch_recurses_into_nested_subfolders(monkeypatch):
-    """K1: 직계 자식뿐 아니라 모든 하위 폴더까지 재귀적으로 캐시를 채워야 한다."""
-    import sys
-    import missa_gui as gui
-
-    tree = {
-        'root': [{'name': 'sub1', 'folder': {}}, {'name': 'file1.pptx'}],
-        'root/sub1': [{'name': 'sub1a', 'folder': {}}, {'name': 'file2.pptx'}],
-        'root/sub1/sub1a': [{'name': 'file3.pptx'}],
-    }
-    calls = []
-
-    class _StubOD:
-        @staticmethod
-        def list_children(path):
-            calls.append(path)
-            return tree.get(path, [])
-
-    monkeypatch.setitem(sys.modules, 'missa_onedrive', _StubOD)
-    cache = {}
-    gui._prefetch_onedrive_children(['root'], cache)
-
-    assert 'root' in cache
-    assert 'root/sub1' in cache, ("하위 폴더까지 재귀적으로 프리페치되지 않음", list(cache.keys()))
-    assert 'root/sub1/sub1a' in cache, list(cache.keys())
-    assert calls.count('root/sub1/sub1a') == 1
-
-
-def test_k1b_prefetch_recursion_survives_failure_in_nested_folder(monkeypatch):
-    """K1: 재귀 도중 특정 하위 폴더 조회가 실패해도(네트워크 오류 등) 다른 가지의 재귀는
-    계속돼야 한다 — §J5의 "실패해도 나머지는 계속 시도" 원칙을 재귀 깊이에도 그대로
-    확장한다."""
-    import sys
-    import missa_gui as gui
-
-    tree = {
-        'root': [{'name': 'good', 'folder': {}}, {'name': 'bad', 'folder': {}}],
-        'root/good': [{'name': 'leaf', 'folder': {}}],
-        'root/good/leaf': [{'name': 'x.pptx'}],
-    }
-
-    class _StubOD:
-        @staticmethod
-        def list_children(path):
-            if path == 'root/bad':
-                raise RuntimeError('네트워크 오류(시뮬레이션)')
-            return tree.get(path, [])
-
-    monkeypatch.setitem(sys.modules, 'missa_onedrive', _StubOD)
-    cache = {}
-    gui._prefetch_onedrive_children(['root'], cache)
-
-    assert 'root/good' in cache
-    assert 'root/good/leaf' in cache, (
-        "실패한 형제 폴더 때문에 다른 가지의 재귀가 중단됨", list(cache.keys()),
-    )
-    assert 'root/bad' not in cache
-
-
-def test_k1c_cached_onedrive_children_skips_network_when_prewarmed(monkeypatch):
-    """K1 요구사항의 '캐시에 이미 있으면 네트워크 호출 스킵'을 `<<TreeviewOpen>>`이 실제로
-    거치는 단일 지점(`_cached_onedrive_children`, `_insert_children`이 호출)에서 고정한다 —
-    재귀 프리페치가 이 함수를 통해 캐시를 채우므로, 트리 확장 시 같은 경로 조회는 이
-    계약에 의해 자동으로 네트워크를 타지 않는다."""
-    import sys
-    import missa_gui as gui
-
-    class _StubOD:
-        @staticmethod
-        def list_children(path):
-            raise AssertionError(f"이미 캐시된 경로에 네트워크 호출 발생: {path}")
-
-    monkeypatch.setitem(sys.modules, 'missa_onedrive', _StubOD)
-    cache = {'root/sub1': [{'name': 'x.pptx'}]}
-    result = gui._cached_onedrive_children('root/sub1', cache)
-
-    assert result == [{'name': 'x.pptx'}]
-
-
-def _k2_write_manifest(gui, manifest: dict) -> None:
-    gui._save_onedrive_cache_manifest(manifest)
-
-
-def test_k2a_reuses_local_blob_when_remote_metadata_unchanged(monkeypatch, tmp_path):
-    """K2: 로컬 캐시본이 있고 OneDrive lastModifiedDateTime이 캐시 기록 시점과 정확히
-    같으면, 새로 다운로드하지 않고 공유 캐시 폴더의 파일을 날짜 폴더로 복사만 해야 한다."""
-    import sys
-    import missa_gui as gui
-
-    monkeypatch.setattr(gui, '_ONEDRIVE_CACHE_ROOT', str(tmp_path / 'onedrive_cache'))
-    remote_path = 'PPT 문서/13.기도문/시작기도.pptx'
-    blob_path = gui._onedrive_cache_blob_path(remote_path)
-    blob_path.parent.mkdir(parents=True, exist_ok=True)
-    blob_path.write_bytes(b'CACHED-CONTENT')
-    _k2_write_manifest(gui, {
-        remote_path: {'lastModifiedDateTime': '2026-08-01T00:00:00Z', 'eTag': 'E1'},
-    })
-
-    download_calls = []
-
-    class _StubOD:
-        @staticmethod
-        def download_file(path, dest):
-            download_calls.append(path)
-            Path(dest).write_bytes(b'FRESH-DOWNLOAD')
-            return dest
-
-        @staticmethod
-        def get_item_metadata(path):
-            return {'lastModifiedDateTime': '2026-08-01T00:00:00Z', 'eTag': 'E1'}
-
-    monkeypatch.setitem(sys.modules, 'missa_onedrive', _StubOD)
-
-    dest_dir = tmp_path / 'output' / '20260906_youth'
-    dest = gui._resolve_onedrive_download(remote_path, dest_dir, cache={})
-
-    assert not download_calls, "캐시가 최신인데도 재다운로드가 발생함"
-    assert dest.read_bytes() == b'CACHED-CONTENT'
-
-
-def test_k2b_redownloads_when_remote_is_newer_than_cached_record(monkeypatch, tmp_path):
-    """핵심 불변조건(코디네이터 재강조): OneDrive 쪽이 캐시 기록 시점보다 최신이면 이름이
-    같아도 반드시 재다운로드해야 한다. lastModifiedDateTime을 캐시 기록보다 미래로 설정해
-    확인한다."""
-    import sys
-    import missa_gui as gui
-
-    monkeypatch.setattr(gui, '_ONEDRIVE_CACHE_ROOT', str(tmp_path / 'onedrive_cache'))
-    remote_path = 'PPT 문서/13.기도문/시작기도.pptx'
-    blob_path = gui._onedrive_cache_blob_path(remote_path)
-    blob_path.parent.mkdir(parents=True, exist_ok=True)
-    blob_path.write_bytes(b'STALE-CACHED-CONTENT')
-    _k2_write_manifest(gui, {
-        remote_path: {'lastModifiedDateTime': '2026-08-01T00:00:00Z', 'eTag': 'E1'},
-    })
-
-    download_calls = []
-
-    class _StubOD:
-        @staticmethod
-        def download_file(path, dest):
-            download_calls.append(path)
-            Path(dest).write_bytes(b'FRESH-DOWNLOAD')
-            return dest
-
-        @staticmethod
-        def get_item_metadata(path):
-            # OneDrive 쪽이 캐시 기록 시점(2026-08-01)보다 미래(더 최신)
-            return {'lastModifiedDateTime': '2026-09-27T00:00:00Z', 'eTag': 'E2'}
-
-    monkeypatch.setitem(sys.modules, 'missa_onedrive', _StubOD)
-
-    dest_dir = tmp_path / 'output' / '20260906_youth'
-    dest = gui._resolve_onedrive_download(remote_path, dest_dir, cache={})
-
-    assert download_calls == [remote_path], "OneDrive가 더 최신인데도 재다운로드가 스킵됨"
-    assert dest.read_bytes() == b'FRESH-DOWNLOAD'
-
-    manifest_after = gui._load_onedrive_cache_manifest()
-    assert manifest_after[remote_path]['lastModifiedDateTime'] == '2026-09-27T00:00:00Z', (
-        "재다운로드 후 매니페스트가 새 lastModifiedDateTime으로 갱신되지 않음", manifest_after,
-    )
-
-
-def test_k2c_redownloads_when_no_local_cache_exists(monkeypatch, tmp_path):
-    """K2: 최초 사용(매니페스트/캐시본 모두 없음)에는 당연히 새로 받아야 한다."""
-    import sys
-    import missa_gui as gui
-
-    monkeypatch.setattr(gui, '_ONEDRIVE_CACHE_ROOT', str(tmp_path / 'onedrive_cache'))
-    remote_path = 'PPT 문서/11.공지사항 PPT문서/2026년09월27일.pptx'
-
-    download_calls = []
-
-    class _StubOD:
-        @staticmethod
-        def download_file(path, dest):
-            download_calls.append(path)
-            Path(dest).write_bytes(b'FIRST-DOWNLOAD')
-            return dest
-
-        @staticmethod
-        def get_item_metadata(path):
-            return {'lastModifiedDateTime': '2026-09-20T00:00:00Z', 'eTag': 'E1'}
-
-    monkeypatch.setitem(sys.modules, 'missa_onedrive', _StubOD)
-
-    dest_dir = tmp_path / 'output' / '20260927_youth'
-    dest = gui._resolve_onedrive_download(remote_path, dest_dir, cache={})
-
-    assert download_calls == [remote_path]
-    assert dest.read_bytes() == b'FIRST-DOWNLOAD'
-
-
-def test_k2d_redownloads_when_remote_metadata_lookup_is_uncertain(monkeypatch, tmp_path):
-    """K2: 메타데이터 조회 자체가 실패하면(네트워크 오류 등) "불확실하면 안전하게
-    재다운로드" 원칙에 따라 캐시를 신뢰하지 않고 새로 받아야 한다."""
-    import sys
-    import missa_gui as gui
-
-    monkeypatch.setattr(gui, '_ONEDRIVE_CACHE_ROOT', str(tmp_path / 'onedrive_cache'))
-    remote_path = 'PPT 문서/13.기도문/시작기도.pptx'
-    blob_path = gui._onedrive_cache_blob_path(remote_path)
-    blob_path.parent.mkdir(parents=True, exist_ok=True)
-    blob_path.write_bytes(b'STALE-OR-VALID-UNKNOWN')
-    _k2_write_manifest(gui, {
-        remote_path: {'lastModifiedDateTime': '2026-08-01T00:00:00Z', 'eTag': 'E1'},
-    })
-
-    download_calls = []
-
-    class _StubOD:
-        @staticmethod
-        def download_file(path, dest):
-            download_calls.append(path)
-            Path(dest).write_bytes(b'FRESH-DOWNLOAD')
-            return dest
-
-        @staticmethod
-        def get_item_metadata(path):
-            raise RuntimeError('네트워크 오류(시뮬레이션)')
-
-    monkeypatch.setitem(sys.modules, 'missa_onedrive', _StubOD)
-
-    dest_dir = tmp_path / 'output' / '20260906_youth'
-    dest = gui._resolve_onedrive_download(remote_path, dest_dir, cache={})
-
-    assert download_calls == [remote_path], "메타데이터 조회 실패(불확실) 시에도 캐시를 재사용함"
-    assert dest.read_bytes() == b'FRESH-DOWNLOAD'
-
-
-def test_k2e_shared_cache_reused_across_different_date_folders(monkeypatch, tmp_path):
-    """K2 핵심 요구사항: 공유 캐시 폴더는 날짜 폴더와 별개라, 이번 주 시작기도와 다음 주
-    시작기도가 같은 파일이면(변경 없음) 두 번째 호출은 재다운로드 없이 새 날짜 폴더로
-    복사만 해야 한다."""
-    import sys
-    import missa_gui as gui
-
-    monkeypatch.setattr(gui, '_ONEDRIVE_CACHE_ROOT', str(tmp_path / 'onedrive_cache'))
-    remote_path = 'PPT 문서/13.기도문/시작기도.pptx'
-
-    download_calls = []
-
-    class _StubOD:
-        @staticmethod
-        def download_file(path, dest):
-            download_calls.append(path)
-            Path(dest).write_bytes(b'WEEK1-CONTENT')
-            return dest
-
-        @staticmethod
-        def get_item_metadata(path):
-            return {'lastModifiedDateTime': '2026-08-01T00:00:00Z', 'eTag': 'E1'}
-
-    monkeypatch.setitem(sys.modules, 'missa_onedrive', _StubOD)
-
-    dest_week1 = tmp_path / 'output' / '20260906_youth'
-    dest_week2 = tmp_path / 'output' / '20260913_youth'
-
-    d1 = gui._resolve_onedrive_download(remote_path, dest_week1, cache={})
-    d2 = gui._resolve_onedrive_download(remote_path, dest_week2, cache={})
-
-    assert download_calls == [remote_path], (
-        "두 번째(다른 날짜 폴더) 호출에서 불필요한 재다운로드 발생", download_calls,
-    )
-    assert d1.read_bytes() == b'WEEK1-CONTENT'
-    assert d2.read_bytes() == b'WEEK1-CONTENT'
-    assert d1.parent == dest_week1
-    assert d2.parent == dest_week2
-
-
-def test_k2g_get_item_metadata_returns_driveitem_json(monkeypatch):
-    """K2가 신선도 비교에 쓰는 새 저수준 프리미티브 `missa_onedrive.get_item_metadata()`
-    자체의 단위 테스트 — `list_children()`/`download_file()`과 같은 기존 패턴(404→
-    FileNotFoundError, 그 외엔 json() 그대로 반환)을 따라야 한다."""
-    import missa_onedrive as od_k2
-
-    class _FakeResp:
-        def __init__(self, status_code, data=None):
-            self.status_code = status_code
-            self._data = data
-
-        def raise_for_status(self):
-            if self.status_code >= 400:
-                raise od_k2.requests.HTTPError(f'{self.status_code} error')
-
-        def json(self):
-            return self._data
-
-    monkeypatch.setattr(od_k2, 'get_access_token', lambda: 'tok')
-    monkeypatch.setitem(od_k2._REMOTE_ITEM_CACHE, '13.기도문', None)
-    monkeypatch.setattr(
-        od_k2.requests, 'get',
-        lambda *a, **k: _FakeResp(200, {'name': '시작기도.pptx', 'lastModifiedDateTime': 'T1'}),
-    )
-
-    result = od_k2.get_item_metadata('13.기도문/시작기도.pptx')
-    assert result == {'name': '시작기도.pptx', 'lastModifiedDateTime': 'T1'}
-
-
-def test_k2h_get_item_metadata_missing_raises_file_not_found(monkeypatch):
-    import missa_onedrive as od_k2
-
-    class _FakeResp:
-        def __init__(self, status_code):
-            self.status_code = status_code
-
-    monkeypatch.setattr(od_k2, 'get_access_token', lambda: 'tok')
-    monkeypatch.setattr(od_k2.requests, 'get', lambda *a, **k: _FakeResp(404))
-
-    with pytest.raises(FileNotFoundError):
-        od_k2.get_item_metadata('없음.pptx')
-
-
-def test_k2f_final_decision_always_calls_live_metadata_ignoring_k1_cache(monkeypatch, tmp_path):
-    """K2 리뷰 라운드17 확정 버그 수정: K1의 재귀 프리페치가 부모 폴더의 자식 목록을
-    캐시에 갖고 있어도, K2의 최종 재사용 판단은 **항상** 실시간 `get_item_metadata()`를
-    호출해야 한다 — K1 캐시는 트리 표시용 스냅샷일 뿐이라 팝업이 열려 있는 동안 갱신되지
-    않는다(`_cached_onedrive_children`의 "이미 있으면 재사용" 계약 때문). 원래 §K2
-    구현은 K1 캐시가 있으면 `get_item_metadata()`를 건너뛰어(추가 API 호출 절약 목적)
-    "이름이 같아도 OneDrive가 최신이면 무조건 재다운로드"라는 핵심 불변조건을 깨뜨렸다
-    (리뷰어 실측 재현, `test_k2i_*` 참고). 이 테스트는 캐시가 있어도 실시간 조회가
-    실제로 호출됨을 직접 확인한다(구 `test_k2f`가 정확히 반대를 요구했던 것을 대체)."""
-    import sys
-    import missa_gui as gui
-
-    monkeypatch.setattr(gui, '_ONEDRIVE_CACHE_ROOT', str(tmp_path / 'onedrive_cache'))
-    remote_path = 'PPT 문서/13.기도문/시작기도.pptx'
-    parent_path = 'PPT 문서/13.기도문'
-    blob_path = gui._onedrive_cache_blob_path(remote_path)
-    blob_path.parent.mkdir(parents=True, exist_ok=True)
-    blob_path.write_bytes(b'CACHED-CONTENT')
-    _k2_write_manifest(gui, {
-        remote_path: {'lastModifiedDateTime': '2026-08-01T00:00:00Z', 'eTag': 'E1'},
-    })
-
-    metadata_calls = []
-
-    class _StubOD:
-        @staticmethod
-        def download_file(path, dest):
-            raise AssertionError("실시간 조회 결과가 일치(신선)한데도 재다운로드가 발생함")
-
-        @staticmethod
-        def get_item_metadata(path):
-            metadata_calls.append(path)
-            return {'lastModifiedDateTime': '2026-08-01T00:00:00Z', 'eTag': 'E1'}
-
-    monkeypatch.setitem(sys.modules, 'missa_onedrive', _StubOD)
-
-    k1_cache = {
-        parent_path: [
-            {'name': '시작기도.pptx', 'lastModifiedDateTime': '2026-08-01T00:00:00Z', 'eTag': 'E1'},
-        ],
-    }
-    dest_dir = tmp_path / 'output' / '20260906_youth'
-    dest = gui._resolve_onedrive_download(remote_path, dest_dir, cache=k1_cache)
-
-    assert metadata_calls == [remote_path], (
-        "K1 캐시가 있다는 이유로 실시간 조회를 건너뜀 — 핵심 불변조건 위반", metadata_calls,
-    )
-    assert dest.read_bytes() == b'CACHED-CONTENT'
-
-
-def test_k2i_redownloads_when_k1_cache_and_manifest_agree_but_are_both_stale(monkeypatch, tmp_path):
-    """리뷰 라운드17 확정 버그의 정확한 재현(회귀 가드) — 로컬 매니페스트와 K1 프리페치
-    캐시가 서로 "일치"해 신선해 보여도(둘 다 지난주 스냅샷일 뿐), 실시간 조회
-    (`get_item_metadata`)가 그보다 최신이면 반드시 재다운로드해야 한다. 원래 버그는
-    `_lookup_remote_item_metadata()`가 K1 캐시를 신뢰해 이 실시간 조회 자체를 건너뛰어
-    STALE-CACHED-CONTENT를 그대로 반환했다."""
-    import sys
-    import missa_gui as gui
-
-    monkeypatch.setattr(gui, '_ONEDRIVE_CACHE_ROOT', str(tmp_path / 'onedrive_cache'))
-    remote_path = 'PPT 문서/13.기도문/시작기도.pptx'
-    parent_path = 'PPT 문서/13.기도문'
-    blob_path = gui._onedrive_cache_blob_path(remote_path)
-    blob_path.parent.mkdir(parents=True, exist_ok=True)
-    blob_path.write_bytes(b'STALE-CACHED-CONTENT-FROM-LAST-WEEK')
-    # 매니페스트 기록과 K1 프리페치 캐시가 "서로는" 정확히 일치한다(둘 다 지난주 스냅샷) —
-    # 이 일치만으로 신선하다고 판단하면 안 된다는 게 이번 수정의 핵심.
-    stale_timestamp = '2026-08-01T00:00:00Z'
-    _k2_write_manifest(gui, {
-        remote_path: {'lastModifiedDateTime': stale_timestamp, 'eTag': 'E1'},
-    })
-    k1_cache = {
-        parent_path: [
-            {'name': '시작기도.pptx', 'lastModifiedDateTime': stale_timestamp, 'eTag': 'E1'},
-        ],
-    }
-
-    download_calls = []
-
-    class _StubOD:
-        @staticmethod
-        def download_file(path, dest):
-            download_calls.append(path)
-            Path(dest).write_bytes(b'FRESH-DOWNLOAD-FROM-TODAY')
-            return dest
-
-        @staticmethod
-        def get_item_metadata(path):
-            # 실제 현재 OneDrive 상태 — 매니페스트/K1 캐시 스냅샷보다 최신.
-            return {'lastModifiedDateTime': '2026-09-27T00:00:00Z', 'eTag': 'E2'}
-
-    monkeypatch.setitem(sys.modules, 'missa_onedrive', _StubOD)
-
-    dest_dir = tmp_path / 'output' / '20260906_youth'
-    dest = gui._resolve_onedrive_download(remote_path, dest_dir, cache=k1_cache)
-
-    assert download_calls == [remote_path], (
-        "매니페스트/K1 캐시가 서로 일치한다는 이유로 재다운로드를 스킵함 — "
-        "OneDrive가 실제로 더 최신인데도 stale 캐시가 반환됨(리뷰 라운드17 확정 버그)",
-        download_calls,
-    )
-    assert dest.read_bytes() == b'FRESH-DOWNLOAD-FROM-TODAY'
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # L그룹 — 2026-09-27 OneDrive 프리페치 트리거 시점 앞당기기(L1) + 파일 선택 즉시 반환·
@@ -4156,163 +2894,6 @@ def test_k2i_redownloads_when_k1_cache_and_manifest_agree_but_are_both_stale(mon
 # 일 때만)로 앞당긴다. 로그인/네트워크 실패는 조용히 삼키고 첫 입력창 자체는 항상 즉시
 # 뜬다(백그라운드 스레드라 구조적으로 블로킹하지 않음).
 # ═══════════════════════════════════════════════════════════════════════════
-
-def test_l1a_start_onedrive_prefetch_thread_returns_immediately_and_populates_cache(monkeypatch):
-    """L1: 프리페치를 시작하는 함수 자체는 스레드 시작만 하고 즉시 반환해야 한다(네트워크가
-    느려도 호출부를 블로킹하지 않음) — 반환된 스레드를 join해서 실제로 캐시가 채워지는지도
-    확인한다."""
-    import sys
-    import time
-    import missa_gui as gui
-
-    class _StubOD:
-        @staticmethod
-        def list_children(path):
-            time.sleep(0.3)  # 네트워크 지연 시뮬레이션
-            return [{'name': f'{path}-item'}]
-
-    monkeypatch.setitem(sys.modules, 'missa_onedrive', _StubOD)
-    cache = {}
-    start = time.monotonic()
-    thread = gui._start_onedrive_prefetch_thread(cache)
-    elapsed = time.monotonic() - start
-
-    assert elapsed < 0.2, f"프리페치 시작 함수가 블로킹함(경과 {elapsed:.3f}초)"
-    thread.join(timeout=5)
-    assert 'PPT 문서/11.공지사항 PPT문서' in cache
-
-
-def _l1_run_prefetch_trigger_probe(tmp_path, mass_type: str) -> list:
-    """`_ask_combined_input_popup(mass_type=...)`을 서브프로세스에서 열고(사용자가 '찾아보기'를
-    전혀 누르지 않은 채) mainloop 진입 직후 곧바로 닫아, 그 사이 `_prefetch_onedrive_children()`
-    이 호출된 인자 목록을 덤프한다. `gui._prefetch_onedrive_children`을 직접 monkeypatch해
-    실제 네트워크 계층(`missa_onedrive`)까지 내려가지 않고 "트리거 시점" 자체만 검증한다."""
-    out_file = tmp_path / 'l1_probe_result.json'
-    script = f'''
-import sys, json
-sys.path.insert(0, {str(BASE)!r})
-import tkinter as tk
-import missa_gui as gui
-
-_calls = []
-gui._prefetch_onedrive_children = lambda remote_paths, cache: _calls.append(list(remote_paths))
-
-_orig_mainloop = tk.Tk.mainloop
-
-def _fake_mainloop(self, *a, **k):
-    def _probe():
-        self.destroy()
-    self.after(60, _probe)
-    return _orig_mainloop(self, *a, **k)
-
-tk.Tk.mainloop = _fake_mainloop
-
-try:
-    gui._ask_combined_input_popup(mass_type={mass_type!r})
-except RuntimeError:
-    pass
-
-with open({str(out_file)!r}, 'w', encoding='utf-8') as f:
-    json.dump(_calls, f)
-'''
-    script_path = tmp_path / 'l1_probe_script.py'
-    script_path.write_text(script, encoding='utf-8')
-    import subprocess as _l1_subprocess
-    import sys as _l1_sys
-    import json as _l1_json
-    try:
-        result = _l1_subprocess.run(
-            [_l1_sys.executable, str(script_path)],
-            cwd=str(BASE), capture_output=True, text=True, encoding='utf-8', errors='replace',
-            timeout=30,
-        )
-    except _l1_subprocess.TimeoutExpired as e:
-        raise AssertionError(
-            f"L1 프리페치 트리거 프로브가 30초 내에 끝나지 않음\nstdout:\n{e.stdout}\nstderr:\n{e.stderr}"
-        )
-    assert out_file.is_file(), (
-        f"프리페치 호출 덤프 실패(exit={result.returncode})\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-    return _l1_json.loads(out_file.read_text(encoding='utf-8'))
-
-
-def test_l1b_youth_popup_triggers_prefetch_before_user_ever_clicks_browse(tmp_path):
-    """L1: 청년미사 입력창은 사용자가 '찾아보기'를 누르기 전, 창이 뜨는 시점에 이미
-    프리페치를 트리거해야 한다."""
-    calls = _l1_run_prefetch_trigger_probe(tmp_path, 'youth')
-    assert len(calls) == 1, ("청년미사 입력창에서 프리페치가 정확히 1회 트리거돼야 함", calls)
-    remote_paths = calls[0]
-    assert any('11.공지사항 PPT문서' in p for p in remote_paths), remote_paths
-    assert any('13.기도문' in p or '13. 기도문' in p for p in remote_paths), remote_paths
-    assert any('20.청년 미사' in p for p in remote_paths), remote_paths
-
-
-def test_l1c_adult_popup_never_triggers_onedrive_prefetch(tmp_path):
-    """L1: 성인미사는 OneDrive 브라우저 자체를 쓰지 않으므로, 입력창이 떠도 프리페치가
-    트리거되면 안 된다(불필요한 API 호출 방지)."""
-    calls = _l1_run_prefetch_trigger_probe(tmp_path, 'adult')
-    assert calls == [], ("성인미사 입력창에서 불필요하게 프리페치가 트리거됨", calls)
-
-
-def test_l1d_slow_or_hanging_prefetch_does_not_block_first_popup(tmp_path):
-    """L1 핵심 안전 요구사항: 프리페치가 느리거나(로그인 대기 등) 완전히 멈춰도, 첫 입력창
-    자체는 항상 즉시 뜨고 닫혀야 한다 — 백그라운드 스레드(daemon)라 구조적으로 메인
-    스레드(mainloop)를 블로킹하지 않아야 한다. `_prefetch_onedrive_children`을 5초간
-    멈추는 스텁으로 교체해도 전체 프로브(팝업 생성→60ms 후 닫기)가 그보다 훨씬 빨리
-    끝나는지로 확인한다."""
-    import time as _l1d_time
-
-    out_file = tmp_path / 'l1d_probe_result.json'
-    script = f'''
-import sys, json, time
-sys.path.insert(0, {str(BASE)!r})
-import tkinter as tk
-import missa_gui as gui
-
-def _hanging_prefetch(remote_paths, cache):
-    time.sleep(5)
-
-gui._prefetch_onedrive_children = _hanging_prefetch
-
-_orig_mainloop = tk.Tk.mainloop
-
-def _fake_mainloop(self, *a, **k):
-    def _probe():
-        self.destroy()
-    self.after(60, _probe)
-    return _orig_mainloop(self, *a, **k)
-
-tk.Tk.mainloop = _fake_mainloop
-
-try:
-    gui._ask_combined_input_popup(mass_type='youth')
-except RuntimeError:
-    pass
-
-with open({str(out_file)!r}, 'w', encoding='utf-8') as f:
-    json.dump({{'ok': True}}, f)
-'''
-    script_path = tmp_path / 'l1d_probe_script.py'
-    script_path.write_text(script, encoding='utf-8')
-    import subprocess as _l1d_subprocess
-    import sys as _l1d_sys
-
-    start = _l1d_time.monotonic()
-    result = _l1d_subprocess.run(
-        [_l1d_sys.executable, str(script_path)],
-        cwd=str(BASE), capture_output=True, text=True, encoding='utf-8', errors='replace',
-        timeout=15,
-    )
-    elapsed = _l1d_time.monotonic() - start
-
-    assert out_file.is_file(), (
-        f"프로브 실패(exit={result.returncode})\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-    assert elapsed < 4.5, (
-        f"프리페치가 5초간 멈춰 있는데도 프로브가 {elapsed:.2f}초 걸림 — "
-        "메인 스레드가 블로킹된 것으로 보임(참고: 서브프로세스+tkinter 콜드 스타트 오버헤드만도 "
-        "약 3초라 그보다 넉넉한 여유를 둔 값)"
-    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -4325,343 +2906,504 @@ with open({str(out_file)!r}, 'w', encoding='utf-8') as f:
 # "선택 이후 무슨 일이 일어나는가"이지 "어떻게 탐색해서 고르는가"가 아니다).
 # ═══════════════════════════════════════════════════════════════════════════
 
-def test_l2a_download_with_retries_succeeds_first_try_without_retry(monkeypatch):
-    """L2: 첫 시도가 성공하면 재시도하지 않는다.
 
-    리뷰 라운드19 수정으로 `_download_with_retries()`는 `_resolve_onedrive_download()`
-    (날짜 폴더까지 커밋) 대신 `_ensure_onedrive_blob_fresh()`(캐시 폴더 blob만 최신화,
-    커밋은 호출부 책임)를 호출한다 — dest_dir 파라미터도 없어졌다."""
-    import missa_gui as gui
-
-    calls = []
-
-    def _stub(remote_path, cache=None):
-        calls.append(remote_path)
-        return Path('blob-path')
-
-    monkeypatch.setattr(gui, '_ensure_onedrive_blob_fresh', _stub)
-    gui._download_with_retries('remote/a.pptx', {})
-    assert calls == ['remote/a.pptx']
+# --- 2026-10-18 나주노 최근 생성물 결함 수정(479/519/692/468) -----------------------
+# 근거: 흐린/기운 스캔의 오선 탈락(479 5줄 중 3줄), 시스템 경계가 가사 2째 줄을 자름(692),
+# 시스템 아래 2절 가사 별도 세그먼트 누락(468), 저작권 캐시 미등록 곡의 무음 생략(479/519/692).
+_FIX_EXPECTED_SYSTEMS = {479: 5, 519: 5, 692: 4, 468: 6, 603: 8}
 
 
-def test_l2b_download_with_retries_retries_then_succeeds(monkeypatch):
-    """L2: 첫 시도가 실패해도 자동으로 재시도해 두 번째 시도에서 성공하면 예외를 던지지
-    않는다(사용자 확정 결정 2 — "자동으로 1~2회 재시도")."""
-    import missa_gui as gui
-
-    calls = []
-
-    def _stub(remote_path, cache=None):
-        calls.append(remote_path)
-        if len(calls) == 1:
-            raise RuntimeError('일시적 네트워크 오류(시뮬레이션)')
-        return Path('blob-path')
-
-    monkeypatch.setattr(gui, '_ensure_onedrive_blob_fresh', _stub)
-    gui._download_with_retries('remote/a.pptx', {})
-    assert len(calls) == 2, calls
-
-
-def test_l2c_download_with_retries_raises_after_exhausting_retries(monkeypatch):
-    """L2: 재시도까지 전부 실패하면 마지막 예외를 그대로 던져 호출부가 실패로 처리할 수
-    있게 한다 — 총 시도 횟수는 최초 1회 + max_retries(기본 2)회 = 3회."""
-    import missa_gui as gui
-
-    calls = []
-
-    def _stub(remote_path, cache=None):
-        calls.append(remote_path)
-        raise RuntimeError('영구 실패(시뮬레이션)')
-
-    monkeypatch.setattr(gui, '_ensure_onedrive_blob_fresh', _stub)
-    with pytest.raises(RuntimeError, match='영구 실패'):
-        gui._download_with_retries('remote/a.pptx', {})
-    assert len(calls) == 3, ("기본 재시도 횟수(최초 1회+2회 재시도=3회)가 지켜지지 않음", calls)
-
-
-def _l2_run_popup_probe(tmp_path, script_body: str, timeout: int = 30) -> dict:
-    """L2 통합 시나리오 공용 실행기 — `script_body`(파이썬 코드 문자열)를 그대로
-    서브프로세스 스크립트 본문에 삽입한다. 호출부가 `_probe()` 내부 로직과 최종 JSON
-    덤프를 자유롭게 구성할 수 있도록 뼈대(경로 설정·mainloop 후킹·예외 처리)만 공통화한다."""
-    out_file = tmp_path / 'l2_probe_result.json'
-    script = f'''
-import sys, json, time, threading
-sys.path.insert(0, {str(BASE)!r})
-import tkinter as tk
-import tkinter.messagebox as _mb
-import missa_gui as gui
-from pathlib import Path
-
-gui.OUTPUT_ROOT = {str(tmp_path)!r}
-# _ensure_onedrive_blob_fresh()가 실제로 호출되는(모킹하지 않는) 테스트에서 공유 캐시
-# 폴더(cwd 기준 상대경로 기본값)가 실제 저장소에 파일을 남기지 않도록 격리한다.
-gui._ONEDRIVE_CACHE_ROOT = {str(tmp_path / 'onedrive_cache')!r}
-
-_error_calls = []
-_mb.showerror = lambda *a, **k: _error_calls.append(a)
-_mb.showwarning = lambda *a, **k: _error_calls.append(a)
-
-_out_file = {str(out_file)!r}
-_timing = {{}}
-_flags = {{'result_is_none': None}}
-
-def _find_entry(w):
-    if w.winfo_class() == 'Entry':
-        return w
-    for c in w.winfo_children():
-        found = _find_entry(c)
-        if found is not None:
-            return found
-    return None
-
-def _find_buttons(w, text, out):
-    if w.winfo_class() == 'Button' and w.cget('text') == text:
-        out.append(w)
-    for c in w.winfo_children():
-        _find_buttons(c, text, out)
-
-_orig_mainloop = tk.Tk.mainloop
-
-def _fake_mainloop(self, *a, **k):
-    def _probe():
-{script_body}
-    self.after(80, _probe)
-    return _orig_mainloop(self, *a, **k)
-
-tk.Tk.mainloop = _fake_mainloop
-
-try:
-    result = gui._ask_combined_input_popup(mass_type='youth')
-except RuntimeError:
-    result = None
-_flags['result_is_none'] = result is None
-
-with open(_out_file, 'w', encoding='utf-8') as f:
-    json.dump({{'timing': _timing, 'flags': _flags, 'error_calls': len(_error_calls)}}, f)
-'''
-    script_path = tmp_path / 'l2_probe_script.py'
-    script_path.write_text(script, encoding='utf-8')
-    import subprocess as _l2_subprocess
-    import sys as _l2_sys
-    import json as _l2_json
+@pytest.fixture(scope="module")
+def fix_bands():
+    import numpy as _np
+    result = {}
+    d = _fitz.open(hp.SOURCES["나주노"]["pdf"])
     try:
-        result = _l2_subprocess.run(
-            [_l2_sys.executable, str(script_path)],
-            cwd=str(BASE), capture_output=True, text=True, encoding='utf-8', errors='replace',
-            timeout=timeout,
-        )
-    except _l2_subprocess.TimeoutExpired as e:
-        raise AssertionError(
-            f"L2 팝업 프로브가 {timeout}초 내에 끝나지 않음\nstdout:\n{e.stdout}\nstderr:\n{e.stderr}"
-        )
-    assert out_file.is_file(), (
-        f"L2 프로브 결과 덤프 실패(exit={result.returncode})\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-    return _l2_json.loads(out_file.read_text(encoding='utf-8'))
+        for num in _FIX_EXPECTED_SYSTEMS:
+            gray = _np.asarray(hp.render_region(
+                d[hp.find_song_page("나주노", num)], None, hp.RENDER_DPI).convert("L"))
+            result[num] = {"gray": gray, "bands": hp.detect_system_bands(gray)}
+    finally:
+        d.close()
+    return result
 
 
-def test_l2d_browse_returns_immediately_and_confirm_waits_for_pending_download(tmp_path):
-    """L2 핵심 요구사항: '찾아보기'로 파일을 고르면 즉시 반환해 다음 파일을 바로 고를 수
-    있어야 하고(다운로드를 기다리지 않음), '확인'을 누르면 아직 끝나지 않은 백그라운드
-    다운로드가 있어도 자동으로 전부 끝날 때까지 대기한 뒤에만 팝업이 닫혀야 한다(사용자
-    확정 결정 1)."""
-    dest_dir = tmp_path / '20260906_youth'  # gui.OUTPUT_ROOT를 tmp_path로 오버라이드(공용 헬퍼)
-    body = f'''
-        entry = _find_entry(self)
-        entry.insert(0, '20260906')
-
-        def _fake_browser(parent, dest_dir_, cache=None, root_remote_path=gui._ONEDRIVE_BROWSER_ROOT, start_subpath=None):
-            name = 'file.pptx'
-            return (str(Path(dest_dir_) / name), 'PPT 문서/13.기도문/' + name)
-        gui._ask_onedrive_file_browser_popup = _fake_browser
-
-        def _slow_download(remote_path, cache):
-            # 리뷰 라운드19 이후 시그니처(dest_dir 없음) — 커밋은 _download_worker가
-            # 실제로 수행하므로 여기서는 blob만 채운다.
-            time.sleep(1.2)
-            blob = gui._onedrive_cache_blob_path(remote_path)
-            blob.parent.mkdir(parents=True, exist_ok=True)
-            blob.write_bytes(b'DOWNLOADED')
-            return blob
-        gui._download_with_retries = _slow_download
-
-        browse_buttons = []
-        _find_buttons(self, '찾아보기', browse_buttons)
-        t0 = time.monotonic()
-        for b in browse_buttons:
-            b.invoke()
-        _timing['browse_elapsed'] = time.monotonic() - t0
-
-        confirm = None
-        _cbtn = []
-        _find_buttons(self, '확인', _cbtn)
-        confirm = _cbtn[0]
-        t1 = time.monotonic()
-        confirm.invoke()
-        _timing['confirm_elapsed'] = time.monotonic() - t1
-        _flags['file_exists'] = (Path({str(dest_dir)!r}) / 'file.pptx').is_file()
-'''
-    data = _l2_run_popup_probe(tmp_path, body)
-    assert data['timing']['browse_elapsed'] < 0.5, (
-        "'찾아보기'가 다운로드를 기다려 즉시 반환하지 않음", data,
-    )
-    assert data['timing']['confirm_elapsed'] > 1.0, (
-        "'확인'이 백그라운드 다운로드를 기다리지 않고 바로 닫힘", data,
-    )
-    assert data['flags']['file_exists'] is True, data
-    assert data['flags']['result_is_none'] is False, data
-    assert data['error_calls'] == 0, data
+@pytest.mark.parametrize("num", sorted(_FIX_EXPECTED_SYSTEMS))
+@pytest.mark.skipif(not _YOUTH_PDFS_AVAILABLE, reason=_YOUTH_SKIP_REASON)
+def test_F1_system_counts_faint_scans(fix_bands, num):
+    """F1: 오선이 흐린 곡(479)·가사 보충줄이 있는 곡(468)도 원본 시스템 수와 같다."""
+    assert len(fix_bands[num]["bands"]) == _FIX_EXPECTED_SYSTEMS[num]
 
 
-def test_l2e_confirm_shows_error_and_stays_open_when_download_fails_after_retries(tmp_path):
-    """사용자 확정 결정 2/3: 재시도까지 모두 실패하면 사용자에게 팝업으로 알리고, 불완전한
-    파일로 조용히 진행하지 않는다 — 팝업은 닫히지 않아야 한다(재선택 유도)."""
-    body = f'''
-        entry = _find_entry(self)
-        entry.insert(0, '20260906')
-
-        def _fake_browser(parent, dest_dir_, cache=None, root_remote_path=gui._ONEDRIVE_BROWSER_ROOT, start_subpath=None):
-            return (str(Path(dest_dir_) / 'file.pptx'), 'PPT 문서/13.기도문/file.pptx')
-        gui._ask_onedrive_file_browser_popup = _fake_browser
-
-        def _always_fail(remote_path, dest_dir_, cache):
-            time.sleep(0.2)
-            raise RuntimeError('영구 실패(시뮬레이션)')
-        gui._download_with_retries = _always_fail
-
-        browse_buttons = []
-        _find_buttons(self, '찾아보기', browse_buttons)
-        browse_buttons[0].invoke()
-
-        _cbtn = []
-        _find_buttons(self, '확인', _cbtn)
-        _cbtn[0].invoke()
-        _flags['window_still_exists'] = bool(self.winfo_exists())
-        self.destroy()
-'''
-    data = _l2_run_popup_probe(tmp_path, body)
-    assert data['flags']['window_still_exists'] is True, (
-        "다운로드 실패에도 팝업이 닫혀버림 — 재선택을 유도하지 못함", data,
-    )
-    assert data['error_calls'] >= 1, ("다운로드 실패를 사용자에게 알리지 않음", data)
+@pytest.mark.parametrize("num", sorted(_FIX_EXPECTED_SYSTEMS))
+@pytest.mark.skipif(not _YOUTH_PDFS_AVAILABLE, reason=_YOUTH_SKIP_REASON)
+def test_F2_no_ink_left_between_bands(fix_bands, num):
+    """F2: 인접한 두 밴드 사이(밴드 밖)에 잉크가 남지 않는다 — 남으면 그 부분이 슬라이드에서
+    잘린 것이다(692 가사 2째 줄, 468 2절 가사)."""
+    gray = fix_bands[num]["gray"]
+    bands = fix_bands[num]["bands"]
+    for (_t0, b0), (t1, _b1) in zip(bands, bands[1:]):
+        # 스캔 얼룩(행당 ≤7px)은 무시, 가사/악보 줄은 행당 수십 px 이상
+        between = (gray[b0 + 1:t1] < 128).sum(axis=1)
+        assert not (between >= 15).any(), f"{num}: 밴드 사이 [{b0 + 1},{t1}) 잉크 잘림"
 
 
-def test_l2f_reselecting_before_completion_only_latest_selection_wins(tmp_path):
-    """설계 우려사항(코디네이터 명시): 같은 슬롯을 재선택하면 나중에 도착하는 완료
-    이벤트가 먼저 선택한(느리게 실패하는) 파일의 결과로 그 슬롯을 잘못 덮어쓰면 안 된다
-    — 가장 마지막 선택만 유효해야 한다. 첫 선택(느리게 실패)이 아직 안 끝난 상태에서
-    같은 버튼을 다시 눌러 재선택(빠르게 성공)하면, '확인'은 두 번째(최신) 다운로드만
-    기다려야 하고 첫 번째의 지연된 실패가 뒤늦게 도착해도 오류 알림이 뜨면 안 된다."""
-    dest_dir = tmp_path / '20260906_youth'  # gui.OUTPUT_ROOT를 tmp_path로 오버라이드(공용 헬퍼)
-    body = f'''
-        entry = _find_entry(self)
-        entry.insert(0, '20260906')
-
-        _browser_calls = {{'n': 0}}
-        def _fake_browser(parent, dest_dir_, cache=None, root_remote_path=gui._ONEDRIVE_BROWSER_ROOT, start_subpath=None):
-            _browser_calls['n'] += 1
-            name = f"file{{_browser_calls['n']}}.pptx"
-            return (str(Path(dest_dir_) / name), 'PPT 문서/13.기도문/' + name)
-        gui._ask_onedrive_file_browser_popup = _fake_browser
-
-        def _stub_download(remote_path, cache):
-            # 리뷰 라운드19 이후 시그니처(dest_dir 없음) — 커밋은 _download_worker가
-            # 실제로 수행하므로 여기서는 blob만 채운다.
-            name = remote_path.rsplit('/', 1)[-1]
-            if name == 'file1.pptx':
-                time.sleep(1.0)
-                raise RuntimeError('지연된 첫 선택의 실패(시뮬레이션) — 최신 선택에 영향 없어야 함')
-            time.sleep(0.2)
-            blob = gui._onedrive_cache_blob_path(remote_path)
-            blob.parent.mkdir(parents=True, exist_ok=True)
-            blob.write_bytes(b'LATEST-CONTENT')
-            return blob
-        gui._download_with_retries = _stub_download
-
-        browse_buttons = []
-        _find_buttons(self, '찾아보기', browse_buttons)
-        btn = browse_buttons[0]
-        btn.invoke()  # 1차 선택(file1, 느리게 실패)
-        btn.invoke()  # 재선택(file2, 빠르게 성공) — 1차가 아직 안 끝난 상태
-
-        _cbtn = []
-        _find_buttons(self, '확인', _cbtn)
-        t0 = time.monotonic()
-        _cbtn[0].invoke()
-        _timing['confirm_elapsed'] = time.monotonic() - t0
-        _flags['file2_exists'] = (Path({str(dest_dir)!r}) / 'file2.pptx').is_file()
-'''
-    data = _l2_run_popup_probe(tmp_path, body, timeout=30)
-    assert data['timing']['confirm_elapsed'] < 0.8, (
-        "확인이 이미 무효화된 1차(느린) 선택까지 기다림 — 최신 선택만 기다려야 함", data,
-    )
-    assert data['flags']['file2_exists'] is True, data
-    assert data['flags']['result_is_none'] is False, data
-    assert data['error_calls'] == 0, (
-        "지연된 1차(무효) 선택의 실패가 뒤늦게 도착해 오류 알림을 띄움 — 최신성 보장 실패", data,
-    )
+@pytest.mark.parametrize("num", [479, 519, 692])
+@pytest.mark.skipif(not _YOUTH_PDFS_AVAILABLE, reason=_YOUTH_SKIP_REASON)
+def test_F3_naju_copyright_present(num):
+    """F3: 479/519/692는 원본 하단에 저작권이 있으므로 크롭이 있어야 한다."""
+    d = _fitz.open(hp.SOURCES["나주노"]["pdf"])
+    try:
+        assert hp.resolve_copyright_crop("나주노", num, d[hp.find_song_page("나주노", num)]) is not None
+    finally:
+        d.close()
 
 
-def test_l2g_reselecting_same_filename_stale_slow_download_must_not_overwrite_latest_file(tmp_path):
-    """리뷰 라운드19 확정 버그 재현(회귀 가드) — `test_l2f`는 1차/재선택 파일명을 서로
-    다르게(file1/file2) 줘서 목적지 경로 충돌이 구조적으로 생기지 않았다. 이 앱의 실제
-    관례(매주 다른 폴더의 "시작기도.pptx"처럼 재선택해도 베이스네임이 같은 경우)를
-    반영해 **같은 파일명**으로 재선택하는 시나리오를 커버한다.
+@pytest.mark.skipif(not _YOUTH_PDFS_AVAILABLE, reason=_YOUTH_SKIP_REASON)
+def test_F4_naju_copyright_fallback_when_cache_misses(monkeypatch):
+    """F4: 캐시에 없는 곡도 저작권을 조용히 생략하지 않고 하단 첫 줄 폴백 크롭을 쓴다."""
+    monkeypatch.setattr(hp, "_load_naju_cache", lambda: {})
+    d = _fitz.open(hp.SOURCES["나주노"]["pdf"])
+    try:
+        crop = hp.resolve_copyright_crop("나주노", 479, d[hp.find_song_page("나주노", 479)])
+    finally:
+        d.close()
+    assert crop is not None and crop.width > 300 and 15 < crop.height < 120
 
-    1차 선택(느림, 1.5초 후 STALE-FIRST-PICK 기록)과 재선택(같은 파일명, 0.1초 후
-    LATEST-CORRECT-PICK 기록)이 같은 목적지 파일(`shared.pptx`)을 가리킨다. 수정 전
-    구현은 `_download_with_retries()`가 그 자리에서 바로 dest_dir에 커밋해버려서,
-    generation 재확인(`_download_state` 메모리 상태만 보호)이 이미 벌어진 디스크 쓰기를
-    막지 못했다 — 에러 콜백 없이 조용히 발생하는 사고라 `content_after_wait`까지 확인해야
-    잡힌다. 수정 후에는 `_ensure_onedrive_blob_fresh()`가 캐시 폴더 blob만 최신화하고,
-    실제 dest_dir 커밋은 `_download_worker`가 락 안에서 generation을 재확인한 뒤에만
-    수행하므로 이 스텁은 "블롭 최신화" 지점만 흉내낸다(`gui._ensure_onedrive_blob_fresh`
-    를 모킹 — `_resolve_onedrive_download`는 이제 `_download_worker` 경로에서 전혀
-    호출되지 않는다)."""
-    dest_dir = tmp_path / '20260906_youth'
-    body = f'''
-        entry = _find_entry(self)
-        entry.insert(0, '20260906')
 
-        def _fake_browser(parent, dest_dir_, cache=None, root_remote_path=gui._ONEDRIVE_BROWSER_ROOT, start_subpath=None):
-            return (str(Path(dest_dir_) / 'shared.pptx'), 'PPT 문서/13.기도문/shared.pptx')
-        gui._ask_onedrive_file_browser_popup = _fake_browser
+# ═════════════════════════════════════════════════════════════════════════════
+# OneDrive 폴더 구조 개편 대응(2026-10-18) — docs/SPECS/SPEC_OneDrive_폴더구조_개편.md
+# 접두 test_fs_. 루트 3종(공용/성인/청년)·경로 규칙·찾아보기 기억·Graph 폴백 폐지.
+# ═════════════════════════════════════════════════════════════════════════════
+import json as _fs_json
 
-        _pick_n = {{'n': 0}}
-        def _stub_ensure_blob_fresh(remote_path, cache=None):
-            _pick_n['n'] += 1
-            my_pick = _pick_n['n']
-            blob = gui._onedrive_cache_blob_path(remote_path)
-            blob.parent.mkdir(parents=True, exist_ok=True)
-            if my_pick == 1:
-                time.sleep(1.5)
-                blob.write_bytes(b'STALE-FIRST-PICK')
-            else:
-                time.sleep(0.1)
-                blob.write_bytes(b'LATEST-CORRECT-PICK')
-            return blob
-        gui._ensure_onedrive_blob_fresh = _stub_ensure_blob_fresh
 
-        browse_buttons = []
-        _find_buttons(self, '찾아보기', browse_buttons)
-        btn = browse_buttons[0]
-        btn.invoke()  # 1차 선택(느림, 나중에 STALE 기록)
-        btn.invoke()  # 재선택(같은 파일명, 빠르게 LATEST 기록) — 1차가 아직 안 끝난 상태
+@pytest.fixture
+def fs_cfg(tmp_path, monkeypatch):
+    import missa_gui as gui
+    path = tmp_path / "config.json"
+    monkeypatch.setattr(gui, "CONFIG_FILE", path)
+    gui._reset_ppt_roots()
+    return path
 
-        _cbtn = []
-        _find_buttons(self, '확인', _cbtn)
-        _cbtn[0].invoke()  # 재선택(2번째)만 join되어 통과해야 함(~0.1초)
 
-        p = Path({str(dest_dir)!r}) / 'shared.pptx'
-        content_right_after_confirm = p.read_bytes().decode() if p.is_file() else None
-        time.sleep(2.0)  # 1차(느린, 이미 무효화된) 다운로드가 실제로 끝날 시간을 준다
-        content_after_wait = p.read_bytes().decode() if p.is_file() else None
-        _flags['content_right_after_confirm'] = content_right_after_confirm
-        _flags['content_after_wait'] = content_after_wait
-'''
-    data = _l2_run_popup_probe(tmp_path, body, timeout=30)
-    assert data['flags']['content_right_after_confirm'] == 'LATEST-CORRECT-PICK', data
-    assert data['flags']['content_after_wait'] == 'LATEST-CORRECT-PICK', (
-        "구세대(느린, 이미 무효화된) 다운로드가 나중에 도착해 최신 선택 파일을 조용히 "
-        "덮어씀(리뷰 라운드19 확정 버그)", data,
-    )
+def _fs_write_cfg(cfg, **kw):
+    cfg.write_text(_fs_json.dumps(kw, ensure_ascii=False), encoding="utf-8")
+
+
+def _fs_read_cfg(cfg):
+    return _fs_json.loads(cfg.read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def fs_tree(tmp_path):
+    """새 구조의 'PPT 문서'(마스터 PC). 반환: (parent, common, adult, youth)."""
+    parent = tmp_path / "PPT 문서"
+    common = parent / "00.공용 PPT"
+    adult = parent / "10.성인 미사"
+    youth = parent / "20.청년 미사"
+    for p in (common / "09.가톨릭 성가" / "성가-악보버전", common / "13.기도문",
+              common / "11.공지사항 PPT문서",
+              adult / "10.기타 PPT문서" / "PPT 자동화" / "1.Template", adult / "14.화답송 악보",
+              youth / "1.Template", youth / "2.성가" / "나주노 성가", youth / "2.성가" / "야훼이레 성가"):
+        p.mkdir(parents=True)
+    return parent, common, adult, youth
+
+
+def test_fs_root_validity_markers_and_space_insensitive(fs_tree, tmp_path):
+    import missa_gui as gui
+    _p, common, adult, youth = fs_tree
+    assert gui.is_valid_ppt_root("common", common)
+    assert gui.is_valid_ppt_root("adult", adult)
+    assert gui.is_valid_ppt_root("youth", youth)
+    # 역할이 맞지 않는 폴더는 무효
+    assert not gui.is_valid_ppt_root("youth", adult)
+    assert not gui.is_valid_ppt_root("common", tmp_path / "없음")
+    # 공백 유무 차이 무시
+    spaced = tmp_path / "x" / "20.청년 미사"
+    (spaced / "2. 성가").mkdir(parents=True)
+    assert gui.is_valid_ppt_root("youth", spaced)
+
+
+def test_fs_youth_run_asks_only_common_and_youth_once_then_never_again(fs_cfg, fs_tree, monkeypatch):
+    """인수 기준 1: 서로 다른 위치의 두 루트를 한 번씩만 선택, 성인 폴더는 묻지 않는다."""
+    import missa_gui as gui
+    _p, common, _a, youth = fs_tree
+    asked = []
+    answers = {"00.공용 PPT": str(common), "20.청년 미사": str(youth)}
+
+    def fake(**k):
+        asked.append(k["dialog_title"])
+        for name, val in answers.items():
+            if name in k["dialog_title"]:
+                return val
+        pytest.fail(f"예상 밖 선택창: {k['dialog_title']}")
+
+    monkeypatch.setattr(gui, "_ask_onedrive_path_popup", fake)
+    assert gui.ensure_ppt_roots("youth", ask_if_missing=True) is True
+    assert len(asked) == 2 and not any("성인" in t for t in asked)
+    saved = _fs_read_cfg(fs_cfg)
+    assert Path(saved["onedrive_common_folder"]) == common
+    assert Path(saved["onedrive_youth_folder"]) == youth
+    assert "onedrive_adult_folder" not in saved
+    # 재실행(캐시 초기화 = 새 프로세스): 다시 묻지 않는다
+    gui._reset_ppt_roots()
+    monkeypatch.setattr(gui, "_ask_onedrive_path_popup", lambda **k: pytest.fail("다시 묻지 않아야 함"))
+    assert gui.ensure_ppt_roots("youth", ask_if_missing=True) is True
+    assert gui.get_root("youth") == youth and gui.get_root("common") == common
+
+
+def test_fs_adult_run_does_not_ask_youth_root(fs_cfg, fs_tree, monkeypatch):
+    import missa_gui as gui
+    _p, common, adult, _y = fs_tree
+    _fs_write_cfg(fs_cfg, onedrive_common_folder=str(common), onedrive_adult_folder=str(adult))
+    monkeypatch.setattr(gui, "_ask_onedrive_path_popup", lambda **k: pytest.fail("묻지 않아야 함"))
+    assert gui.ensure_ppt_roots("adult", ask_if_missing=True) is True
+    assert gui.get_root("youth") is None
+
+
+def test_fs_master_picks_parent_fills_all_three_roots(fs_cfg, fs_tree, monkeypatch):
+    """인수 기준 2: 'PPT 문서'를 고르면 세 루트가 한 번에 채워지고 다시 묻지 않는다."""
+    import missa_gui as gui
+    parent, common, adult, youth = fs_tree
+    calls = []
+    monkeypatch.setattr(gui, "_ask_onedrive_path_popup", lambda **k: calls.append(1) or str(parent))
+    assert gui.ensure_ppt_roots("youth", ask_if_missing=True) is True
+    assert len(calls) == 1
+    saved = _fs_read_cfg(fs_cfg)
+    assert (Path(saved["onedrive_common_folder"]), Path(saved["onedrive_adult_folder"]),
+            Path(saved["onedrive_youth_folder"])) == (common, adult, youth)
+    assert gui.ensure_ppt_roots("adult", ask_if_missing=True) is True
+    assert len(calls) == 1
+
+
+def test_fs_invalid_selection_reasks_with_marker_hint_and_cancel_returns_false(fs_cfg, tmp_path, monkeypatch):
+    import missa_gui as gui
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    answers = iter([str(bad), ""])
+    msgs = []
+
+    def fake(**k):
+        msgs.append(k["message"])
+        return next(answers)
+
+    monkeypatch.setattr(gui, "_ask_onedrive_path_popup", fake)
+    assert gui.ensure_ppt_roots("youth", ask_if_missing=True) is False
+    assert len(msgs) == 2 and "09.가톨릭 성가" in msgs[1]
+    assert not fs_cfg.exists()
+
+
+def test_fs_without_ask_never_opens_popup(fs_cfg, monkeypatch):
+    import missa_gui as gui
+    monkeypatch.setattr(gui, "_ask_onedrive_path_popup", lambda **k: pytest.fail("팝업 금지"))
+    assert gui.ensure_ppt_roots("adult") is False
+    assert gui.ensure_ppt_roots("youth") is False
+
+
+def test_fs_legacy_ppt_folder_with_new_structure_is_migrated(fs_cfg, fs_tree, monkeypatch):
+    """기존 설정 이관: 옛 키 onedrive_ppt_folder가 새 구조를 품고 있으면 세 루트를 자동 유도."""
+    import missa_gui as gui
+    parent, common, adult, youth = fs_tree
+    _fs_write_cfg(fs_cfg, onedrive_ppt_folder=str(parent))
+    monkeypatch.setattr(gui, "_ask_onedrive_path_popup", lambda **k: pytest.fail("묻지 않아야 함"))
+    assert gui.ensure_ppt_roots("adult", ask_if_missing=True) is True
+    saved = _fs_read_cfg(fs_cfg)
+    assert Path(saved["onedrive_adult_folder"]) == adult and Path(saved["onedrive_common_folder"]) == common
+    assert Path(saved["onedrive_youth_folder"]) == youth
+
+
+def test_fs_old_structure_config_is_invalid_and_leads_to_picker(fs_cfg, tmp_path, monkeypatch):
+    """인수 기준 4: 옛 구조(09/10/13/20이 'PPT 문서' 바로 아래)를 가리키는 config는 오류 없이 선택창으로."""
+    import missa_gui as gui
+    old = tmp_path / "PPT 문서"
+    for p in ("09.가톨릭 성가/성가-악보버전", "10.기타 PPT문서", "13.기도문", "20.청년 미사/2.성가"):
+        (old / p).mkdir(parents=True)
+    _fs_write_cfg(fs_cfg, onedrive_ppt_folder=str(old),
+                  onedrive_hymn_folder=str(old / "09.가톨릭 성가" / "성가-악보버전"),
+                  onedrive_youth_hymn_folder=str(old / "20.청년 미사" / "2.성가"))
+    asked = []
+    monkeypatch.setattr(gui, "_ask_onedrive_path_popup", lambda **k: asked.append(k["dialog_title"]) or "")
+    assert gui.ensure_ppt_roots("adult", ask_if_missing=True) is False
+    assert asked  # 선택창으로 안내됨(예외 없음)
+    assert gui.get_root("adult") is None and gui.get_root("common") is None
+
+
+def test_fs_saved_root_that_vanished_is_asked_again(fs_cfg, fs_tree, tmp_path, monkeypatch):
+    import missa_gui as gui
+    _p, common, _a, youth = fs_tree
+    _fs_write_cfg(fs_cfg, onedrive_common_folder=str(common), onedrive_youth_folder=str(tmp_path / "사라짐"))
+    asked = []
+
+    def fake(**k):
+        asked.append(k["dialog_title"])
+        return str(youth)
+
+    monkeypatch.setattr(gui, "_ask_onedrive_path_popup", fake)
+    assert gui.ensure_ppt_roots("youth", ask_if_missing=True) is True
+    assert len(asked) == 1 and "20.청년 미사" in asked[0]
+
+
+def test_fs_path_rules_follow_new_locations(fs_cfg, fs_tree):
+    """인수 기준 3: 경로 규칙 표(성가 검색·신규 저장·결과 복사)."""
+    import missa_gui as gui
+    _p, common, adult, youth = fs_tree
+    gui._ROOTS.update(common=common, adult=adult, youth=youth)
+    assert gui.ppt_subdir("catholic_hymn") == common / "09.가톨릭 성가" / "성가-악보버전"
+    assert gui.get_onedrive_hymn_folder() == common / "09.가톨릭 성가" / "성가-악보버전"
+    assert gui.ppt_subdir("youth_hymn", "나주노 성가") == youth / "2.성가" / "나주노 성가"
+    assert gui.result_copy_dir("adult", "2026") == adult / "2026"
+    assert gui.result_copy_dir("youth", "2026") == youth / "2026"
+
+
+def test_fs_hymn_folder_without_common_root_raises_runtime_error(fs_cfg):
+    import missa_gui as gui
+    with pytest.raises(RuntimeError):
+        gui.get_onedrive_hymn_folder()
+
+
+def test_fs_browse_defaults_per_row(fs_cfg, fs_tree):
+    import missa_gui as gui
+    _p, common, adult, youth = fs_tree
+    gui._ROOTS.update(common=common, adult=adult, youth=youth)
+    f = gui.browse_initial_dir
+    for mt in ("adult", "youth"):
+        assert f(mt, "시작기도") == common / "13.기도문"
+        assert f(mt, "미사후기도") == common / "13.기도문"
+        assert f(mt, "공지사항") == common / "11.공지사항 PPT문서"
+    assert f("adult", "ref_pptx") == adult / "10.기타 PPT문서" / "PPT 자동화" / "1.Template"
+    assert f("youth", "ref_pptx") == youth / "1.Template"
+    assert f("adult", "화답송_pptx") == adult / "14.화답송 악보"
+
+
+def test_fs_browse_default_falls_back_to_deepest_existing_then_root(fs_cfg, tmp_path):
+    import missa_gui as gui
+    adult = tmp_path / "10.성인 미사"
+    (adult / "10.기타 PPT문서").mkdir(parents=True)
+    gui._ROOTS.update(adult=adult)
+    assert gui.browse_initial_dir("adult", "ref_pptx") == adult / "10.기타 PPT문서"
+    assert gui.browse_initial_dir("adult", "화답송_pptx") == adult
+    assert gui.browse_initial_dir("adult", "시작기도") is None  # 공용 루트 없음
+
+
+def test_fs_browse_memory_is_per_row_and_ref_pptx_split_by_mass_type(fs_cfg, fs_tree, tmp_path):
+    """인수 기준 5 + 결정 4: 행별 기억, 참조 PPT는 성인/청년 구분."""
+    import missa_gui as gui
+    _p, common, adult, youth = fs_tree
+    gui._ROOTS.update(common=common, adult=adult, youth=youth)
+    other = tmp_path / "다른 곳"
+    other.mkdir()
+    gui.remember_browse_dir("adult", "ref_pptx", other / "a.pptx")
+    assert gui.browse_initial_dir("adult", "ref_pptx") == other
+    assert gui.browse_initial_dir("youth", "ref_pptx") == youth / "1.Template"   # 청년은 영향 없음
+    assert gui.browse_initial_dir("adult", "시작기도") == common / "13.기도문"      # 다른 행 영향 없음
+    # 저장 폴더가 사라지면 기본 폴더로
+    other.rmdir()
+    assert gui.browse_initial_dir("adult", "ref_pptx") == adult / "10.기타 PPT문서" / "PPT 자동화" / "1.Template"
+
+
+def test_fs_browse_memory_works_without_root_and_absorbs_legacy_psalm_dir(fs_cfg, tmp_path):
+    import missa_gui as gui
+    legacy = tmp_path / "예전 화답송"
+    legacy.mkdir()
+    _fs_write_cfg(fs_cfg, last_psalm_dir=str(legacy))
+    assert gui.browse_initial_dir("adult", "화답송_pptx") == legacy   # 옛 키 흡수
+    newer = tmp_path / "새 화답송"
+    newer.mkdir()
+    gui.remember_browse_dir("adult", "화답송_pptx", newer / "x.png")
+    assert gui.browse_initial_dir("adult", "화답송_pptx") == newer     # 행별 기억이 우선
+    assert "last_psalm_dir" not in _fs_read_cfg(fs_cfg)
+
+
+def test_fs_graph_fallback_is_removed():
+    """결정 1: OneDrive 로그인(Graph) 폴백·원격 브라우저·프리페치·캐시가 코드에서 사라졌다."""
+    import missa_gui as gui
+    for name in ("ensure_onedrive_login", "_mirror_onedrive_folder", "_resolve_onedrive_folder",
+                 "get_onedrive_youth_hymn_root", "get_youth_ppt_mode", "_YOUTH_PPT_STATE",
+                 "_ask_onedrive_file_browser_popup", "_start_onedrive_prefetch_thread",
+                 "_ensure_onedrive_blob_fresh", "_find_onedrive_file", "find_youth_onedrive_hymn_file",
+                 "_show_onedrive_device_code_window", "get_adult_ppt_folder"):
+        assert not hasattr(gui, name), name
+    assert not (BASE / "missa_onedrive.py").exists()
+
+
+def test_fs_run_gui_mode_cancelled_root_selection_exits_without_popup(monkeypatch):
+    """취소하면 안내만 하고 종료(입력창은 열리지 않는다)."""
+    import missa_to_ppt as m
+    shown = []
+    monkeypatch.setattr(m, "ensure_ppt_roots", lambda mass_type, ask_if_missing=False: False)
+    monkeypatch.setattr(m, "_show_root_required_message", lambda mt: shown.append(mt))
+    monkeypatch.setattr(m, "_ask_combined_input_popup",
+                        lambda mass_type: pytest.fail("입력창이 열리면 안 됨"))
+    with pytest.raises(SystemExit):
+        m._run_gui_mode("청년")
+    assert shown == ["youth"]
+
+
+def test_fs_new_youth_hymn_saved_under_youth_root(fs_cfg, fs_tree, monkeypatch):
+    """인수 기준 3: 신규 성가 PPT 저장 위치 = {청년}/2.성가/{나주노 성가}."""
+    import missa_content_updaters as cu
+    import missa_gui as gui
+    import missa_youth_hymn_pdf as yh
+    from pptx import Presentation
+    _p, common, adult, youth = fs_tree
+    gui._ROOTS.update(common=common, adult=adult, youth=youth)
+    monkeypatch.setattr(yh, "find_song_title", lambda src, n: "나의 고백")
+    monkeypatch.setattr(yh, "build_hymn_pptx", lambda *a, **k: Presentation())
+    monkeypatch.setattr(yh, "build_header_runs", lambda *a, **k: None)
+    _prs, title = cu.resolve_youth_hymn_pptx({"출처": "나주노", "번호": 172, "제목": None}, "입당")
+    assert title == "나의 고백"
+    assert (youth / "2.성가" / "나주노 성가" / "나주노 성가 172 나의 고백.pptx").exists()
+
+
+def test_fs_catholic_hymn_lookup_uses_common_root(fs_cfg, fs_tree):
+    import missa_gui as gui
+    _p, common, adult, youth = fs_tree
+    gui._ROOTS.update(common=common, adult=adult, youth=youth)
+    f = common / "09.가톨릭 성가" / "성가-악보버전" / "성가 96 하느님 약속하신.pptx"
+    f.write_bytes(b"x")
+    assert gui.find_youth_hymn_file("catholic_hymn", None, r"성가 96(?!\d)") == f
+    assert gui.find_youth_hymn_file("catholic_hymn", None, r"성가 97(?!\d)") is None
+
+
+# --- 2026-10-18 독립 리뷰 지적 반영 + 공유 페이지(곡 하나만 생성) -----------------------
+@pytest.mark.parametrize("num,expected_top", [(362, 305), (173, 358), (146, 347), (267, 355), (447, 346)])
+@pytest.mark.skipif(not _YOUTH_PDFS_AVAILABLE, reason=_YOUTH_SKIP_REASON)
+def test_S7_first_band_excludes_composer_line(num, expected_top):
+    """S7: 첫 시스템 상단이 작곡가명 아래(회귀 기준값 = 수정 전 HEAD 실측)에서 시작한다.
+    `_system_top`이 오선 블록 앞 블록(작곡가)을 다시 포함하던 결함(독립 리뷰)의 회귀 방지."""
+    import numpy as _np
+    d = _fitz.open(hp.SOURCES["나주노"]["pdf"])
+    try:
+        gray = _np.asarray(hp.render_region(
+            d[hp.find_song_page("나주노", num)], None, hp.RENDER_DPI).convert("L"))
+    finally:
+        d.close()
+    assert hp.detect_system_bands(gray)[0][0] >= expected_top - 3
+
+
+@pytest.mark.skipif(not _YOUTH_PDFS_AVAILABLE, reason=_YOUTH_SKIP_REASON)
+def test_F4b_fallback_copyright_is_single_line(monkeypatch):
+    """F4b: 폴백 크롭은 둘째 줄(All rights reserved…)을 포함하지 않는다(479·692: 줄이 붙어 있음)."""
+    monkeypatch.setattr(hp, "_load_naju_cache", lambda: {})
+    d = _fitz.open(hp.SOURCES["나주노"]["pdf"])
+    try:
+        for num in (479, 692):
+            crop = hp.resolve_copyright_crop("나주노", num, d[hp.find_song_page("나주노", num)])
+            assert crop is not None and crop.height <= 45, (num, crop.size)
+    finally:
+        d.close()
+
+
+def _shared_song_numbers():
+    d = _fitz.open(hp.SOURCES["나주노"]["pdf"])
+    try:
+        import re as _re
+        pages = {}
+        for _l, t, p in d.get_toc():
+            m = _re.match(r"^\s*(\d+)\b", t)
+            if m:
+                pages.setdefault(p - 1, []).append(int(m.group(1)))
+    finally:
+        d.close()
+    return [(pi, v) for pi, v in sorted(pages.items()) if len(v) > 1]
+
+
+@pytest.mark.skipif(not _YOUTH_PDFS_AVAILABLE, reason=_YOUTH_SKIP_REASON)
+def test_G1_all_shared_page_songs_have_own_region_and_partition_the_page():
+    """G1: 곡이 둘 이상인 모든 페이지의 곡마다 y_range가 캐시에 있고, 곡 순서대로 서로 겹치지 않으며
+    페이지 전체를 빈틈없이 나눈다(곡 하나만 생성하기 위한 전제)."""
+    cache = hp._load_naju_cache()
+    for _pi, nums in _shared_song_numbers():
+        ranges = [cache[str(n)]["y_range"] for n in nums]
+        assert ranges[0][0] == 0.0 and ranges[-1][1] == 1.0, nums
+        for (a0, a1), (b0, b1) in zip(ranges, ranges[1:]):
+            assert a1 == b0 and a0 < a1, nums
+
+
+@pytest.mark.skipif(not _YOUTH_PDFS_AVAILABLE, reason=_YOUTH_SKIP_REASON)
+def test_G2_shared_page_song_image_contains_only_that_song():
+    """G2: 14번 영역 이미지는 y_range 높이만큼이고, 그 안의 시스템 밴드는 15번 영역과 겹치지 않는다."""
+    cache = hp._load_naju_cache()
+    d = _fitz.open(hp.SOURCES["나주노"]["pdf"])
+    try:
+        page = d[hp.find_song_page("나주노", 14)]
+        full_h = hp.render_region(page, None, hp.RENDER_DPI).height
+        img14 = hp.naju_song_region_image(page, 14)
+        img15 = hp.naju_song_region_image(page, 15)
+    finally:
+        d.close()
+    y14, y15 = cache["14"]["y_range"], cache["15"]["y_range"]
+    assert img14.height <= round((y14[1] - y14[0]) * full_h) + 2
+    assert img15.height <= round((y15[1] - y15[0]) * full_h) + 2
+    assert img14.height + img15.height < full_h  # 저작권 줄 등은 제외돼 합이 전체보다 작다
+
+
+@pytest.mark.skipif(not _YOUTH_PDFS_AVAILABLE, reason=_YOUTH_SKIP_REASON)
+def test_G3_shared_page_without_registered_range_raises(monkeypatch):
+    """G3: 공유 페이지 곡인데 y_range가 없으면 다른 곡 악보가 섞이므로 조용히 진행하지 않고 예외."""
+    monkeypatch.setattr(hp, "_load_naju_cache", lambda: {})
+    d = _fitz.open(hp.SOURCES["나주노"]["pdf"])
+    try:
+        with pytest.raises(RuntimeError):
+            hp.naju_song_region_image(d[hp.find_song_page("나주노", 14)], 14)
+    finally:
+        d.close()
+
+
+@pytest.mark.skipif(not _YOUTH_PDFS_AVAILABLE, reason=_YOUTH_SKIP_REASON)
+def test_G4_copyright_bbox_lies_inside_own_song_region():
+    """G4: 공유 페이지 곡의 저작권 bbox는 그 곡 자신의 y_range 안에 있고, 곡 영역 이미지는 그 위에서 끝난다."""
+    cache = hp._load_naju_cache()
+    for _pi, nums in _shared_song_numbers():
+        for n in nums:
+            e = cache[str(n)]
+            if e.get("has_copyright"):
+                y0, y1 = e["y_range"]
+                assert y0 <= e["bbox"][1] < y1, n
+
+
+_G5_SONGS = [479, 519, 692, 468, 603, 107, 332, 255, 35, 68, 78, 358, 359, 11, 14, 15, 531, 212]
+
+
+@pytest.mark.parametrize("num", _G5_SONGS)
+@pytest.mark.skipif(not _YOUTH_PDFS_AVAILABLE, reason=_YOUTH_SKIP_REASON)
+def test_G5_no_music_or_lyric_ink_outside_bands(num):
+    """G5: 곡 영역 안에서 첫 밴드 상단~마지막 밴드 하단 사이의 밴드 밖, 그리고 마지막 밴드 아래에
+    글줄(행당 잉크 ≥15px)이 남지 않는다 — 남으면 슬라이드에서 잘린 악보/가사다(반복 종지 괄호 잘림 107·332·255,
+    공유 페이지 마지막 가사줄 누락 68·78·358·359, 35번 2째 가사줄; 독립 재리뷰 지적의 부정 단언)."""
+    d = _fitz.open(hp.SOURCES["나주노"]["pdf"])
+    try:
+        region, bands = hp.naju_song_bands(d[hp.find_song_page("나주노", num)], num)
+    finally:
+        d.close()
+    import numpy as _np
+    ink_rows = (_np.asarray(region.convert("L")) < 128).sum(axis=1) >= 15
+    covered = _np.zeros(len(ink_rows), dtype=bool)
+    for t, b in bands:
+        covered[t:b + 1] = True
+    stray = _np.where(ink_rows & ~covered)[0]
+    stray = stray[stray > bands[0][0]]   # 첫 밴드 위(제목·작곡가)는 제외 대상이 맞다
+    assert len(stray) < 3, f"{num}: 밴드 밖 글줄 {len(stray)}행 (예: {stray[:5].tolist()})"
+
+
+@pytest.mark.skipif(not _YOUTH_PDFS_AVAILABLE, reason=_YOUTH_SKIP_REASON)
+def test_G6_known_false_copyright_songs_now_have_copyright():
+    """G6: 재리뷰에서 '저작권이 있는데 false'로 확인된 곡(19·24·29·34·348, 공유 페이지 11)은 저작권 bbox가 있다."""
+    cache = hp._load_naju_cache()
+    for n in (19, 24, 29, 34, 348, 11):
+        assert cache[str(n)].get("has_copyright"), n
+
+
+@pytest.mark.skipif(not _YOUTH_PDFS_AVAILABLE, reason=_YOUTH_SKIP_REASON)
+def test_G7_region_image_ignores_degenerate_bbox(monkeypatch):
+    """G7: bbox 상단이 영역 상단 근처(또는 위)여도 곡 영역이 1px로 무너지지 않는다."""
+    cache = dict(hp._load_naju_cache())
+    cache["479"] = {"has_copyright": True, "bbox": [0.1, 0.0, 0.2, 0.01], "trigger": ""}
+    monkeypatch.setattr(hp, "_load_naju_cache", lambda: cache)
+    d = _fitz.open(hp.SOURCES["나주노"]["pdf"])
+    try:
+        region = hp.naju_song_region_image(d[hp.find_song_page("나주노", 479)], 479)
+    finally:
+        d.close()
+    assert region.height >= hp._MIN_REGION_H

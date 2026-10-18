@@ -129,7 +129,7 @@ def test_apply_update_end_to_end_with_zip(monkeypatch, tmp_path):
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.write(fake_repo_dir / "missa_to_ppt.py", "missa_ppt-abc123/missa_to_ppt.py")
 
-    def _fake_download(sha, dest_zip: Path):
+    def _fake_download(sha, dest_zip: Path, progress=None):
         dest_zip.write_bytes(zip_path.read_bytes())
 
     monkeypatch.setattr(mu, "_download_archive", _fake_download)
@@ -159,3 +159,64 @@ def test_U_readme_updated_only_when_installed_copy_exists(tmp_path):
     assert not (install_dir / "README_청년미사_운영자.md").exists()
     assert not (install_dir / "다른 문서.md").exists() and not (install_dir / "docs").exists()
     assert Path("README_성인미사_운영자.md") in copied
+
+
+# --- 2026-10-18 업데이트 진행 콜백 (SPEC_업데이트_진행바) --------------------------------
+class _FakeResp:
+    def __init__(self, data: bytes, with_length=True):
+        self._data = data
+        self.headers = {"Content-Length": str(len(data))} if with_length else {}
+
+    def raise_for_status(self):
+        pass
+
+    def iter_content(self, n):
+        for i in range(0, len(self._data), n):
+            yield self._data[i:i + n]
+
+
+def test_P1_download_reports_bytes_and_total(monkeypatch, tmp_path):
+    data = b"x" * (mu._DOWNLOAD_CHUNK * 2 + 10)
+    monkeypatch.setattr(mu.requests, "get", lambda *a, **k: _FakeResp(data))
+    events = []
+    mu._download_archive("sha", tmp_path / "a.zip", lambda st, d, t: events.append((st, d, t)))
+    assert (tmp_path / "a.zip").read_bytes() == data
+    assert events[0] == (mu.STAGE_DOWNLOAD, 0, len(data))
+    assert events[-1] == (mu.STAGE_DOWNLOAD, len(data), len(data))
+    assert [e[1] for e in events] == sorted(e[1] for e in events)  # 단조 증가
+
+
+def test_P2_download_without_content_length_reports_unknown_total(monkeypatch, tmp_path):
+    monkeypatch.setattr(mu.requests, "get", lambda *a, **k: _FakeResp(b"abc", with_length=False))
+    events = []
+    mu._download_archive("sha", tmp_path / "a.zip", lambda st, d, t: events.append((st, d, t)))
+    assert all(t is None for _s, _d, t in events)
+    assert events[-1][1] == 3
+
+
+def test_P3_install_reports_file_counts(tmp_path):
+    src = tmp_path / "src"
+    (src / "assets").mkdir(parents=True)
+    (src / "a.py").write_text("1", encoding="utf-8")
+    (src / "b.py").write_text("2", encoding="utf-8")
+    (src / "assets" / "x.png").write_bytes(b"1")
+    install = tmp_path / "inst"
+    install.mkdir()
+    events = []
+    mu.install_whitelisted(src, install, lambda st, d, t: events.append((st, d, t)))
+    assert events[0] == (mu.STAGE_INSTALL, 0, 3)
+    assert events[-1] == (mu.STAGE_INSTALL, 3, 3)
+    assert (install / "assets" / "x.png").exists()
+
+
+def test_P4_apply_update_emits_all_stages_in_order(monkeypatch, tmp_path):
+    import zipfile
+    zip_path = tmp_path / "fake.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("repo-abc/missa_to_ppt.py", "code")
+    monkeypatch.setattr(mu.requests, "get", lambda *a, **k: _FakeResp(zip_path.read_bytes()))
+    install = tmp_path / "inst"
+    install.mkdir()
+    seen = []
+    mu.apply_update("abc", install, lambda st, d, t: seen.append(st) if not seen or seen[-1] != st else None)
+    assert seen == [mu.STAGE_DOWNLOAD, mu.STAGE_EXTRACT, mu.STAGE_INSTALL, mu.STAGE_DONE]

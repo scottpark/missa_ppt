@@ -9,6 +9,8 @@
 캐시가 공유된다). 임시 폴더는 프로세스 종료 시 지운다.
 """
 import atexit
+import json
+import os
 import shutil
 import subprocess
 import sys
@@ -55,7 +57,13 @@ def generate_case(date_str: str, hymns: dict = None):
     args = [sys.executable, str(REPO_ROOT / "missa_to_ppt.py"), date_str]
     for k, v in hymns.items():
         args += [f"--{k}", v]
-    result = subprocess.run(args, cwd=root, capture_output=True, text=True, encoding="utf-8")
+    # 서브프로세스가 실제 config.json(개발 PC 설정)에 의존하지 않게 임시 설정을 쓴다 — 가톨릭 성가 폴더는
+    # 실제 OneDrive 공용 루트(있을 때만)를 가리킨다.
+    cfg = root / "config.json"
+    common = Path.home() / "OneDrive" / "PPT 문서" / "00.공용 PPT"
+    cfg.write_text(json.dumps({"onedrive_common_folder": str(common)} if common.is_dir() else {}), encoding="utf-8")
+    env = dict(os.environ, MISSA_CONFIG_FILE=str(cfg))
+    result = subprocess.run(args, cwd=root, capture_output=True, text=True, encoding="utf-8", env=env)
     assert result.returncode == 0, (
         f"{date_str} 생성 실패 (exit={result.returncode})\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"

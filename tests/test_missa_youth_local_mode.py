@@ -1,7 +1,8 @@
-"""청년미사 OneDrive 접속 모드(로컬 'PPT 문서' 폴더 우선 / 로그인 폴백) 테스트 — 요구사항 §3.3.1."""
-import json
-import sys
-import types
+"""OneDrive 로컬 폴더 루트(공용/성인/청년) 기반 동작 테스트 — 성가 조회/저장·결과 복사·창 구성.
+
+루트 관리·경로 규칙·찾아보기 기억의 명세는 test_missa_progression.py의 test_fs_* 가 맡는다
+(2026-10-18 폴더 구조 개편, SPEC_OneDrive_폴더구조_개편.md). 이 파일은 그 루트를 쓰는 소비 동작을 검증한다.
+"""
 from pathlib import Path
 
 import pytest
@@ -11,138 +12,36 @@ import missa_gui as gui
 
 @pytest.fixture
 def ppt_root(tmp_path):
-    root = tmp_path / "PPT 문서"
-    (root / "20.청년 미사" / "2.성가" / "나주노 성가").mkdir(parents=True)
-    (root / "20.청년 미사" / "2.성가" / "야훼이레 성가").mkdir(parents=True)
-    (root / "09.가톨릭 성가" / "성가-악보버전").mkdir(parents=True)
-    return root
+    """새 구조의 세 루트를 모두 채운 'PPT 문서'(마스터 PC). `gui._ROOTS`에 세 루트를 설정해 돌려준다."""
+    parent = tmp_path / "PPT 문서"
+    common = parent / "00.공용 PPT"
+    adult = parent / "10.성인 미사"
+    youth = parent / "20.청년 미사"
+    for p in (youth / "2.성가" / "나주노 성가", youth / "2.성가" / "야훼이레 성가",
+              common / "09.가톨릭 성가" / "성가-악보버전", adult / "10.기타 PPT문서"):
+        p.mkdir(parents=True)
+    gui._ROOTS.update(common=common, adult=adult, youth=youth)
+    return parent
 
 
 @pytest.fixture
 def cfg(tmp_path, monkeypatch):
     path = tmp_path / "config.json"
     monkeypatch.setattr(gui, "CONFIG_FILE", path)
-    gui._reset_youth_ppt_mode()
+    gui._reset_ppt_roots()
     return path
 
 
-def _write_cfg(cfg, **kw):
-    cfg.write_text(json.dumps(kw, ensure_ascii=False), encoding="utf-8")
-
-
-def test_valid_folder_requires_youth_subfolder(tmp_path, ppt_root):
-    assert gui._is_valid_youth_ppt_folder(ppt_root)
-    other = tmp_path / "other"
-    other.mkdir()
-    assert not gui._is_valid_youth_ppt_folder(other)
-    assert not gui._is_valid_youth_ppt_folder(tmp_path / "nope")
-
-
-def test_saved_valid_folder_gives_local_without_popup(cfg, ppt_root, monkeypatch):
-    _write_cfg(cfg, onedrive_ppt_folder=str(ppt_root))
-    monkeypatch.setattr(gui, "_ask_onedrive_path_popup",
-                        lambda **k: pytest.fail("선택창이 뜨면 안 됨"))
-    assert gui.get_youth_ppt_mode(ask_if_missing=True) == "local"
-    assert gui.youth_local_subdir("start_dir") == ppt_root
-
-
-def test_missing_setting_without_ask_is_fallback_and_not_cached(cfg, ppt_root, monkeypatch):
-    assert gui.get_youth_ppt_mode() == "fallback"
-    _write_cfg(cfg, onedrive_ppt_folder=str(ppt_root))
-    assert gui.get_youth_ppt_mode() == "local"
-
-
-def test_saved_folder_without_youth_subfolder_is_treated_as_missing(cfg, tmp_path):
-    bad = tmp_path / "bad"
-    bad.mkdir()
-    _write_cfg(cfg, onedrive_ppt_folder=str(bad))
-    assert gui.get_youth_ppt_mode() == "fallback"
-
-
-def test_ask_selection_is_saved_and_local(cfg, ppt_root, monkeypatch):
-    monkeypatch.setattr(gui, "_ask_onedrive_path_popup", lambda **k: str(ppt_root))
-    assert gui.get_youth_ppt_mode(ask_if_missing=True) == "local"
-    assert json.loads(cfg.read_text(encoding="utf-8"))["onedrive_ppt_folder"] == str(ppt_root)
-
-
-def test_invalid_selection_reasks_then_accepts(cfg, tmp_path, ppt_root, monkeypatch):
-    bad = tmp_path / "bad"
-    bad.mkdir()
-    answers = iter([str(bad), str(ppt_root)])
-    messages = []
-
-    def fake(**k):
-        messages.append(k["message"])
-        return next(answers)
-
-    monkeypatch.setattr(gui, "_ask_onedrive_path_popup", fake)
-    assert gui.get_youth_ppt_mode(ask_if_missing=True) == "local"
-    assert len(messages) == 2 and "20.청년 미사" in messages[1]
-
-
-def test_cancel_gives_fallback_not_saved_and_cached(cfg, monkeypatch):
-    calls = []
-    monkeypatch.setattr(gui, "_ask_onedrive_path_popup", lambda **k: calls.append(1) or "")
-    assert gui.get_youth_ppt_mode(ask_if_missing=True) == "fallback"
-    assert not cfg.exists()
-    assert gui.get_youth_ppt_mode(ask_if_missing=True) == "fallback"
-    assert len(calls) == 1  # 같은 실행에서는 다시 묻지 않는다
-
-
-def test_local_subdir_paths(cfg, ppt_root):
-    gui._YOUTH_PPT_STATE.update(mode="local", folder=ppt_root)
-    assert gui.youth_local_subdir("catholic_hymn") == ppt_root / "09.가톨릭 성가" / "성가-악보버전"
-    assert gui.youth_local_subdir("youth_hymn", "나주노 성가") == \
-        ppt_root / "20.청년 미사" / "2.성가" / "나주노 성가"
-    assert gui.youth_local_subdir("output", year="2026") == ppt_root / "20.청년 미사" / "2026"
-    with pytest.raises(ValueError):
-        gui.youth_local_subdir("bogus")
-
-
-def test_local_subdir_requires_local_mode(cfg):
-    with pytest.raises(RuntimeError):
-        gui.youth_local_subdir("start_dir")
-
-
-def _no_graph(monkeypatch):
-    """로컬 모드에서 Graph 모듈이 import/호출되면 실패하게 한다."""
-    fake = types.ModuleType("missa_onedrive")
-
-    def _boom(*a, **k):
-        pytest.fail("로컬 모드에서 Graph API 호출 금지")
-
-    for name in ("list_children", "download_file", "upload_file", "ensure_folder", "get_item_metadata"):
-        setattr(fake, name, _boom)
-    monkeypatch.setitem(sys.modules, "missa_onedrive", fake)
-
-
-def test_local_hymn_lookup_finds_file_without_graph(cfg, ppt_root, monkeypatch):
-    gui._YOUTH_PPT_STATE.update(mode="local", folder=ppt_root)
-    _no_graph(monkeypatch)
+def test_local_hymn_lookup_finds_file(cfg, ppt_root):
     f = ppt_root / "20.청년 미사" / "2.성가" / "나주노 성가" / "나주노 성가 172 나의 고백.pptx"
     f.write_bytes(b"x")
     (f.parent / "~$나주노 성가 171 임시.pptx").write_bytes(b"x")
-    found = gui.find_youth_onedrive_hymn_file(
-        "onedrive_youth_hymn_path", gui._DEFAULT_ONEDRIVE_YOUTH_HYMN_PATH, "나주노 성가",
-        r"^나주노 성가 172 ", "청년미사_성가/나주노 성가", local_kind="youth_hymn",
-    )
-    assert found == f
-    missing = gui.find_youth_onedrive_hymn_file(
-        "onedrive_youth_hymn_path", gui._DEFAULT_ONEDRIVE_YOUTH_HYMN_PATH, "나주노 성가",
-        r"^나주노 성가 999 ", "청년미사_성가/나주노 성가", local_kind="youth_hymn",
-    )
-    assert missing is None
+    assert gui.find_youth_hymn_file("youth_hymn", "나주노 성가", r"^나주노 성가 172 ") == f
+    assert gui.find_youth_hymn_file("youth_hymn", "나주노 성가", r"^나주노 성가 999 ") is None
 
 
-def test_local_catholic_hymn_lookup(cfg, ppt_root, monkeypatch):
-    gui._YOUTH_PPT_STATE.update(mode="local", folder=ppt_root)
-    _no_graph(monkeypatch)
-    f = ppt_root / "09.가톨릭 성가" / "성가-악보버전" / "성가 96 하느님 약속하신.pptx"
-    f.write_bytes(b"x")
-    assert gui.find_youth_onedrive_hymn_file(
-        "onedrive_hymn_path", gui._DEFAULT_ONEDRIVE_HYMN_PATH, None,
-        r"성가 96(?!\d)", "청년_가톨릭성가", local_kind="catholic_hymn",
-    ) == f
+def test_local_hymn_lookup_missing_folder_is_none(cfg, ppt_root):
+    assert gui.find_youth_hymn_file("youth_hymn", "없는 성가 폴더", r".") is None
 
 
 def test_youth_output_is_no_longer_auto_copied_or_uploaded():
@@ -151,10 +50,9 @@ def test_youth_output_is_no_longer_auto_copied_or_uploaded():
     assert not hasattr(m, "_upload_youth_output_to_onedrive")
 
 
-# ── 결과창 '원드라이브로 복사'(2026-10-03) ──
+# ── 결과창 '원드라이브로 복사'(2026-10-03, 2026-10-18 새 루트 기준) ──
 
-def test_copy_result_youth_local_goes_to_year_folder_under_youth_root(cfg, ppt_root, tmp_path):
-    gui._YOUTH_PPT_STATE.update(mode="local", folder=ppt_root)
+def test_copy_result_youth_goes_to_year_folder_under_youth_root(cfg, ppt_root, tmp_path):
     out = tmp_path / "결과.pptx"
     out.write_bytes(b"pptx")
     dest = gui.copy_result_to_onedrive("youth", out, "20261003")
@@ -163,17 +61,15 @@ def test_copy_result_youth_local_goes_to_year_folder_under_youth_root(cfg, ppt_r
     assert out.exists()
 
 
-def test_copy_result_adult_goes_to_year_folder_directly_under_root(cfg, ppt_root, tmp_path):
-    gui._ADULT_PPT_STATE["folder"] = ppt_root
+def test_copy_result_adult_goes_to_year_folder_under_adult_root(cfg, ppt_root, tmp_path):
     out = tmp_path / "성인.pptx"
     out.write_bytes(b"a")
     dest = gui.copy_result_to_onedrive("adult", out, "20261004")
-    assert Path(dest) == ppt_root / "2026"
-    assert (ppt_root / "2026" / "성인.pptx").read_bytes() == b"a"
+    assert Path(dest) == ppt_root / "10.성인 미사" / "2026"
+    assert (ppt_root / "10.성인 미사" / "2026" / "성인.pptx").read_bytes() == b"a"
 
 
 def test_copy_result_exists_detects_same_name(cfg, ppt_root, tmp_path):
-    gui._YOUTH_PPT_STATE.update(mode="local", folder=ppt_root)
     out = tmp_path / "x.pptx"
     out.write_bytes(b"1")
     assert not gui.result_copy_exists("youth", out, "20261003")
@@ -181,32 +77,12 @@ def test_copy_result_exists_detects_same_name(cfg, ppt_root, tmp_path):
     assert gui.result_copy_exists("youth", out, "20261003")
 
 
-def test_copy_result_youth_fallback_uploads_via_graph_to_same_remote_path(cfg, tmp_path, monkeypatch):
-    calls = {"ensure": [], "upload": []}
-
-    class _OD:
-        @staticmethod
-        def ensure_folder(path):
-            calls["ensure"].append(path)
-
-        @staticmethod
-        def upload_file(path, local):
-            calls["upload"].append((path, local))
-
-    monkeypatch.setitem(sys.modules, "missa_onedrive", _OD)
-    out = tmp_path / "청년.pptx"
-    out.write_bytes(b"1")
-    dest = gui.copy_result_to_onedrive("youth", out, "20261003")
-    assert calls["ensure"] == ["PPT 문서/20.청년 미사/2026"]
-    assert calls["upload"] == [("PPT 문서/20.청년 미사/2026/청년.pptx", out)]
-    assert "20.청년 미사" in dest and "2026" in dest
-
-
-def test_copy_result_adult_without_root_raises(cfg, tmp_path):
+def test_copy_result_without_root_raises(cfg, tmp_path):
     out = tmp_path / "a.pptx"
     out.write_bytes(b"1")
-    with pytest.raises(RuntimeError):
-        gui.copy_result_to_onedrive("adult", out, "20261004")
+    for mt in ("adult", "youth"):
+        with pytest.raises(RuntimeError):
+            gui.copy_result_to_onedrive(mt, out, "20261004")
 
 
 def _stub_messagebox(monkeypatch, answer=True):
@@ -220,7 +96,6 @@ def _stub_messagebox(monkeypatch, answer=True):
 
 
 def test_copy_ui_announces_destination_folder(cfg, ppt_root, tmp_path, monkeypatch):
-    gui._YOUTH_PPT_STATE.update(mode="local", folder=ppt_root)
     shown = _stub_messagebox(monkeypatch)
     out = tmp_path / "r.pptx"
     out.write_bytes(b"1")
@@ -230,7 +105,6 @@ def test_copy_ui_announces_destination_folder(cfg, ppt_root, tmp_path, monkeypat
 
 
 def test_copy_ui_asks_before_overwrite_and_respects_no(cfg, ppt_root, tmp_path, monkeypatch):
-    gui._YOUTH_PPT_STATE.update(mode="local", folder=ppt_root)
     out = tmp_path / "r.pptx"
     out.write_bytes(b"new")
     dest_file = ppt_root / "20.청년 미사" / "2026" / "r.pptx"
@@ -243,18 +117,18 @@ def test_copy_ui_asks_before_overwrite_and_respects_no(cfg, ppt_root, tmp_path, 
 
 
 def test_copy_ui_reports_failure(cfg, ppt_root, tmp_path, monkeypatch):
-    gui._YOUTH_PPT_STATE.update(mode="local", folder=ppt_root)
     shown = _stub_messagebox(monkeypatch)
     gui._copy_result_with_ui(None, "youth", tmp_path / "없는파일.pptx", "20261003")
     assert shown[-1][0] == "error"
 
 
-def test_copy_ui_adult_without_root_asks_picker_then_cancel_warns(cfg, tmp_path, monkeypatch):
+@pytest.mark.parametrize("mass_type", ["adult", "youth"])
+def test_copy_ui_without_root_asks_picker_then_cancel_warns(cfg, tmp_path, monkeypatch, mass_type):
     monkeypatch.setattr(gui, "_ask_onedrive_path_popup", lambda **k: "")
     shown = _stub_messagebox(monkeypatch)
     out = tmp_path / "a.pptx"
     out.write_bytes(b"1")
-    gui._copy_result_with_ui(None, "adult", out, "20261004")
+    gui._copy_result_with_ui(None, mass_type, out, "20261004")
     assert shown[-1][0] == "warn"
 
 
@@ -269,139 +143,42 @@ def test_result_window_copy_button_sits_right_after_open_file_with_same_font():
     assert "_UI['font_sz'], 'bold'" in factory   # 4개 모두 같은 글꼴 크기(한 사이즈 작게 줄이지 않음)
 
 
-# ── 성인 'PPT 문서' 폴더(2026-10-03) ──
-
-def test_adult_valid_folder_requires_catholic_hymn_subfolder(tmp_path, ppt_root):
-    assert gui._is_valid_adult_ppt_folder(ppt_root)
-    other = tmp_path / "o"
-    other.mkdir()
-    assert not gui._is_valid_adult_ppt_folder(other)
-
-
-def test_adult_picker_saves_ppt_folder_and_hymn_folder(cfg, ppt_root, monkeypatch):
-    monkeypatch.setattr(gui, "_ask_onedrive_path_popup", lambda **k: str(ppt_root))
-    got = gui.get_adult_ppt_folder(ask_if_missing=True)
-    assert got == ppt_root
-    saved = json.loads(cfg.read_text(encoding="utf-8"))
-    assert saved["onedrive_ppt_folder"] == str(ppt_root)
-    assert Path(saved["onedrive_hymn_folder"]) == ppt_root / "09.가톨릭 성가" / "성가-악보버전"
-
-
-def test_adult_picker_reasks_on_invalid_folder_and_none_on_cancel(cfg, tmp_path, ppt_root, monkeypatch):
-    bad = tmp_path / "bad"
-    bad.mkdir()
-    answers = iter([str(bad), ""])
-    msgs = []
-
-    def _popup(**k):
-        msgs.append(k["message"])
-        return next(answers)
-
-    monkeypatch.setattr(gui, "_ask_onedrive_path_popup", _popup)
-    assert gui.get_adult_ppt_folder(ask_if_missing=True) is None
-    assert len(msgs) == 2 and "09.가톨릭 성가" in msgs[1]
-
-
-def test_adult_without_ask_never_opens_popup(cfg, monkeypatch):
-    monkeypatch.setattr(gui, "_ask_onedrive_path_popup", lambda **k: pytest.fail("팝업 금지"))
-    assert gui.get_adult_ppt_folder() is None
-
-
-def test_adult_derives_root_from_existing_hymn_folder_setting(cfg, ppt_root, monkeypatch):
-    _write_cfg(cfg, onedrive_hymn_folder=str(ppt_root / "09.가톨릭 성가" / "성가-악보버전"))
-    monkeypatch.setattr(gui, "_ask_onedrive_path_popup", lambda **k: pytest.fail("팝업 금지"))
-    assert gui.get_adult_ppt_folder(ask_if_missing=True) == ppt_root
-
-
-def test_run_gui_mode_adult_asks_ppt_folder_before_combined_popup(monkeypatch):
+def test_run_gui_mode_asks_roots_before_combined_popup(monkeypatch):
+    """루트 확보(필요한 것만 선택창)가 통합 입력창보다 먼저 일어난다 — 성인·청년 모두."""
     import missa_to_ppt as m
-    calls = []
-    monkeypatch.setattr(m, "get_adult_ppt_folder", lambda ask_if_missing=False: calls.append(("adult", ask_if_missing)))
-    monkeypatch.setattr(m, "_ask_combined_input_popup",
-                        lambda mass_type: (calls.append("combined"), ("20261004", {}))[1])
-    monkeypatch.setattr(m, "_ask_numbers_popup", lambda n, s: {})
-    monkeypatch.setattr(m, "_run_with_progress_window", lambda fn: ("", ""))
-    monkeypatch.setattr(m, "_show_result_window", lambda *a, **k: None)
-    m._preloaded_inputs[0] = None
-    try:
-        m._run_gui_mode("성인")
-    finally:
+    for kr, mt in (("성인", "adult"), ("청년", "youth")):
+        calls = []
+        monkeypatch.setattr(m, "ensure_ppt_roots",
+                            lambda mass_type, ask_if_missing=False: (calls.append((mass_type, ask_if_missing)), True)[1])
+        monkeypatch.setattr(m, "_ask_combined_input_popup",
+                            lambda mass_type: (calls.append("combined"), ("20261004", {}))[1])
+        monkeypatch.setattr(m, "_ask_numbers_popup", lambda n, s: {})
+        monkeypatch.setattr(m, "_ask_youth_hymn_popup", lambda: {})
+        monkeypatch.setattr(m, "_run_with_progress_window", lambda fn: ("", ""))
+        monkeypatch.setattr(m, "_show_result_window", lambda *a, **k: None)
         m._preloaded_inputs[0] = None
-    assert calls[:2] == [("adult", True), "combined"]
+        try:
+            m._run_gui_mode(kr)
+        finally:
+            m._preloaded_inputs[0] = None
+        assert calls[:2] == [(mt, True), "combined"]
 
 
-# ── 찾아보기 시작 폴더(2026-10-03) ──
+# ── 찾아보기 연동 ──
 
-@pytest.fixture
-def full_root(ppt_root):
-    for parts in (("13.기도문",), ("11.공지사항 PPT문서",), ("10.기타 PPT문서", "PPT 자동화", "1.Template"),
-                  ("20.청년 미사", "1.Template"), ("14.화답송 악보",)):
-        (ppt_root.joinpath(*parts)).mkdir(parents=True, exist_ok=True)
-    return ppt_root
-
-
-def test_start_subpaths_per_mass_type():
-    f = gui.browse_start_subpath
-    for mt in ("adult", "youth"):
-        assert f(mt, "시작기도") == ("13.기도문",)
-        assert f(mt, "미사후기도") == ("13.기도문",)
-        assert f(mt, "공지사항") == ("11.공지사항 PPT문서",)
-    assert f("adult", "ref_pptx") == ("10.기타 PPT문서", "PPT 자동화", "1.Template")
-    assert f("youth", "ref_pptx") == ("20.청년 미사", "1.Template")
-    assert f("adult", "화답송_pptx") is None
-
-
-def test_initial_dir_adult_and_youth(cfg, full_root):
-    gui._ADULT_PPT_STATE["folder"] = full_root
-    assert gui.browse_initial_dir("adult", "시작기도") == full_root / "13.기도문"
-    assert gui.browse_initial_dir("adult", "공지사항") == full_root / "11.공지사항 PPT문서"
-    assert gui.browse_initial_dir("adult", "ref_pptx") == full_root / "10.기타 PPT문서" / "PPT 자동화" / "1.Template"
-    gui._YOUTH_PPT_STATE.update(mode="local", folder=full_root)
-    assert gui.browse_initial_dir("youth", "ref_pptx") == full_root / "20.청년 미사" / "1.Template"
-    assert gui.browse_initial_dir("youth", "미사후기도") == full_root / "13.기도문"
-
-
-def test_initial_dir_ignores_space_differences_and_falls_back_to_deepest_existing(cfg, ppt_root):
-    (ppt_root / "13. 기도문").mkdir()          # 공백이 다른 이름
-    gui._ADULT_PPT_STATE["folder"] = ppt_root
-    assert gui.browse_initial_dir("adult", "시작기도") == ppt_root / "13. 기도문"
-    # 하위 폴더가 아예 없으면 'PPT 문서' 자체
-    assert gui.browse_initial_dir("adult", "공지사항") == ppt_root
-
-
-def test_initial_dir_none_without_root(cfg):
-    assert gui.browse_initial_dir("adult", "시작기도") is None
-    assert gui.browse_initial_dir("youth", "ref_pptx") is None   # 로그인 폴백
-
-
-def test_psalm_dir_first_root_then_remembered(cfg, full_root):
-    gui._ADULT_PPT_STATE["folder"] = full_root
-    assert gui.browse_initial_dir("adult", "화답송_pptx") == full_root
-    picked = full_root / "14.화답송 악보" / "연중 제27주일.pptx"
-    gui.remember_psalm_dir(picked)
-    assert json.loads(cfg.read_text(encoding="utf-8"))["last_psalm_dir"] == str(picked.parent)
-    assert gui.browse_initial_dir("adult", "화답송_pptx") == picked.parent
-
-
-def test_psalm_remembered_dir_that_vanished_falls_back_to_root(cfg, full_root):
-    gui._ADULT_PPT_STATE["folder"] = full_root
-    _write_cfg(cfg, last_psalm_dir=str(full_root / "사라진 폴더"))
-    assert gui.browse_initial_dir("adult", "화답송_pptx") == full_root
-
-
-def test_graph_browser_accepts_start_subpath_and_youth_fallback_passes_it():
+def test_combined_popup_browse_uses_remembered_dir_for_every_row():
+    """통합 입력창의 '찾아보기'는 로컬 파일 다이얼로그 하나뿐(Graph 브라우저 없음)이며 initialdir을 쓰고 고른
+    폴더를 행별로 기억한다."""
     import inspect
-    assert "start_subpath" in inspect.signature(gui._ask_onedrive_file_browser_popup).parameters
-    assert "start_subpath=browse_start_subpath(mass_type, key)" in inspect.getsource(gui._ask_combined_input_popup)
-    assert "13.기도문" in gui._ONEDRIVE_ROOT_ALLOWED_FOLDERS
+    src = inspect.getsource(gui._ask_combined_input_popup)
+    assert "browse_initial_dir(mass_type, key)" in src and "remember_browse_dir(mass_type, key, path)" in src
+    assert "_ask_onedrive_file_browser_popup" not in src and "_od_cache" not in src
 
 
-def test_resolve_new_hymn_saved_into_local_folder_without_upload(cfg, ppt_root, monkeypatch):
+def test_resolve_new_hymn_saved_into_local_folder(cfg, ppt_root, monkeypatch):
     import missa_content_updaters as cu
     import missa_youth_hymn_pdf as yh
     from pptx import Presentation
-    gui._YOUTH_PPT_STATE.update(mode="local", folder=ppt_root)
-    _no_graph(monkeypatch)
     monkeypatch.setattr(yh, "find_song_title", lambda src, n: "나의 고백")
     monkeypatch.setattr(yh, "build_hymn_pptx", lambda *a, **k: Presentation())
     monkeypatch.setattr(yh, "build_header_runs", lambda *a, **k: None)
@@ -417,7 +194,6 @@ def test_existing_hymn_file_title_comes_from_filename_without_pdf_lookup(cfg, pp
     import missa_content_updaters as cu
     import missa_youth_hymn_pdf as yh
     from pptx import Presentation
-    gui._YOUTH_PPT_STATE.update(mode="local", folder=ppt_root)
     folder = ppt_root / "20.청년 미사" / "2.성가" / "나주노 성가"
     Presentation().save(str(folder / "나주노 성가 172 나의 고백.pptx"))
     monkeypatch.setattr(yh, "find_song_title", lambda *a: pytest.fail("PDF 제목 조회가 호출되면 안 됨"))

@@ -4,13 +4,13 @@
 exe는 폐기(코드가 바뀔 때마다 다시 빌드·재배포해야 하고, `.py`만 교체하는 자동 업데이트(`missa_updater.py`)가
 exe에는 먹히지 않기 때문). 이 스크립트가 운영자 PC에서 그대로 실행 가능한 최소 소스 배포판을 만든다.
 
-공통 포함: 런타임에 필요한 .py 13개 + assets/(tessdata/ 제외) + requirements.txt + install.bat +
+공통 포함: 런타임에 필요한 .py 12개 + assets/(tessdata/ 제외) + requirements.txt + install.bat +
 create_shortcut.py(설치 시 바로가기 생성) + VERSION + 유형별 실행 .bat·운영자 안내서(`docs/README_*미사_운영자.md`를 zip 최상위로).
 청년만 추가: 나주노/야훼이레 성가집 원본 PDF 2개(cache/청년미사_성가원본/, 나주노가 스캔 래스터라 약 80MB —
 `missa_youth_hymn_pdf._resolve_pdf_path()`가 이 경로 하나만 본다). 성인 zip은 PDF가 없어 가볍다.
 
 제외(의도적):
-  - config.json, msal_token_cache.bin — PC/계정별 개인화 상태, 첫 실행 시 자동 생성/로그인됨
+  - config.json — PC별 개인화 상태(OneDrive 폴더 경로 등), 첫 실행 시 자동 생성됨
   - assets/tessdata/ — 개발용 Tesseract OCR 데이터, 런타임은 캐시 json만 읽음(Tesseract 미호출)
   - output/, docs/, _workspace/*, .claude/, .git/, test_*.py, tools/ — 개발/테스트/산출물 자산
 
@@ -38,7 +38,6 @@ RUNTIME_PY_FILES = [
     "missa_psalm_score_image.py",
     "missa_youth_gospel.py",
     "missa_youth_hymn_pdf.py",
-    "missa_onedrive.py",
     "missa_updater.py",
     "ppt_com_verify.py",
 ]
@@ -120,4 +119,4 @@ if __name__ == "__main__":
         out = build(k)
         size_mb = out.stat().st_size / (1024 * 1024)
         print(f"[{k}] 배포 zip 생성 완료: {out} ({size_mb:.1f} MB)")
-    print("  미포함(의도적): config.json, msal_token_cache.bin (PC/계정별 개인화 상태)")
+    print("  미포함(의도적): config.json (PC별 개인화 상태)")

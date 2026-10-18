@@ -17,17 +17,16 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _youth_ppt_mode_isolated():
-    """청년미사 OneDrive 접속 모드(`missa_gui._YOUTH_PPT_STATE`)는 프로세스 전역 상태다.
-    모든 테스트를 실제 config.json과 무관하게 '폴백'(기존 Graph 동작)으로 시작시키고, 끝나면
-    비워서 한 테스트의 로컬 모드 설정이 다른 테스트로 새지 않게 한다. 로컬 모드를 검증하는
-    테스트는 이 상태를 직접 덮어쓴다."""
+def _ppt_roots_isolated(tmp_path_factory):
+    """OneDrive 폴더 루트 캐시(`missa_gui._ROOTS`)는 프로세스 전역 상태다. 모든 테스트를 실제 config.json과
+    무관하게 '루트 미설정'으로 시작시키고(config.json은 빈 임시 파일로 대체), 끝나면 비워서 한 테스트의 루트
+    설정이 다른 테스트로 새지 않게 한다. 루트를 검증하는 테스트는 `missa_gui._ROOTS`를 직접 채운다."""
     import missa_gui
-    missa_gui._YOUTH_PPT_STATE['mode'] = 'fallback'
-    missa_gui._YOUTH_PPT_STATE['folder'] = None
-    missa_gui._reset_adult_ppt_folder()
+    mp = pytest.MonkeyPatch()
+    mp.setattr(missa_gui, 'CONFIG_FILE', tmp_path_factory.mktemp('cfg') / 'config.json')
+    missa_gui._reset_ppt_roots()
     missa_gui._last_output_mass[0] = None
     yield
-    missa_gui._reset_youth_ppt_mode()
-    missa_gui._reset_adult_ppt_folder()
+    mp.undo()
+    missa_gui._reset_ppt_roots()
     missa_gui._last_output_mass[0] = None

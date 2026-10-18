@@ -10,18 +10,17 @@
 
 - `missa_to_ppt.py` — 진입점. CLI 인자·파일 탐색·JSON 로드·`main()`/`_run_gui_mode()` 분기.
 - `missa_ooxml_utils.py` — 슬라이드/도형 복사·rId 매핑·배경 상속 등 OOXML 저수준 프리미티브.
-- `missa_gui.py` — Tkinter 팝업 전부 + config.json 로드/저장 + OneDrive 온디맨드 조회·캐싱.
+- `missa_gui.py` — Tkinter 팝업 전부 + config.json 로드/저장 + OneDrive 로컬 폴더 루트 3종(공용/성인/청년)·찾아보기 시작 폴더 기억·결과 복사.
 - `missa_reading_layout.py` — 독서·복음 절 파싱 → COM 실측으로 슬라이드마다 정확히 9줄씩 채우기(폴백 Pillow).
 - `missa_sections.py` — 섹션 탐색(`find_sections`)과 검증(`validate*`).
 - `missa_content_updaters.py` — 화답송·성가·입당송 등 섹션별 콘텐츠 갱신(`update_*`).
 - `missa_psalm_score_image.py` — 화답송 악보 원본 이미지 → 슬라이드 변환(leaf 모듈).
 - `missa_youth_gospel.py` — 청년미사 영문 독서/복음 조회(universalis.com).
 - `missa_youth_hymn_pdf.py` — PDF 성가집(나주노/야훼이레) → 성가 슬라이드 PPT 생성.
-- `missa_onedrive.py` — Microsoft Graph API 접근(성당 공용 계정, Device Code Flow, leaf 모듈).
 - `missa_updater.py` — GitHub 기반 자동 업데이트(화이트리스트 파일만 덮어씀).
 - `ppt_com_verify.py` — PowerPoint COM으로 실제 줄 수 실측 검증.
 - `tests/` — 테스트 전부(`test_missa_progression.py`=신규 동작 명세, `test_missa_regression.py`
-  =회귀, 나머지는 OneDrive/GUI/COM/업데이터별 분리). 저장소 루트 `conftest.py`가 `sys.path`에
+  =회귀, 나머지는 OneDrive 폴더 루트/GUI/COM/업데이터별 분리). 저장소 루트 `conftest.py`가 `sys.path`에
   루트를 추가해 `tests/`에서 루트의 런타임 모듈을 import할 수 있게 한다.
 - `dist/` — 빌드 산출물(배포 zip) 전용 폴더, git 추적 안 함.
 - `docs/` — 4단계 문서 체계(2026-10-06~): `PRD.md`(한 장) · `SPECS/SPEC_*.md`(기능별 명세, 절 번호 매핑은
@@ -29,6 +28,9 @@
   `archive/`(과거 버전 원문 + `legacy-2026-10-06/` 이관 전 요구사항·구현 계획·변경이력),
   `ooxml-pitfalls-log.md`(아래 규칙들의 상세 발견 경위), `missa_to_ppt-module-notes.md`(모듈별 구현 상세),
   `README_성인미사_운영자.md`·`README_청년미사_운영자.md`(운영자 안내서 — 배포 zip 최상위로 들어감).
+
+**새 기능·변경 요구는 질문부터(2026-10-18)**: SPEC을 쓰기 전에 열린 질문을 옵션과 함께 먼저 묻고, 답을 받은 뒤
+SPEC에 확정 결정으로 반영해 리뷰를 요청한다(열린 질문을 SPEC 끝에 남기지 않는다).
 
 **요구사항이 바뀌면 코드부터 고치지 않는다**: PRD/SPEC → ARCHITECTURE → IMPLEMENTATION_PLAN 순으로 수정하되 각
 문서마다 사용자 승인을 받고, PLAN 승인 후 코딩한다(승인 후 설계→테스트→구현→리뷰→검증은 자동 연속). 상세는
@@ -100,14 +102,19 @@
     슬라이드 간 이동으로 메우면 보정 단계가 늘고 한두 글자 꼬리 줄(widow) 같은 부작용이 남는다.
     남은 본문을 실제 상자에 놓고 COM 줄 시작 위치로 정확히 N줄에서 자르면 앞 조각의 마지막 줄은 항상
     꽉 찬다(2026-10-03, 20261004 복음 '짓는' → 슬라이드 단위 채우기로 교체).
+26. **스캔 악보의 오선은 row_fill이 아니라 열 연속 커버리지로 판정하고, 시스템 경계는 화음 줄 단서로 정한다** —
+    기울거나 흐린 스캔은 row_fill이 낮아 시스템이 누락된다. 임계 변경 시 697곡 전수로 구/신 밴드를 비교한다
+    (2026-10-18, 나주노 479·692·468).
+27. **개발자 OCR 캐시에 없는 곡을 조용히 생략하지 않는다** — 저작권은 미등록 시 폴백+경고, 공유 페이지(곡 2~3개)는
+    곡별 `y_range`가 없으면 오류로 중단한다. `has_copyright:false`는 OCR이 Copyright를 못 찾았을 때만(2026-10-18).
 
 ## 회귀 테스트
 
 `tests/test_missa_regression.py`에 주일·평일 통합 테스트와 핵심 함수 단위 테스트가 있다.
 
 **선택 실행 우선, 전체 실행은 최종 게이트 1회**: 기능별 클래스(`TestIsSundayMass`/
-`TestWrapLineCount`/`TestSplitParaPreservesVerseColors`/`TestComVerify` 등)와 별도 파일(OneDrive/
-GUI-OneDrive/COM검증/업데이터)로 이미 나뉘어 있다. 작업 중엔 관련 클래스/파일만 `-k`나
+`TestWrapLineCount`/`TestSplitParaPreservesVerseColors`/`TestComVerify` 등)와 별도 파일(OneDrive 폴더 루트/
+COM검증/업데이터)로 이미 나뉘어 있다. 작업 중엔 관련 클래스/파일만 `-k`나
 `::클래스명`으로 좁혀 돌리고, 전체 스위트(`pytest tests/ -v`, 총 300개+·3~4분)는 리뷰
 통과 후 최종 게이트로 한 번만 돌린다.
 

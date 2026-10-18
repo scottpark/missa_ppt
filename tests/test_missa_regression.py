@@ -1070,6 +1070,18 @@ def _y2_skip_if_sample_missing():
         pytest.skip(f"나주노 447 샘플 PPT가 로컬에 없음(reference/청년미사/, git 미포함): {Y2_SAMPLE_HYMN}")
 
 
+def _y2_make_roots(tmp_path):
+    """임시 폴더에 새 구조의 공용·청년 루트를 만들고 `gui2._ROOTS`에 설정한다(2026-10-18 폴더 구조 개편).
+    반환: (가톨릭 성가 폴더, 청년 2.성가 폴더)."""
+    hymn = tmp_path / "00.공용 PPT" / "09.가톨릭 성가" / "성가-악보버전"
+    youth_hymn = tmp_path / "20.청년 미사" / "2.성가"
+    hymn.mkdir(parents=True)
+    for sub_name in ("나주노 성가", "야훼이레 성가"):
+        (youth_hymn / sub_name).mkdir(parents=True)
+    gui2._ROOTS.update(common=tmp_path / "00.공용 PPT", youth=tmp_path / "20.청년 미사")
+    return hymn, youth_hymn
+
+
 def test_y2_H1_naju_resolves_and_header_reflects_htype(monkeypatch, tmp_path):
     """H1: resolve_youth_hymn_pptx가 (Presentation, 제목)을 반환하고, 반환된 각 슬라이드
     헤더가 '{타입} 나주노 {번호} {제목}' 형식이 된다."""
@@ -1082,17 +1094,7 @@ def test_y2_H1_naju_resolves_and_header_reflects_htype(monkeypatch, tmp_path):
 
     monkeypatch.setattr(hp, "build_hymn_pptx", fake_build)
     monkeypatch.setattr(hp, "find_song_title", lambda source, number: "영원도 하시어라 그 사랑이여")
-    # find_youth_onedrive_hymn_file()은 2026-09-27(2차)부터 로컬 동기화 폴더 검색을 완전히
-    # 빼고 (1) 로컬 캐시(_SCRIPT_DIR/cache/...) → (2) OneDrive 실시간 검색만 한다.
-    # _SCRIPT_DIR을 tmp_path로 돌려 캐시를 격리하고(초기엔 빈 캐시라 미스), OneDrive 검색은
-    # 네트워크/로그인 없이 "못 찾음"으로 스텁한다 — 그래야 캐시-미스 → 신규 생성 경로를 탄다.
-    # 생성된 파일의 저장 위치(_youth_onedrive_local_sync_dir, 검색과는 별개의 판단 지점)도
-    # None으로 돌려 캐시 폴더에 저장되게 하고, 그 뒤의 OneDrive 업로드 시도도 스텁한다.
-    monkeypatch.setattr(gui2, "_SCRIPT_DIR", tmp_path)
-    monkeypatch.setattr(gui2, "_find_onedrive_file", lambda remote_path, pattern: None)
-    monkeypatch.setattr(gui2, "_youth_onedrive_local_sync_dir", lambda local_key: None)
-    import missa_onedrive as od_h1
-    monkeypatch.setattr(od_h1, "upload_file", lambda *a, **k: None)
+    _y2_make_roots(tmp_path)  # 빈 루트 — 캐시 미스 → 신규 생성 경로
 
     entry = {'출처': '나주노', '번호': 447, '제목': None}
     src_prs, resolved_title = cu2.resolve_youth_hymn_pptx(entry, '입당')
@@ -1115,13 +1117,7 @@ def test_y2_H2_cache_reuse_skips_regeneration(monkeypatch, tmp_path):
 
     monkeypatch.setattr(hp, "build_hymn_pptx", fake_build)
     monkeypatch.setattr(hp, "find_song_title", lambda source, number: "영원도 하시어라 그 사랑이여")
-    # H1과 동일한 격리. 저장 위치와 검색 캐시 위치가 (local_sync_dir=None이라) 둘 다
-    # _SCRIPT_DIR/cache/청년미사_성가/나주노 성가로 일치해야 두 번째 호출이 캐시를 찾는다.
-    monkeypatch.setattr(gui2, "_SCRIPT_DIR", tmp_path)
-    monkeypatch.setattr(gui2, "_find_onedrive_file", lambda remote_path, pattern: None)
-    monkeypatch.setattr(gui2, "_youth_onedrive_local_sync_dir", lambda local_key: None)
-    import missa_onedrive as od_h2
-    monkeypatch.setattr(od_h2, "upload_file", lambda *a, **k: None)
+    _y2_make_roots(tmp_path)  # 생성 저장 위치 = 검색 위치({청년}/2.성가/나주노 성가)여야 두 번째 호출이 찾는다.
 
     entry = {'출처': '나주노', '번호': 447, '제목': None}
     cu2.resolve_youth_hymn_pptx(entry, '입당')
@@ -1139,20 +1135,8 @@ def test_y2_H3_catholic_hymn_header_untouched(monkeypatch, tmp_path):
     box = slide.shapes.add_textbox(0, 0, 1000000, 500000)
     box.text_frame.text = "성체 161       어떤 제목"
 
-    # find_youth_onedrive_hymn_file(subfolder=None)은 이제 로컬 동기화 폴더를 아예 보지
-    # 않고 로컬 캐시(_SCRIPT_DIR/cache/청년_가톨릭성가/)부터 뒤진다 — 파일을 거기 바로
-    # 둔다. OneDrive 검색까지 가면(버그가 있을 때만) 즉시 실패하도록 스텁해 조용히
-    # 네트워크를 타는 회귀를 막는다.
-    dest_dir = tmp_path / "cache" / "청년_가톨릭성가"
-    dest_dir.mkdir(parents=True)
-    fake_prs.save(str(dest_dir / "성가 161 어떤 제목.pptx"))
-
-    monkeypatch.setattr(gui2, "_SCRIPT_DIR", tmp_path)
-
-    def _no_network(remote_path, pattern):
-        raise AssertionError("캐시 히트를 기대하는 테스트에서 OneDrive 검색이 호출됨")
-
-    monkeypatch.setattr(gui2, "_find_onedrive_file", _no_network)
+    hymn_dir, _yh = _y2_make_roots(tmp_path)
+    fake_prs.save(str(hymn_dir / "성가 161 어떤 제목.pptx"))
 
     entry = {'출처': '가톨릭성가', '번호': 161, '제목': None}
     src_prs, _resolved_title = cu2.resolve_youth_hymn_pptx(entry, '성체')
@@ -1412,42 +1396,33 @@ def test_y2_C1_real_combo_full_pipeline_structure_valid(y2_prs, monkeypatch, tmp
     성체2=기타/2차봉헌=야훼이레810/파견=나주노267)으로 성가 통합+복음 영문 레이아웃을 실행해
     최종 PPT가 validate_pptx_structure() 구조 검증을 통과하는지 확인한다.
 
-    find_youth_onedrive_hymn_file()은 2026-09-27(2차)부터 로컬 동기화 폴더 검색을 완전히
-    빼고 로컬 캐시 → OneDrive 실시간 검색만 한다 — 실제 OneDrive 계정에 매주 쌓여있는
-    161/173/267/810은(§읽기 전용 실측 유지) 네트워크 없이 실제 파일 내용 그대로 캐시에
-    미리 복사해 두고, 원래 로컬에 없던 447만 실제 build_hymn_pptx() PDF 파이프라인을
-    그대로 거치게 해 "실사용 5개 조합"의 실측 취지를 그대로 보존한다. OneDrive 원격 검색과
-    실패 시 업로드는 네트워크/로그인 없이 끝나도록 스텁한다."""
-    config = gui2._load_config()
-    real_hymn_dir = config.get('onedrive_hymn_folder')
-    real_youth_dir = config.get('onedrive_youth_hymn_folder')
-    if not real_hymn_dir or not Path(real_hymn_dir).is_dir() \
-            or not real_youth_dir or not Path(real_youth_dir).is_dir():
-        pytest.skip("OneDrive 로컬 동기화 폴더가 이 환경에 설정돼 있지 않음")
+    실제 OneDrive 폴더(읽기 전용)에 쌓여있는 161/173/267/810은 실제 파일 내용 그대로 임시 루트에
+    복사해 두고, 원래 로컬에 없던 447만 실제 build_hymn_pptx() PDF 파이프라인을 그대로 거치게 해
+    "실사용 5개 조합"의 실측 취지를 보존한다(2026-10-18 새 폴더 구조 기준)."""
+    od_parent = Path.home() / 'OneDrive' / 'PPT 문서'
+    real_hymn_dir = od_parent / '00.공용 PPT' / '09.가톨릭 성가' / '성가-악보버전'
+    real_youth_dir = od_parent / '20.청년 미사' / '2.성가'
+    if not real_hymn_dir.is_dir() or not real_youth_dir.is_dir():
+        pytest.skip("OneDrive 로컬 동기화 폴더가 이 환경에 없음")
 
     import shutil as _c1_shutil
 
-    def _seed_cache(cache_subdir, src_dir, pattern):
+    hymn_dest, youth_dest = _y2_make_roots(tmp_path)
+
+    def _seed(dest_dir, src_dir, pattern):
         matches = [f for f in Path(src_dir).rglob('*.pptx')
                    if not f.name.startswith('~$') and re.search(pattern, f.name)]
         if not matches:
             pytest.skip(f"실측 대상 파일을 찾지 못함: {src_dir} / {pattern}")
-        dest_dir = tmp_path / 'cache' / cache_subdir
         dest_dir.mkdir(parents=True, exist_ok=True)
         _c1_shutil.copy(str(matches[0]), str(dest_dir / matches[0].name))
 
     나주노_sub = hp.SOURCES['나주노']['onedrive_subfolder']
     야훼이레_sub = hp.SOURCES['야훼 이레']['onedrive_subfolder']
-    _seed_cache('청년_가톨릭성가', real_hymn_dir, r'성가 161(?!\d)')
-    _seed_cache(f'청년미사_성가/{나주노_sub}', Path(real_youth_dir) / 나주노_sub, r'^나주노 성가 173 ')
-    _seed_cache(f'청년미사_성가/{나주노_sub}', Path(real_youth_dir) / 나주노_sub, r'^나주노 성가 267 ')
-    _seed_cache(f'청년미사_성가/{야훼이레_sub}', Path(real_youth_dir) / 야훼이레_sub, r'^야훼 이레 성가 810 ')
-
-    monkeypatch.setattr(gui2, "_SCRIPT_DIR", tmp_path)
-    monkeypatch.setattr(gui2, "_find_onedrive_file", lambda remote_path, pattern: None)
-    monkeypatch.setattr(gui2, "_youth_onedrive_local_sync_dir", lambda local_key: None)
-    import missa_onedrive as od_c1
-    monkeypatch.setattr(od_c1, "upload_file", lambda *a, **k: None)
+    _seed(hymn_dest, real_hymn_dir, r'성가 161(?!\d)')
+    _seed(youth_dest / 나주노_sub, real_youth_dir / 나주노_sub, r'^나주노 성가 173 ')
+    _seed(youth_dest / 나주노_sub, real_youth_dir / 나주노_sub, r'^나주노 성가 267 ')
+    _seed(youth_dest / 야훼이레_sub, real_youth_dir / 야훼이레_sub, r'^야훼 이레 성가 810 ')
 
     성가_선택 = {
         '입당': [{'출처': '나주노', '번호': 447, '제목': None}],
@@ -1506,14 +1481,10 @@ def test_y2_C2_성체_second_song_omitted_deletes_extra_slides(monkeypatch, tmp_
     _y2_skip_if_missing()
     prs = _Y2Presentation(str(Y2_TEMPLATE))
 
-    # find_youth_onedrive_hymn_file()은 로컬 동기화 폴더를 보지 않고 로컬 캐시부터
-    # 뒤진다(§H3와 동일 이유) — 파일을 그 캐시 경로에 둔다.
-    dest_dir = tmp_path / "cache" / "청년_가톨릭성가"
-    dest_dir.mkdir(parents=True)
+    hymn_dir, _yh = _y2_make_roots(tmp_path)
     _y2_make_fake_catholic_hymn_pptx(
-        dest_dir / "성가 161 성체를 찬송하세.pptx", "성체 161       성체를 찬송하세",
+        hymn_dir / "성가 161 성체를 찬송하세.pptx", "성체 161       성체를 찬송하세",
     )
-    monkeypatch.setattr(gui2, "_SCRIPT_DIR", tmp_path)
 
     n_before = len(prs.slides)
     sec_before = sec2.find_sections(prs, mass_type='youth')
@@ -1546,13 +1517,11 @@ def test_y2_C3_synthetic_combo_no_constraint(monkeypatch, tmp_path):
     _y2_skip_if_missing()
     prs = _Y2Presentation(str(Y2_TEMPLATE))
 
-    dest_dir = tmp_path / "cache" / "청년_가톨릭성가"
-    dest_dir.mkdir(parents=True)
+    dest_dir, _yh = _y2_make_roots(tmp_path)
     _y2_make_fake_catholic_hymn_pptx(
         dest_dir / "성가 447 영원도 하시어라 그 사랑이여.pptx",
         "입당 447       영원도 하시어라 그 사랑이여",
     )
-    monkeypatch.setattr(gui2, "_SCRIPT_DIR", tmp_path)
 
     성가_선택 = {
         '입당': [{'출처': '가톨릭성가', '번호': 447, '제목': None}],
@@ -1578,12 +1547,10 @@ def test_y2_R1_2차봉헌_가톨릭성가_header_label_no_space(monkeypatch, tmp
     _y2_skip_if_missing()
     prs = _Y2Presentation(str(Y2_TEMPLATE))
 
-    dest_dir = tmp_path / "cache" / "청년_가톨릭성가"
-    dest_dir.mkdir(parents=True)
+    dest_dir, _yh = _y2_make_roots(tmp_path)
     _y2_make_fake_catholic_hymn_pptx(
         dest_dir / "성가 810 주의 자비가 내려와.pptx", "2차 봉헌 810       주의 자비가 내려와",
     )
-    monkeypatch.setattr(gui2, "_SCRIPT_DIR", tmp_path)
 
     성가_선택 = {'2차봉헌': [{'출처': '가톨릭성가', '번호': 810, '제목': None}]}
     cu2.replace_성가_youth(prs, 성가_선택)
@@ -2400,197 +2367,6 @@ def test_a4_combined_input_popup_default_mass_type_is_adult(tmp_path):
 # Treeview 렌더링은 전용 서브프로세스 프로브로 검증한다.
 # ---------------------------------------------------------------------------
 
-def test_a5_onedrive_visible_children_filters_and_sorts_folders_first():
-    import missa_gui as gui
-    items = [
-        {'name': 'b.pptx'},
-        {'name': '~$temp.pptx'},
-        {'name': 'notes.docx'},
-        {'name': 'Folder2', 'folder': {}},
-        {'name': 'a.pptx'},
-        {'name': 'Folder1', 'folder': {}},
-        {'name': ''},
-    ]
-    visible = gui._onedrive_visible_children(items)
-    assert [v['name'] for v in visible] == ['Folder1', 'Folder2', 'a.pptx', 'b.pptx']
-
-
-def test_a5_cached_onedrive_children_reuses_cache(monkeypatch):
-    import sys
-    import missa_gui as gui
-
-    calls = []
-
-    class _StubOD:
-        @staticmethod
-        def list_children(path):
-            calls.append(path)
-            return [{'name': 'x.pptx'}]
-
-    monkeypatch.setitem(sys.modules, 'missa_onedrive', _StubOD)
-    cache = {}
-    r1 = gui._cached_onedrive_children('PPT 문서', cache)
-    r2 = gui._cached_onedrive_children('PPT 문서', cache)
-    assert r1 == r2 == [{'name': 'x.pptx'}]
-    assert calls == ['PPT 문서']  # 두 번째 호출은 캐시 재사용 — 실제 조회는 1회만
-
-
-def test_a5_download_onedrive_selection_uses_basename(tmp_path, monkeypatch):
-    import sys
-    import missa_gui as gui
-
-    calls = []
-
-    class _StubOD:
-        @staticmethod
-        def download_file(path, dest):
-            calls.append((path, dest))
-            return dest
-
-    monkeypatch.setitem(sys.modules, 'missa_onedrive', _StubOD)
-    dest_dir = tmp_path / 'out'
-    result = gui._download_onedrive_selection('PPT 문서/2026/참조 미사.pptx', dest_dir)
-    assert result == dest_dir / '참조 미사.pptx'
-    assert calls == [('PPT 문서/2026/참조 미사.pptx', dest_dir / '참조 미사.pptx')]
-
-
-def _a_run_onedrive_browser_probe(tmp_path, stub_children_code: str,
-                                   open_folder_substr: str = None) -> list:
-    """`_ask_onedrive_file_browser_popup()`이 렌더링한 Treeview 내용을 서브프로세스에서
-    덤프해 중첩 리스트로 반환한다. ttk.Treeview 항목은 `winfo_children()`으로 보이는
-    일반 위젯이 아니라 Tcl 내부 데이터라, `_A_WIDGET_DUMP_HELPER`(범용 위젯 트리 덤프)로는
-    볼 수 없다 — `tree.get_children()`/`tree.item()`으로 직접 읽어야 한다.
-
-    `open_folder_substr`(2026-09-26 J2 후속 확장): 주어지면 최상위에서 그 텍스트를
-    포함하는 첫 폴더 노드에 `<<TreeviewOpen>>`을 발생시켜 실제 자식을 로드한 뒤 덤프한다
-    — J2로 최상위가 3개 폴더로 고정되면서, 필터 없는 하위 레벨(파일 노드가 자식 없이
-    렌더링되는지 등)을 검증하려면 최상위 파일 항목이 아니라 그 아래를 열어봐야 한다."""
-    out_file = tmp_path / 'a5_probe_result.json'
-    dest_dir = tmp_path / 'dest'
-    script = f'''
-import sys, json, types
-sys.path.insert(0, {str(BASE)!r})
-import tkinter as tk
-import missa_gui as gui
-
-_od_stub = types.ModuleType("missa_onedrive")
-_od_stub.list_children = {stub_children_code}
-_od_stub.download_file = lambda path, dest: dest
-sys.modules["missa_onedrive"] = _od_stub
-
-def _a_find_treeview(w):
-    if w.winfo_class() == "Treeview":
-        return w
-    for c in w.winfo_children():
-        found = _a_find_treeview(c)
-        if found:
-            return found
-    return None
-
-def _a_dump_tree(tree, parent=""):
-    out = []
-    for iid in tree.get_children(parent):
-        item = tree.item(iid)
-        out.append({{"iid": iid, "text": item["text"], "children": _a_dump_tree(tree, iid)}})
-    return out
-
-_dump = []
-_orig_wait_window = tk.Toplevel.wait_window
-_open_substr = {open_folder_substr!r}
-
-def _fake_wait_window(self, *a, **k):
-    def _probe():
-        try:
-            tv = _a_find_treeview(self)
-            if tv is not None:
-                if _open_substr is not None:
-                    top = tv.get_children("")
-                    target = next((iid for iid in top if _open_substr in tv.item(iid, "text")), None)
-                    if target is not None:
-                        tv.focus(target)
-                        tv.event_generate("<<TreeviewOpen>>")
-                        self.update()
-                _dump.extend(_a_dump_tree(tv))
-        finally:
-            self.destroy()
-    self.after(60, _probe)
-    return _orig_wait_window(self, *a, **k)
-
-tk.Toplevel.wait_window = _fake_wait_window
-
-root = tk.Tk()
-root.withdraw()
-gui._ask_onedrive_file_browser_popup(root, {str(dest_dir)!r}, cache={{}})
-root.destroy()
-
-with open({str(out_file)!r}, 'w', encoding='utf-8') as f:
-    json.dump(_dump, f)
-'''
-    script_path = tmp_path / 'a5_probe_script.py'
-    script_path.write_text(script, encoding='utf-8')
-    try:
-        result = _a_subprocess.run(
-            [_a_sys.executable, str(script_path)],
-            cwd=str(BASE), capture_output=True, text=True, encoding='utf-8', errors='replace',
-            timeout=30,
-        )
-    except _a_subprocess.TimeoutExpired as e:
-        raise AssertionError(
-            f"OneDrive 브라우저 프로브가 30초 내에 끝나지 않음\nstdout:\n{e.stdout}\nstderr:\n{e.stderr}"
-        )
-    assert out_file.is_file(), (
-        f"트리 덤프 실패(exit={result.returncode})\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-    return _a_json.loads(out_file.read_text(encoding='utf-8'))
-
-
-def test_a5_browser_root_level_renders_ppt_문서_children_directly(tmp_path):
-    """'PPT 문서' 자체가 트리 노드로 보이지 않고, list_children('PPT 문서') 결과가 트리
-    최상위 레벨에 바로 렌더링돼야 한다(사용자 명시 지시 — 00_request.md §A5).
-
-    2026-09-26(J2) 갱신: 최상위는 실측된 3개 폴더로 필터링되므로(§J2), 임의의
-    '09.가톨릭 성가'/'notes.pptx'로는 이 필터에 걸려 더 이상 재현되지 않는다 — 허용
-    목록에 있는 이름으로 교체했다(J2 자체의 필터 검증은
-    test_j2*(test_missa_progression.py)가 전담)."""
-    stub = (
-        "lambda path: {'PPT 문서': ["
-        "{'name': '20.청년 미사', 'folder': {}},"
-        "{'name': '13. 기도문', 'folder': {}},"
-        "]}.get(path, [])"
-    )
-    top_level = _a_run_onedrive_browser_probe(tmp_path, stub)
-    top_texts = [n['text'] for n in top_level]
-    assert not any('PPT 문서' in t for t in top_texts), (
-        "'PPT 문서' 폴더 자체가 트리 노드로 노출됨 — list_children() 결과가 바로 최상위여야 함",
-        top_texts,
-    )
-    assert any('20.청년 미사' in t for t in top_texts), top_texts
-    assert any('13. 기도문' in t for t in top_texts), top_texts
-
-
-def test_a5_browser_folder_nodes_get_lazy_load_placeholder(tmp_path):
-    """폴더 노드는 더블클릭 전에도 자리표시자 자식이 있어야(펼침 화살표가 보이도록) 하고,
-    파일 노드는 자식이 없어야 한다.
-
-    2026-09-26(J2) 갱신: 최상위 파일('notes.pptx')은 이제 3개 허용 폴더 목록에 없어
-    필터링돼 최상위에서 재현할 수 없다 — 필터가 적용되지 않는 하위 레벨(허용 폴더 하나를
-    열어 그 안의 파일/폴더)에서 같은 성질을 검증한다."""
-    stub = (
-        "lambda path: {"
-        "'PPT 문서': [{'name': '20.청년 미사', 'folder': {}}],"
-        "'PPT 문서/20.청년 미사': ["
-        "{'name': '2.성가', 'folder': {}},"
-        "{'name': 'notes.pptx'},"
-        "],"
-        "}.get(path, [])"
-    )
-    top_level = _a_run_onedrive_browser_probe(tmp_path, stub, open_folder_substr='청년 미사')
-    opened = next(n for n in top_level if '청년 미사' in n['text'])
-    folder_node = next(n for n in opened['children'] if '2.성가' in n['text'])
-    file_node = next(n for n in opened['children'] if 'notes.pptx' in n['text'])
-    assert len(folder_node['children']) == 1, folder_node
-    assert file_node['children'] == [], file_node
-
 
 # ---------------------------------------------------------------------------
 # A6: 청년미사 성가 입력 팝업 — 헤더 행 + 제목칸 기본 숨김 + 출처='기타' 선택 시 토글
@@ -2856,16 +2632,10 @@ def test_c3_catholic_hymn_title_derived_from_filename_when_not_provided(tmp_path
     import missa_gui as gui3
     from pptx import Presentation as _C3Presentation
 
-    # find_youth_onedrive_hymn_file()은 로컬 동기화 폴더를 보지 않고 로컬 캐시부터
-    # 뒤진다(§H3와 동일 이유) — 파일을 그 캐시 경로에 둔다.
     fake_prs = _C3Presentation()
     fake_prs.slides.add_slide(fake_prs.slide_layouts[6])
-    dest_dir = tmp_path / 'cache' / '청년_가톨릭성가'
-    dest_dir.mkdir(parents=True)
-    fake_path = dest_dir / '성가 96 하느님 약속하신 분.pptx'
-    fake_prs.save(str(fake_path))
-
-    monkeypatch.setattr(gui3, '_SCRIPT_DIR', tmp_path)
+    hymn_dir, _yh = _y2_make_roots(tmp_path)
+    fake_prs.save(str(hymn_dir / '성가 96 하느님 약속하신 분.pptx'))
 
     entry = {'출처': '가톨릭성가', '번호': 96, '제목': None}
     _src_prs, resolved_title = cu3.resolve_youth_hymn_pptx(entry, '성체')
@@ -2881,12 +2651,8 @@ def test_c3_catholic_hymn_explicit_title_overrides_filename(tmp_path, monkeypatc
 
     fake_prs = _C3Presentation()
     fake_prs.slides.add_slide(fake_prs.slide_layouts[6])
-    dest_dir = tmp_path / 'cache' / '청년_가톨릭성가'
-    dest_dir.mkdir(parents=True)
-    fake_path = dest_dir / '성가 96 하느님 약속하신 분.pptx'
-    fake_prs.save(str(fake_path))
-
-    monkeypatch.setattr(gui3, '_SCRIPT_DIR', tmp_path)
+    hymn_dir, _yh = _y2_make_roots(tmp_path)
+    fake_prs.save(str(hymn_dir / '성가 96 하느님 약속하신 분.pptx'))
 
     entry = {'출처': '가톨릭성가', '번호': 96, '제목': '사용자가 직접 입력한 제목'}
     _src_prs, resolved_title = cu3.resolve_youth_hymn_pptx(entry, '성체')
@@ -4010,7 +3776,6 @@ def test_sf_real4_youth_english_gospel_exactly_nine(which):
     if which == '20260926':
         first = rl_b._find_content_shape(prs.slides[s2['복음_start']]).text_frame.text
         assert "father’s" in first, first
-
 
 
 # ---------------------------------------------------------------------------
