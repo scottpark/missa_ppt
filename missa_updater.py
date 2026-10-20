@@ -28,7 +28,9 @@ _ARCHIVE_URL_TMPL = f"https://github.com/{REPO}/archive/{{sha}}.zip"
 # 복사한다. 화이트리스트에 없는 모든 것(config.json, output/, reference/, cache/, .git/ 등
 # 로컬 전용 상태)은 자동으로 보존된다 — 블랙리스트가 아니라 화이트리스트 방식이라 새로
 # 추가되는 로컬 전용 폴더를 깜빡하고 블랙리스트에 빠뜨릴 위험이 없다.
-_UPDATE_FILE_GLOBS = ["*.py", "*.spec", "VERSION"]
+# requirements.txt는 포함한다 — 새 의존 패키지가 생겨도 업데이트 후 install.bat을 다시 돌리면 설치된다(2026-10-21 PyMuPDF 누락 사례).
+# install.bat은 일부러 뺀다: 저장소의 LF 줄바꿈 그대로 덮어쓰면 한글+chcp 65001에서 깨진다(zip 빌더가 CRLF로 정규화).
+_UPDATE_FILE_GLOBS = ["*.py", "*.spec", "VERSION", "requirements.txt"]
 _UPDATE_DIRS = ["assets"]
 # 운영자 안내서: 저장소에서는 docs/ 아래에 있지만 배포 zip에서는 설치 폴더 최상위에 놓인다(tools/build_dist_zip.py).
 # 설치 폴더에 **이미 같은 이름의 파일이 있을 때만** 갱신한다 — 성인 설치에 청년 안내서가 생기는 일이 없게(2026-10-05).

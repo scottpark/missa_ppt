@@ -21,6 +21,7 @@ leaf 모듈)와 2단계(배포 전환·OneDrive 인증·전체 파이프라인 �
   해당 유형의 `run_missa_*.bat`과 운영자 안내서(`docs/README_성인미사_운영자.md`/`docs/README_청년미사_운영자.md`, zip
   최상위로 배치)가 들어가고(`.bat`은 항상 CRLF — LF만 있으면 한글+`chcp 65001`에서 cmd가 줄을 잘못 읽어 설치가 깨진다), `config.json`·토큰 캐시는 들어가지 않는다. 기존 exe 사용자는 exe 폴더의 `config.json`을
   새 폴더로 복사해 설정을 이어간다(안내서 부록 G).
+- **의존 패키지·바로가기 안전망(2026-10-21)**: 외부 패키지는 `requirements.txt`에 빠짐없이 적는다(런타임 import ⊆ requirements를 테스트가 검사). 업데이트 화이트리스트에 `requirements.txt`를 포함하되 `install.bat`은 제외한다(LF 덮어쓰기 방지). 성가 PDF 처리 직전 PyMuPDF·numpy가 없으면 pip로 한 번 자동 설치하고, 실패하면 install.bat 재실행을 안내한다. `create_shortcut.py`는 프로그램 폴더와 바탕화면 두 곳에 바로가기를 만들고, pywin32 실패 시 PowerShell로 재시도하며 실패 원인을 출력한다.
 - 업데이트는 앱 실행 시 자동이 아니라 "업데이트 확인" 버튼을 눌렀을 때만(`missa_updater.py`,
   GitHub commit SHA 비교 → zip 다운로드 → `*.py`/`*.spec`/`VERSION`/`assets/`/운영자 안내서(`README_*미사_운영자.md`,
   설치 폴더에 이미 있는 것만) 화이트리스트만 교체, `config.json`/`output/`/`reference/`/`cache/`/`.git/`은 절대 덮어쓰지 않음).

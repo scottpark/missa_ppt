@@ -1605,6 +1605,37 @@ _YOUTH_SOURCE_LINE = {
 }
 
 
+def _ensure_pdf_packages() -> None:
+    """PDF 성가(나주노/야훼이레) 생성에 필요한 패키지(PyMuPDF·numpy)가 없으면 pip로 한 번 설치한다.
+
+    예전 배포판의 requirements.txt에는 이 패키지가 빠져 있었고(2026-10-21 운영자 PC에서 `No module named
+    'fitz'`), 업데이트는 `.py`만 바꿔 install.bat을 다시 돌려도 옛 requirements.txt가 그대로였다. 코드가 먼저
+    갱신되는 이 경우에도 운영자가 따로 명령을 치지 않아도 되게 하는 안전망이다. 설치 후에도 못 가져오면
+    직접 설치하는 방법을 안내하는 오류를 낸다."""
+    import importlib
+    import subprocess
+    import sys
+
+    missing = []
+    for module, package in (('fitz', 'PyMuPDF'), ('numpy', 'numpy')):
+        try:
+            importlib.import_module(module)
+        except ImportError:
+            missing.append(package)
+    if not missing:
+        return
+    print(f'  [설치] 성가 PDF 처리에 필요한 패키지를 설치합니다: {", ".join(missing)} (처음 한 번, 1~2분)')
+    flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    try:
+        subprocess.run([sys.executable, '-m', 'pip', 'install', *missing], check=True,
+                       capture_output=True, creationflags=flags, timeout=600)
+    except Exception as e:
+        raise RuntimeError(
+            f"필요한 패키지({', '.join(missing)}) 자동 설치에 실패했습니다: {e}\n"
+            f"인터넷 연결을 확인한 뒤 프로그램 폴더의 install.bat을 다시 실행해 주세요.") from e
+    importlib.invalidate_caches()
+
+
 def resolve_youth_hymn_pptx(entry: dict, htype: str):
     """청년미사 성가 한 곡을 해석해 (Presentation|None, resolved_title)을 반환.
 
@@ -1658,6 +1689,7 @@ def resolve_youth_hymn_pptx(entry: dict, htype: str):
         return Presentation(str(found)), resolved_title
 
     # 나주노 / 야훼 이레
+    _ensure_pdf_packages()
     import missa_youth_hymn_pdf as yh
 
     subfolder = yh.SOURCES[출처]['onedrive_subfolder']

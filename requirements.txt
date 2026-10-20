@@ -2,6 +2,8 @@ python-pptx
 beautifulsoup4
 lxml
 Pillow
+numpy
+PyMuPDF
 pywin32
 pytest
 requests
