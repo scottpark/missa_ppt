@@ -12,7 +12,13 @@ PPT**를 자동으로 만들어 줍니다.
 ## 최초 1회 준비 (컴퓨터당 한 번만)
 
 1. **Python 설치**
-   - [python.org/downloads](https://www.python.org/downloads/)에서 최신 버전을 내려받아 설치합니다.
+   - **권장: Python 3.12** — 이 프로그램을 검증한 버전입니다. 3.12 계열은 3.12.10이 마지막 윈도우 설치 파일이라 아래 링크는
+     계속 쓸 수 있습니다: [python-3.12.10-amd64.exe](https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe)
+     (직접 내려받기, 64비트) 또는 [Python 3.12.10 릴리스 페이지](https://www.python.org/downloads/release/python-31210/)의
+     맨 아래 표에서 "Windows installer (64-bit)".
+   - 일반 다운로드: [python.org 윈도우용 다운로드 페이지](https://www.python.org/downloads/windows/)의 "Stable Releases"에서
+     최신 "Windows installer (64-bit)"를 받아도 됩니다. 베타·RC("pre-release") 버전은 피합니다. 아주 새 버전에서
+     `install.bat`이 패키지 설치에 실패하면 위 권장 버전(3.12)으로 다시 설치합니다.
    - 설치 화면 맨 아래의 **"Add python.exe to PATH"** 체크박스를 반드시 체크한 뒤 설치합니다(빠뜨리면 실행이
      안 됩니다).
 2. **프로그램 폴더 압축 풀기**: 전달받은 `missa_ppt_성인미사.zip`을 원하는 위치에 압축을 풉니다.

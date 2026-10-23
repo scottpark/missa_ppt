@@ -165,9 +165,10 @@ def test_create_shortcut_unicode_path_roundtrip(tmp_path):
     import create_shortcut as cs
     from win32com.shell import shell
     import pythoncom
-    folder = tmp_path / "missa_ppt_청년미사 2"
+    # 'ก'(태국어)는 한국어 코드 페이지(949)에도 없어, 영문(1252) PC의 한글처럼 WScript.Shell 저장이 실패하는 문자다
+    folder = tmp_path / "missa_ppt_청년미사ก 2"
     folder.mkdir()
-    lnk = folder / "청년미사 PPT.lnk"
+    lnk = folder / "청년미사 PPT ก.lnk"
     arguments = f'"{folder / "missa_to_ppt.py"}" --미사유형 청년'
     cs._make_via_shell_link(lnk, sys.executable, arguments, str(folder), "", "청년미사 PPT 자동 생성")
     assert lnk.exists()
