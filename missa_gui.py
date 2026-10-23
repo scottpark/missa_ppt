@@ -8,6 +8,8 @@ find_files) 양쪽에서 모두 호출된다. 진입점에 그대로 두면 entr
 """
 from __future__ import annotations
 
+import contextlib
+import gc
 import io
 import json
 import os
@@ -629,6 +631,23 @@ def _drain_update_queue(q, on_progress, on_result, on_error) -> bool:
     return finished
 
 
+@contextlib.contextmanager
+def _tk_gc_guard():
+    """작업 스레드가 도는 동안 Tk 쓰레기가 그 스레드에서 수거되지 않게 한다.
+
+    앞서 닫은 창(입력 창 등)의 Tk 객체는 순환 참조라 곧바로 해제되지 않고 남아 있다가, 작업 스레드가 객체를
+    많이 만들 때 도는 GC에서 그 스레드가 수거해 버린다. Tk는 만든 스레드(메인)에서만 해제해야 하므로 그러면
+    `Variable.__del__`이 "main thread is not in main loop"를 내고 Tcl 인터프리터가 누수된다(2026-10-25 운영자
+    PC 로그). 시작 전에 메인 스레드에서 미리 수거하고, 스레드가 도는 동안은 남은 객체를 GC 대상에서 빼 둔다."""
+    gc.collect()
+    gc.freeze()
+    try:
+        yield
+    finally:
+        gc.unfreeze()
+        gc.collect()
+
+
 def _run_with_progress(parent, title: str, func) -> tuple:
     """모달 진행 창을 띄우고 func(progress)를 작업 스레드에서 실행. 반환 (성공여부, 결과 또는 예외).
     취소 불가이며 작업 중 닫기(X)는 무시한다(파일 교체 도중 중단되면 설치가 반쯤 섞인다)."""
@@ -692,10 +711,11 @@ def _run_with_progress(parent, title: str, func) -> tuple:
         else:
             win.after(50, poll)
 
-    threading.Thread(target=_update_worker, args=(func, q), daemon=True).start()
-    win.after(50, poll)
-    win.grab_set()
-    win.wait_window()
+    with _tk_gc_guard():
+        threading.Thread(target=_update_worker, args=(func, q), daemon=True).start()
+        win.after(50, poll)
+        win.grab_set()
+        win.wait_window()
     return outcome['ok'], outcome['value']
 
 
@@ -1802,6 +1822,10 @@ def _run_with_progress_window(main_func):
 
 
 
+    gc.collect()
+
+    gc.freeze()  # 작업 스레드의 GC가 앞서 닫은 창의 Tk 객체를 수거하지 못하게(_tk_gc_guard 설명 참고)
+
     t = threading.Thread(target=worker, daemon=True)
 
     t.start()
@@ -1898,7 +1922,15 @@ def _run_with_progress_window(main_func):
 
     _after_id[0] = root.after(80, poll)
 
-    root.mainloop()
+    try:
+
+        root.mainloop()
+
+    finally:
+
+        gc.unfreeze()
+
+        gc.collect()
 
     _progress_callback[0] = None
 

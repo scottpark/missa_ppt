@@ -1617,10 +1617,15 @@ def _ensure_pdf_packages() -> None:
     import sys
 
     missing = []
-    for module, package in (('fitz', 'PyMuPDF'), ('numpy', 'numpy')):
-        try:
-            importlib.import_module(module)
-        except ImportError:
+    # PyMuPDF는 새 이름 pymupdf(1.24.3+)와 옛 이름 fitz 중 하나만 가져와져도 된다.
+    for modules, package in ((('pymupdf', 'fitz'), 'PyMuPDF'), (('numpy',), 'numpy')):
+        for module in modules:
+            try:
+                importlib.import_module(module)
+                break
+            except ImportError:
+                continue
+        else:
             missing.append(package)
     if not missing:
         return

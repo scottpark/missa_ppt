@@ -3,7 +3,7 @@ beautifulsoup4
 lxml
 Pillow
 numpy
-PyMuPDF
+PyMuPDF>=1.24.3
 pywin32
 pytest
 requests

@@ -77,7 +77,7 @@ def test_install_bat_names_only_own_mass_type_at_runtime(kind, shown, hidden, tm
 
 # import 이름 → pip 패키지 이름이 다른 것만 적는다.
 _IMPORT_TO_PACKAGE = {
-    "pptx": "python-pptx", "bs4": "beautifulsoup4", "PIL": "Pillow", "fitz": "PyMuPDF",
+    "pptx": "python-pptx", "bs4": "beautifulsoup4", "PIL": "Pillow", "fitz": "PyMuPDF", "pymupdf": "PyMuPDF",
     "win32com": "pywin32", "pythoncom": "pywin32",
 }
 
@@ -136,14 +136,65 @@ def test_create_shortcut_makes_lnk_in_program_folder_and_desktop(tmp_path, monke
     assert {p.name for p in paths} == {"청년미사 PPT.lnk"}   # 성인 .bat이 없으면 성인 바로가기는 만들지 않는다
 
 
-def test_create_shortcut_falls_back_to_powershell_when_pywin32_fails(tmp_path, monkeypatch):
+def test_create_shortcut_falls_back_through_every_method(tmp_path, monkeypatch):
+    """유니코드 API(IShellLink)가 실패하면 WScript.Shell, 그것도 실패하면 PowerShell 순으로 시도한다."""
     import create_shortcut as cs
     calls = []
-    monkeypatch.setattr(cs, "_make_via_com", lambda *a: (_ for _ in ()).throw(ImportError("no pywin32")))
+    boom = lambda *a: (_ for _ in ()).throw(OSError("Unable to save shortcut"))
+    monkeypatch.setattr(cs, "_make_via_shell_link", boom)
+    monkeypatch.setattr(cs, "_make_via_com", boom)
     lnk = tmp_path / "a.lnk"
     monkeypatch.setattr(cs, "_make_via_powershell", lambda l, *a: (calls.append(l), l.write_text("x")))
     cs._make_lnk(lnk, "pythonw.exe", "", str(tmp_path), "", "d")
     assert calls == [lnk] and lnk.exists()
+
+
+def test_create_shortcut_error_lists_every_method_failure(tmp_path, monkeypatch):
+    import create_shortcut as cs
+    boom = lambda *a: (_ for _ in ()).throw(OSError("nope"))
+    for name in ("_make_via_shell_link", "_make_via_com", "_make_via_powershell"):
+        monkeypatch.setattr(cs, name, boom)
+    with pytest.raises(RuntimeError) as err:
+        cs._make_lnk(tmp_path / "a.lnk", "pythonw.exe", "", str(tmp_path), "", "d")
+    assert all(n in str(err.value) for n in ("IShellLink", "WScript.Shell", "PowerShell"))
+
+
+def test_create_shortcut_unicode_path_roundtrip(tmp_path):
+    """한국어 폴더·파일명, 한국어 인자도 유니코드 API로 만들어지고 그대로 읽힌다(비한국어 Windows 사고 재현 방지)."""
+    pytest.importorskip("win32com.shell")
+    import create_shortcut as cs
+    from win32com.shell import shell
+    import pythoncom
+    folder = tmp_path / "missa_ppt_청년미사 2"
+    folder.mkdir()
+    lnk = folder / "청년미사 PPT.lnk"
+    arguments = f'"{folder / "missa_to_ppt.py"}" --미사유형 청년'
+    cs._make_via_shell_link(lnk, sys.executable, arguments, str(folder), "", "청년미사 PPT 자동 생성")
+    assert lnk.exists()
+    link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER,
+                                      shell.IID_IShellLink)
+    link.QueryInterface(pythoncom.IID_IPersistFile).Load(str(lnk))
+    assert link.GetArguments() == arguments and link.GetWorkingDirectory() == str(folder)
+
+
+def test_tk_gc_guard_freezes_during_work_and_restores():
+    import gc
+    import missa_gui
+    before = gc.get_freeze_count()
+    with missa_gui._tk_gc_guard():
+        inside = gc.get_freeze_count()
+    assert inside > before and gc.get_freeze_count() < inside   # 안에서는 얼리고, 나오면 풀어 준다
+
+
+def test_pdf_module_is_imported_without_fitz_deprecation_warning():
+    """`import fitz`는 PyMuPDF 최신판에서 경고를 낸다 — pymupdf를 먼저 쓴다."""
+    import missa_youth_hymn_pdf as hp
+    assert hp.fitz.__name__ in ("pymupdf", "fitz")
+    try:
+        import pymupdf
+    except ImportError:
+        return
+    assert hp.fitz is pymupdf
 
 
 def test_ensure_pdf_packages_installs_missing_then_passes(monkeypatch):
@@ -153,7 +204,7 @@ def test_ensure_pdf_packages_installs_missing_then_passes(monkeypatch):
     import missa_content_updaters as cu
     real_import = importlib.import_module
     monkeypatch.setattr(importlib, "import_module",
-                        lambda n, *a: (_ for _ in ()).throw(ImportError(n)) if n == "fitz" else real_import(n, *a))
+                        lambda n, *a: (_ for _ in ()).throw(ImportError(n)) if n in ("fitz", "pymupdf") else real_import(n, *a))
     ran = []
     monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: ran.append(cmd))
     cu._ensure_pdf_packages()

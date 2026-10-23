@@ -22,7 +22,10 @@ import re
 import sys
 from pathlib import Path
 
-import fitz  # PyMuPDF
+try:
+    import pymupdf as fitz  # PyMuPDF 1.24.3+. `import fitz`는 "fitz API is deprecated" 경고를 낸다(2026-10-25).
+except ImportError:  # 옛 PyMuPDF
+    import fitz
 import numpy as np
 from PIL import Image
 from pptx import Presentation

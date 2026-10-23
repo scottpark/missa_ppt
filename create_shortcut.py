@@ -35,6 +35,25 @@ def _desktop_via_com():
     return Path(shell.SpecialFolders("Desktop"))
 
 
+def _make_via_shell_link(lnk_path: Path, target: str, arguments: str, workdir: str, icon: str, desc: str) -> None:
+    """IShellLinkW + IPersistFile(유니코드 API)로 만든다.
+
+    WScript.Shell(`CreateShortcut().Save()`)은 경로를 시스템 ANSI 코드 페이지로 바꿔 저장해서, 한국어 폴더/파일명
+    (`missa_ppt_청년미사`, `청년미사 PPT.lnk`)이 한국어 Windows가 아닌 PC에서는 `????`로 깨져 "Unable to save
+    shortcut"으로 실패한다(2026-10-25 운영자 PC). PowerShell 방식도 같은 WScript.Shell을 쓰므로 똑같이 실패한다."""
+    import pythoncom
+    from win32com.shell import shell
+    link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER,
+                                      shell.IID_IShellLink)
+    link.SetPath(target)
+    link.SetArguments(arguments)
+    link.SetWorkingDirectory(workdir)
+    if icon:
+        link.SetIconLocation(icon, 0)
+    link.SetDescription(desc)
+    link.QueryInterface(pythoncom.IID_IPersistFile).Save(str(lnk_path), 0)
+
+
 def _make_via_com(lnk_path: Path, target: str, arguments: str, workdir: str, icon: str, desc: str) -> None:
     import win32com.client
     shell = win32com.client.Dispatch("WScript.Shell")
@@ -58,8 +77,11 @@ def _make_via_powershell(lnk_path: Path, target: str, arguments: str, workdir: s
         "$s.TargetPath=%s;$s.Arguments=%s;$s.WorkingDirectory=%s;%s$s.Description=%s;$s.Save()"
     ) % (_ps_quote(lnk_path), _ps_quote(target), _ps_quote(arguments), _ps_quote(workdir),
          ("$s.IconLocation=%s;" % _ps_quote(icon)) if icon else "", _ps_quote(desc))
-    subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                   check=True, capture_output=True, timeout=60)
+    done = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                          capture_output=True, timeout=60)
+    if done.returncode != 0:
+        detail = (done.stderr or done.stdout).decode("utf-8", "replace").strip()
+        raise RuntimeError(f"PowerShell 종료 코드 {done.returncode}: {detail}")
 
 
 def _desktop_via_powershell() -> Path:
@@ -82,13 +104,19 @@ def _desktop_dir():
 
 
 def _make_lnk(lnk_path: Path, target: str, arguments: str, workdir: str, icon: str, desc: str) -> None:
-    try:
-        _make_via_com(lnk_path, target, arguments, workdir, icon, desc)
-    except Exception as com_error:
-        print(f"  (pywin32 방식 실패: {com_error} — PowerShell로 다시 시도합니다)")
-        _make_via_powershell(lnk_path, target, arguments, workdir, icon, desc)
-    if not lnk_path.exists():
-        raise RuntimeError(f"바로가기 파일이 만들어지지 않았습니다: {lnk_path}")
+    methods = (("IShellLink", _make_via_shell_link), ("WScript.Shell", _make_via_com),
+               ("PowerShell", _make_via_powershell))
+    errors = []
+    for name, make in methods:
+        try:
+            make(lnk_path, target, arguments, workdir, icon, desc)
+            if lnk_path.exists():
+                return
+            errors.append(f"{name}: 파일이 만들어지지 않음")
+        except Exception as e:
+            errors.append(f"{name}: {type(e).__name__}: {e}")
+        print(f"  ({errors[-1]} — 다른 방식으로 다시 시도합니다)")
+    raise RuntimeError("바로가기를 만들 수 없습니다 — " + " / ".join(errors))
 
 
 def build() -> list:
