@@ -260,250 +260,204 @@ def _update_화답송_title_in_slide(slide, new_title: str):
 
 
 
-def update_화답송(prs, json_data: dict, sections: dict, 화답송_pptx_path, 화답송_img_path=None, is_sunday: bool = True):
-
+def update_화답송(prs, json_data: dict, sections: dict):
+    # 주일·평일 구분 없이 슬라이드마다 ◎ 후렴 + ○ 절(2단락) 텍스트만 만든다. 악보 슬라이드를
+    # 만들지 않으므로 템플릿이 옛 악보 교대 구조여도 텍스트 슬라이드(start+1)만 복제해 쓴다.
     if '화답송_start' not in sections or not json_data.get('화답송'):
-
         return
-
-
 
     화 = json_data['화답송']
-
     title = 화['title']
-
     content = 화['content']
 
-
-
     start = sections['화답송_start']
-
     cur_end = sections['화답송_end']
-
     cur_total = cur_end - start
-
     text_tmpl = start + 1 if cur_total > 1 else start
 
-
-
-    if not is_sunday:
-
-        # 평일미사 포맷: 슬라이드마다 ◎ 후렴 + ○ 절 (2단락)
-
-        segments = [s.strip() for s in content.split('\n') if s.strip()]
-
-        if not segments:
-
-            return
-
-        refrain_raw = segments[0]   # ◎ 후렴
-
-        verses = segments[1:]       # ○ 절들
-
-        # 후렴 텍스트 정규화 (탭 정렬)
-
-        if refrain_raw.startswith('◎ '):
-
-            refrain_text = '◎\t' + refrain_raw[2:]
-
-        else:
-
-            refrain_text = refrain_raw
-
-        needed = len(verses)    # 슬라이드 수 = 절 수
-
-        # 기존 범위 뒤에 텍스트 템플릿 복제본 needed개 삽입
-
-        for k in range(needed):
-
-            insert_slide_copy(prs, cur_end + k, text_tmpl)
-
-        # 기존 슬라이드 삭제
-
-        for i in range(cur_end - 1, start - 1, -1):
-
-            delete_slide(prs, i)
-
-        # 새 슬라이드 [start, start+needed-1] 채우기
-
-        for i in range(needed):
-
-            idx = start + i
-
-            _update_화답송_title_in_slide(prs.slides[idx], title)
-
-            _set_slide_bg_black(prs.slides[idx], prs)
-
-            verse = verses[i]
-
-            verse_clean = verse.strip()
-
-            if verse_clean.startswith('○ '):
-
-                verse_text = '○\t' + verse_clean[2:]
-
-            elif verse_clean.startswith('◎ '):
-
-                verse_text = '◎\t' + verse_clean[2:]
-
-            else:
-
-                verse_text = verse_clean
-
-            for shape in prs.slides[idx].shapes:
-
-                if not shape.has_text_frame:
-
-                    continue
-
-                t = shape.text_frame.text.strip()
-
-                if not t or '화 답 송' in t or '전례문' in t or 'Responsorial' in t:
-
-                    continue
-
-                _set_화답송_content_text(shape.text_frame, refrain_text, verse_text)
-
-                _adjust_fit_if_needed(prs.slides[idx], shape, prs)
-
-                break
-
-        return
-
-
-
-    # 주일미사: 악보(n+1) + 텍스트(n) = 2n+1 슬라이드
-
     segments = [s.strip() for s in content.split('\n') if s.strip()]
+    if not segments:
+        return
+    refrain_raw = segments[0]   # ◎ 후렴
+    verses = segments[1:] or ['']   # ○ 절들 — 절이 없어도 슬라이드를 전부 지우지 않도록 최소 1장
+    if refrain_raw.startswith('◎ '):
+        refrain_text = '◎\t' + refrain_raw[2:]
+    else:
+        refrain_text = refrain_raw
 
-    verses = segments[1:] if len(segments) > 1 else segments
-
-    n = len(verses)
-
-
-
-    # 필요 슬라이드: 악보(n+1) + 텍스트(n) = 2n+1
-
-    needed = max(1, 2 * n + 1)
-
-
-
-    # 슬라이드 수 조정 (텍스트 템플릿 = start+1)
-
-    if needed > cur_total:
-
-        for k in range(needed - cur_total):
-
-            tmpl = start if (cur_total + k) % 2 == 0 else text_tmpl
-
-            insert_slide_copy(prs, cur_end + k, tmpl)
-
-    elif needed < cur_total:
-
-        for i in range(cur_end - 1, start + needed - 1, -1):
-
-            delete_slide(prs, i)
-
-
-
-    # 화답송 악보 로드: 수작업 PPT 우선(기존 동작 완전 보존), 없으면 원본 사진에서 자동
-
-    # 생성한다(2차 마일스톤 — missa_psalm_score_image.render_화답송_score_slide 재사용,
-
-    # 설계서 §4.3). title은 위에서 이미 json_data['화답송']['title']로 구해져 있으므로
-
-    # 그대로 넘기면 JSON 제목 자동 연결이 끝난다(추가 가공 불필요).
-
-    악보_prs = None
-
-    if 화답송_pptx_path and Path(화답송_pptx_path).exists():
-
-        try:
-
-            악보_prs = Presentation(str(화답송_pptx_path))
-
-        except Exception as e:
-
-            print(f'  [경고] 화답송 악보 PPT 로드 실패: {e}')
-
-    elif 화답송_img_path and Path(화답송_img_path).exists():
-
-        try:
-
-            from missa_psalm_score_image import render_화답송_score_slide
-
-            악보_prs = render_화답송_score_slide(화답송_img_path, title)
-
-        except Exception as e:
-
-            print(f'  [경고] 화답송 악보 이미지 처리 실패: {e}')
-
-
-
-    # 각 슬라이드 업데이트
+    _PSALM_COM_WARNED[0] = False   # '실측 불가' 경고는 호출(미사)당 1회
+    needed = len(verses)    # 슬라이드 수 = 절 수
+    for k in range(needed):
+        insert_slide_copy(prs, cur_end + k, text_tmpl)
+    for i in range(cur_end - 1, start - 1, -1):
+        delete_slide(prs, i)
 
     for i in range(needed):
-
         idx = start + i
-
-
-
-        if i % 2 == 0:
-
-            # 악보 슬라이드: 화답송 악보 PPT에서 복사
-            # copy_slide_from_prs()가 원본 배경/서식을 이미 그대로 복사하므로
-            # _set_slide_bg_black()로 덮어쓰지 않는다 (원본 서식 보존)
-
-            if 악보_prs:
-
-                delete_slide(prs, idx)
-
-                copy_slide_from_prs(prs, idx, 악보_prs, 0)
-
-            _update_화답송_title_in_slide(prs.slides[idx], title)
-
+        _update_화답송_title_in_slide(prs.slides[idx], title)
+        _set_slide_bg_black(prs.slides[idx], prs)
+        verse_clean = verses[i].strip()
+        if verse_clean.startswith('○ '):
+            verse_text = '○\t' + verse_clean[2:]
+        elif verse_clean.startswith('◎ '):
+            verse_text = '◎\t' + verse_clean[2:]
         else:
-
-            # 텍스트 슬라이드: ○ 절만 표시 (주일미사는 단일 단락)
-
-            _update_화답송_title_in_slide(prs.slides[idx], title)
-
-            _set_slide_bg_black(prs.slides[idx], prs)
-
-            verse_idx = i // 2
-
-            if verse_idx < n:
-
-                verse = verses[verse_idx]
-
-                verse_clean = verse.strip()
-
-                if verse_clean.startswith('○ '):
-
-                    verse_text = '○\t' + verse_clean[2:]
-
-                else:
-
-                    verse_text = verse_clean
-
-                for shape in prs.slides[idx].shapes:
-
-                    if not shape.has_text_frame:
-
-                        continue
-
-                    t = shape.text_frame.text.strip()
-
-                    if t and '화 답 송' not in t and '전례문' not in t and 'Responsorial' not in t:
-
-                        _set_single_para_text(shape.text_frame, verse_text)
-
-                        _adjust_fit_if_needed(prs.slides[idx], shape, prs)
-
-                        break
+            verse_text = verse_clean
+        for shape in prs.slides[idx].shapes:
+            if not shape.has_text_frame:
+                continue
+            t = shape.text_frame.text.strip()
+            if not t or '화 답 송' in t or '전례문' in t or 'Responsorial' in t:
+                continue
+            _set_화답송_content_text(shape.text_frame, refrain_text, verse_text)
+            _fit_화답송_verse_to_slide(prs, prs.slides[idx], shape)
+            break
 
 
+# 화답송 넘침 보정 (2026-11-18)
+#
+# 템플릿 서식(◎ 37pt / ○ 라벨 30pt + 본문 32pt, ○ 줄간격 1.1)이 정답이다. 본문이 박스 아래 경계(전례문 줄)나
+# 슬라이드 아래로 나갈 때만 ○ 단락을 줄이고, 순서는 줄간격 1.0 → ○ 본문 글자 1pt씩 축소(하한 16pt)다.
+# 옛 `_adjust_fit_if_needed`는 (1) 추정에 단락 간격(spcAft 42+18pt)을 빼먹어 넘침을 놓치고 (2) 전 run을
+# 첫 run 크기-1(=36pt)로 덮어써 ○ 30/32pt를 오히려 키웠다 — 그래서 화답송에는 쓰지 않는다.
 
+_PSALM_BODY_MIN_PT = 16
+
+
+def _psalm_verse_para(shape):
+    """◎/○ 본문 도형에서 ○ 절 단락(두 번째 단락, 1단락이면 그것)."""
+    paras = shape.text_frame.paragraphs
+    return paras[1] if len(paras) >= 2 else paras[0]
+
+
+def _psalm_body_runs(verse_p):
+    """○ 단락의 본문 run들 — 첫 탭이 든 run 뒤쪽 전부. 탭이 없으면 모든 run(라벨을 구분할 수 없는 경우)."""
+    runs = list(verse_p._p.findall(qn('a:r')))
+    for i, r in enumerate(runs):
+        t = r.find(qn('a:t'))
+        if t is not None and '	' in (t.text or ''):
+            return runs[i + 1:]
+    return runs
+
+
+def _psalm_body_size_pt(verse_p):
+    """○ 본문 run들의 명시 크기(pt, 가장 작은 값). run에 sz가 없으면 상속 크기를 알 수 없어 None —
+    호출부는 그 경우 글자 크기를 건드리지 않는다(임의 값을 설정하면 오히려 키울 수 있다)."""
+    sizes = []
+    for r in _psalm_body_runs(verse_p):
+        rPr = r.find(qn('a:rPr'))
+        if rPr is None or not rPr.get('sz'):
+            return None
+        sizes.append(int(rPr.get('sz')) / 100)
+    return min(sizes) if sizes else None
+
+
+def _psalm_set_body_size_pt(verse_p, pt: int):
+    for r in _psalm_body_runs(verse_p):
+        rPr = r.find(qn('a:rPr'))
+        if rPr is not None:
+            rPr.set('sz', str(int(pt * 100)))
+
+
+def _set_para_line_spacing(para, spc_pct: int):
+    """한 단락의 줄간격(spcPct)만 설정(pPr 자식 순서 보존: lnSpc는 항상 맨 앞)."""
+    pPr = para._p.find(qn('a:pPr'))
+    if pPr is None:
+        pPr = pptx_parse_xml('<a:pPr xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"/>')
+        para._p.insert(0, pPr)
+    for old in pPr.findall(qn('a:lnSpc')):
+        pPr.remove(old)
+    pPr.insert(0, pptx_parse_xml(
+        f'<a:lnSpc xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        f'<a:spcPct val="{spc_pct}"/></a:lnSpc>'
+    ))
+
+
+_PSALM_COM_WARNED = [False]
+
+
+_PSALM_PROBE_PREFIX_LEN = 6
+
+
+class _NoSuchError(Exception):
+    """getattr 기본값용 — 절대 발생하지 않는 예외 타입."""
+
+
+def _measure_화답송_bottom_emu(prs, slide, shape):
+    """◎/○ 본문 도형의 텍스트 하단(EMU)과 출처를 (bottom, source)로 돌려준다.
+
+    source는 'com'(PowerPoint 실측) 또는 'unmeasured'(bottom=None). 추정 폴백은 없다 — Pillow류 추정은
+    과대·과소 양방향으로 틀려 멀쩡한 슬라이드를 줄이거나 넘침을 놓친다. COM 전체가 안 되면 reading_layout과
+    같은 전역 스위치를 켜 이후 슬라이드도 시도하지 않고, 그 슬라이드만의 문제(probe 생성 실패, 도형 못 찾음)는
+    전역 스위치를 건드리지 않는다."""
+    import missa_reading_layout as rl
+    if rl._COM_DISABLED[0] or not rl._com_verification_enabled():
+        return None, 'unmeasured'
+    try:
+        import ppt_com_verify as com
+    except ImportError:
+        rl._COM_DISABLED[0] = True
+        return None, 'unmeasured'
+    if not rl._COM_ATEXIT_REGISTERED[0]:
+        # 측정이 실패하는 경로에서도 앱이 이미 떠 있을 수 있으므로 import 직후에 등록한다.
+        import atexit
+        atexit.register(com.shutdown)
+        rl._COM_ATEXIT_REGISTERED[0] = True
+    try:
+        probe_path, _idx = rl._build_com_probe_pptx(prs, slide)
+    except Exception as e:   # 이 슬라이드만의 문제 — 전역 비활성화하지 않는다
+        print(f'  [경고] 화답송 COM probe 생성 실패({e}) — 이 슬라이드는 넘침 미검증입니다.')
+        return None, 'unmeasured'
+    # 후렴이 '◎ '로 시작하지 않는 입력도 있으므로 도형 자신의 첫 단락 텍스트로 probe에서 찾는다.
+    first_para = shape.text_frame.paragraphs[0].text
+    prefix = first_para[:_PSALM_PROBE_PREFIX_LEN] or '◎'
+    try:
+        m = com.measure_text_bottom_pt(str(probe_path), prefix)
+    except getattr(com, 'ComShapeNotFound', _NoSuchError):
+        idx = list(prs.slides).index(slide) + 1
+        print(f'  [경고] 화답송 슬라이드 {idx}: COM probe에서 본문 도형을 찾지 못해 넘침 미검증입니다.')
+        return None, 'unmeasured'
+    except com.ComVerificationUnavailable as e:
+        rl._COM_DISABLED[0] = True
+        print(f'  [경고] PowerPoint COM 화답송 실측 실패({e}) — 이후 화답송은 넘침 미검증입니다.')
+        return None, 'unmeasured'
+    return int(m * 12700), 'com'
+
+
+def _fit_화답송_verse_to_slide(prs, slide, shape):
+    """화답송 ◎/○ 본문이 아래 경계·슬라이드 높이를 넘으면 ○ 단락만 줄인다(순서: 줄간격 1.0 → ○ 본문 1pt씩, 하한
+    16pt). ◎ 단락과 ○ 라벨은 건드리지 않는다. 실측(COM)이 안 되면 서식을 그대로 두고 경고만 한다. 마지막
+    측정이 그대로 생성 직후 검증이다 — 그래도 넘치면 경고한다."""
+    limit = min(_find_last_row_top(slide, prs), prs.slide_height)
+    verse_p = _psalm_verse_para(shape)
+    bottom, src = _measure_화답송_bottom_emu(prs, slide, shape)
+    if bottom is None:
+        if not _PSALM_COM_WARNED[0]:
+            _PSALM_COM_WARNED[0] = True
+            print('  [경고] PowerPoint 실측 불가 — 화답송 넘침 미검증(서식은 템플릿 그대로 둡니다). 생성 후 육안 확인이 필요합니다.')
+        return {'bottom': None, 'limit': limit, 'source': src}
+    if bottom > limit:
+        _set_para_line_spacing(verse_p, 100000)
+        bottom, src = _measure_화답송_bottom_emu(prs, slide, shape)
+        size = _psalm_body_size_pt(verse_p)
+        if size is None:
+            print('  [경고] 화답송 ○ 본문 글자 크기가 명시돼 있지 않아 크기를 줄이지 않습니다(줄간격 1.0만 적용).')
+        else:
+            size = int(size)
+            while bottom is not None and bottom > limit and size > _PSALM_BODY_MIN_PT:
+                size -= 1
+                _psalm_set_body_size_pt(verse_p, size)
+                bottom, src = _measure_화답송_bottom_emu(prs, slide, shape)
+        if bottom is not None:
+            cur = _psalm_body_size_pt(verse_p)
+            print(f'    [높이조정] 화답송 ○ 줄간격 1.0 + 본문 {cur if cur is not None else "-"}pt '
+                  f'(하단 {bottom / 12700:.0f}pt, 경계 {limit / 12700:.0f}pt, {src})')
+    if bottom is not None and bottom > limit:
+        idx = list(prs.slides).index(slide) + 1
+        print(f'  [경고] 화답송 슬라이드 {idx}: 본문 하단 {bottom / 12700:.0f}pt가 경계 {limit / 12700:.0f}pt'
+              f'(슬라이드 높이 {prs.slide_height / 12700:.0f}pt)를 넘습니다 — 본문을 더 줄일 수 없어 '
+              f'절을 나누거나 직접 확인해야 합니다.')
+    return {'bottom': bottom, 'limit': limit, 'source': src}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

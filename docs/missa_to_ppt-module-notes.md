@@ -67,7 +67,7 @@ Graph 미러링(`_mirror_onedrive_folder`/`_resolve_onedrive_folder`)과 그 K1/
 화답송 악보 원본 이미지(PNG/JPG) → 슬라이드 변환. 순수 함수 묶음,
 `missa_to_ppt.py`를 import하지 않는 단방향 의존. 진입점 `render_화답송_score_slide()`.
 고정 템플릿 자산은 `assets/화답송_악보_template.pptx`(`tools/build_화답송_template.py`로
-생성). 수작업 PPT가 없을 때 자동 폴백된다.
+생성). **2026-11-17부터 성인미사 파이프라인에서는 호출되지 않는다**(화답송 악보 폐지, 텍스트 전용). 청년 성가 PDF 모듈이 이 모듈의 이미지 유틸을 import하므로 코드·자산은 보존.
 
 ## `missa_youth_gospel.py` — 청년미사 영문 복음/독서 조회
 

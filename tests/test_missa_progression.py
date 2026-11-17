@@ -1,12 +1,8 @@
 # -*- coding: utf-8 -*-
 """프로그레션 테스트 — 아직 안정화되지 않은 신규 기능을 구현 전에 명세한다.
 
-현재 진행 중: 화답송 악보 이미지(PNG/JPG) 입력 지원.
-- 1차 마일스톤(missa_psalm_score_image.py — 이미지 → 슬라이드 변환): 완료·사용자 승인.
-- 2차 마일스톤(missa_to_ppt.py 배선 — find_files/CLI 오버라이드/입력창/update_화답송):
-  이번 라운드. 설계서 §4(통합 지점) 그대로 구현.
-
-설계서: _workspace/01_architect_design.md §4(통합 지점), §7(1차 마일스톤 16개 테스트 대상 행동).
+현재 진행 중: 성인미사 화답송 악보 폐지(2026-11-17, 파일 끝 `test_nopsalm_*`).
+앞쪽의 화답송 악보 이미지 변환 테스트(missa_psalm_score_image.py, 1차 마일스톤)는 모듈 보존에 따라 유지한다.
 기대값은 3개 예제 세트(20260809/20260816/20260823) 실측 정답이다(추측 아님).
 
 안정화되면 regression-qa가 test_missa_regression.py로 승격하고 이 파일에서 제거한다.
@@ -369,156 +365,11 @@ def test_16_copy_slide_from_prs_compatible(rendered, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 2차 마일스톤: missa_to_ppt.py 배선 (설계서 §4 통합 지점)
+# 2차 마일스톤(화답송 악보 입력 배선: find_files/--화답송/update_화답송 악보 분기)은 2026-11-17
+# 성인미사 화답송 악보 폐지로 제거됐다. 그 부정 명세는 파일 끝 `test_nopsalm_*`가 대신한다.
 # ---------------------------------------------------------------------------
 
-import missa_to_ppt as mtp  # noqa: E402  (모듈 상단 import 관례를 따르되, 1차 섹션과 분리해 배치)
-
-
-def test_find_files_prefers_pptx_over_image(tmp_path):
-    """화답송_pptx가 있으면 화답송_img 탐색 자체를 건너뛰고 pptx를 사용한다(기존 동작 보존)."""
-    (tmp_path / "화답송 악보 시편 1.pptx").write_bytes(b"")
-    (tmp_path / "photo.jpg").write_bytes(b"")
-    files = mtp.find_files(str(tmp_path), {}, copy_hymn_scores=False)
-    assert files["화답송_pptx"] is not None
-    assert files["화답송_pptx"].name == "화답송 악보 시편 1.pptx"
-    assert files["화답송_img"] is None
-
-
-def test_find_files_named_image_when_no_pptx(tmp_path):
-    """pptx가 없고 파일명에 '화답송'이 들어간 이미지가 있으면 그것을 화답송_img로 찾는다."""
-    (tmp_path / "화답송 사진.jpg").write_bytes(b"")
-    files = mtp.find_files(str(tmp_path), {}, copy_hymn_scores=False)
-    assert files["화답송_pptx"] is None
-    assert files["화답송_img"] is not None
-    assert files["화답송_img"].name == "화답송 사진.jpg"
-
-
-def test_find_files_unique_image_fallback_when_unnamed(tmp_path):
-    """파일명에 '화답송'이 없어도(촬영 앱 타임스탬프 파일명) 폴더 내 유일 이미지면 폴백한다."""
-    (tmp_path / "20260809_043842947.jpg").write_bytes(b"")
-    files = mtp.find_files(str(tmp_path), {}, copy_hymn_scores=False)
-    assert files["화답송_img"] is not None
-    assert files["화답송_img"].name == "20260809_043842947.jpg"
-
-
-def test_find_files_ambiguous_multiple_unnamed_images_no_fallback(tmp_path):
-    """이름 매칭이 안 되고 이미지가 여러 개면 어떤 게 화답송 악보인지 모호하므로 폴백하지
-    않는다 — 잘못된 이미지를 화답송으로 오인하는 것보다 미검출이 안전하다."""
-    (tmp_path / "photo1.jpg").write_bytes(b"")
-    (tmp_path / "photo2.png").write_bytes(b"")
-    files = mtp.find_files(str(tmp_path), {}, copy_hymn_scores=False)
-    assert files["화답송_img"] is None
-
-
-def test_apply_hwadapsong_override_routes_image_extension():
-    """--화답송 오버라이드가 이미지 확장자면 화답송_img로 가고, 반대쪽 키는 비워진다."""
-    files = {"화답송_pptx": Path("auto_found.pptx"), "화답송_img": None}
-    mtp.apply_화답송_override(files, "C:/mass/photo.jpg")
-    assert files["화답송_img"] == Path("C:/mass/photo.jpg")
-    assert files["화답송_pptx"] is None
-
-
-def test_apply_hwadapsong_override_routes_pptx_extension():
-    """--화답송 오버라이드가 pptx 확장자면 화답송_pptx로 가고, 반대쪽 키는 비워진다."""
-    files = {"화답송_pptx": None, "화답송_img": Path("auto_found.jpg")}
-    mtp.apply_화답송_override(files, "C:/mass/manual.pptx")
-    assert files["화답송_pptx"] == Path("C:/mass/manual.pptx")
-    assert files["화답송_img"] is None
-
-
-def _화답송_json(title: str) -> dict:
-    return {
-        "화답송": {
-            "title": title,
-            "content": "◎ 후렴 테스트\n○ 절1\n○ 절2\n○ 절3",
-        }
-    }
-
-
-def test_update_화답송_uses_image_when_no_pptx_end_to_end(tmp_path):
-    """update_화답송이 화답송_img_path만 주어졌을 때 render_화답송_score_slide()를 거쳐
-    만들어진 슬라이드가 실제 결과 PPT에 copy_slide_from_prs 경로로 정상 복사되는지 확인한다
-    (실제 참조 예제 이미지로 end-to-end 검증, 설계서 §4.3)."""
-    from pptx.enum.shapes import MSO_SHAPE_TYPE
-
-    prs = mtp.Presentation(
-        str(BASE / "output" / "20260712" / "Template_20260628_연중 제13주일 (교황주일).pptx")
-    )
-    sections = mtp.find_sections(prs)
-    json_data = _화답송_json("시편 99(98)")
-    img_path = CASES["20260809"]["img"]
-
-    mtp.update_화답송(prs, json_data, sections, None, 화답송_img_path=img_path, is_sunday=True)
-
-    start = sections["화답송_start"]
-    score_slide = prs.slides[start]  # i=0(짝수) => 악보 슬라이드
-    big_pics = [
-        sh for sh in score_slide.shapes
-        if sh.shape_type == MSO_SHAPE_TYPE.PICTURE and sh.width > 1_000_000
-    ]
-    assert len(big_pics) == 2, "이미지 입력 경로로 악보 슬라이드에 상/하 악보 그림 2장이 있어야 함"
-
-    texts = [sh.text_frame.text for sh in score_slide.shapes if sh.has_text_frame]
-    assert any("시편 99(98)" in t for t in texts), texts
-
-    out = tmp_path / "e2e_img.pptx"
-    prs.save(str(out))
-    assert mtp.validate_pptx_structure(str(out)) == []
-
-
-def test_update_화답송_existing_pptx_path_unaffected(tmp_path):
-    """기존 pptx 입력 경로가 이번 배선 변경으로 전혀 달라지지 않았는지 확인(회귀 방지)."""
-    from pptx.enum.shapes import MSO_SHAPE_TYPE
-
-    prs = mtp.Presentation(
-        str(BASE / "output" / "20260712" / "Template_20260628_연중 제13주일 (교황주일).pptx")
-    )
-    sections = mtp.find_sections(prs)
-    json_data = _화답송_json("시편 67(66)")
-    pptx_path = REF / "20260816" / "시편 67(66).pptx"
-
-    mtp.update_화답송(prs, json_data, sections, pptx_path, 화답송_img_path=None, is_sunday=True)
-
-    start = sections["화답송_start"]
-    score_slide = prs.slides[start]
-    big_pics = [
-        sh for sh in score_slide.shapes
-        if sh.shape_type == MSO_SHAPE_TYPE.PICTURE and sh.width > 1_000_000
-    ]
-    assert len(big_pics) == 2
-
-    out = tmp_path / "e2e_pptx.pptx"
-    prs.save(str(out))
-    assert mtp.validate_pptx_structure(str(out)) == []
-
-
-def test_update_화답송_prefers_pptx_over_image(monkeypatch):
-    """화답송_pptx_path와 화답송_img_path가 둘 다 주어지면 pptx가 우선한다(설계서 §4.3 우선순위).
-
-    render_화답송_score_slide가 절대 호출되지 않아야 함을 몽키패치로 직접 확인한다.
-    """
-    import missa_psalm_score_image
-
-    def _must_not_be_called(*args, **kwargs):
-        raise AssertionError("이미지 경로가 호출됨 — pptx가 우선이어야 하는데 위반됨")
-
-    monkeypatch.setattr(
-        missa_psalm_score_image, "render_화답송_score_slide", _must_not_be_called
-    )
-
-    prs = mtp.Presentation(
-        str(BASE / "output" / "20260712" / "Template_20260628_연중 제13주일 (교황주일).pptx")
-    )
-    sections = mtp.find_sections(prs)
-    json_data = _화답송_json("시편 1(1)")
-    pptx_path = REF / "20260816" / "시편 67(66).pptx"
-    img_path = CASES["20260809"]["img"]
-
-    # 예외 없이 끝나야 함 = render_화답송_score_slide가 호출되지 않았다는 뜻
-    mtp.update_화답송(
-        prs, json_data, sections, pptx_path, 화답송_img_path=img_path, is_sunday=True
-    )
+import missa_to_ppt as mtp  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -766,23 +617,22 @@ def test_공지사항_08_cli_rejects_non_pptx(monkeypatch):
 
 
 def test_공지사항_08b_cli_accepts_pptx_into_5tuple(monkeypatch):
-    """[CLI 통과] .pptx면 parse_args가 7-튜플을 반환하고 5번째가 공지사항 경로다
-    (청년미사 CLI 지원 추가로 mass_type/성가_선택이 6·7번째로 붙어 5-튜플→7-튜플로
-    확장됐다 — 앞 5개 위치는 그대로다)."""
+    """[CLI 통과] .pptx면 parse_args가 6-튜플을 반환하고 4번째가 공지사항 경로다
+    (2026-11-17 --화답송 폐지로 3번째 자리가 사라져 한 칸씩 당겨졌다)."""
     monkeypatch.setattr(
         "sys.argv", ["missa_to_ppt.py", "20260712", "--공지사항", "notice.pptx", "--test"]
     )
     result = mtp.parse_args()
-    assert len(result) == 7
-    assert result[4] == "notice.pptx"
+    assert len(result) == 6
+    assert result[3] == "notice.pptx"
 
 
 def test_공지사항_08c_cli_default_none(monkeypatch):
-    """[CLI 기본값] --공지사항 미지정이면 5번째가 None(선택 입력)."""
+    """[CLI 기본값] --공지사항 미지정이면 4번째가 None(선택 입력)."""
     monkeypatch.setattr("sys.argv", ["missa_to_ppt.py", "20260712", "--test"])
     result = mtp.parse_args()
-    assert len(result) == 7
-    assert result[4] is None
+    assert len(result) == 6
+    assert result[3] is None
 
 
 def test_공지사항_09_find_files_detects_by_name(tmp_path):
@@ -849,8 +699,10 @@ def test_showmastersp_real_fixture_handauthored_slide():
     슬라이드를 만들 때 속성이 보존돼야 두 슬라이드가 같은 색으로 렌더링된다.
     """
     prs = _Presentation(str(_FIXTURES["20260712"]))
-    assert prs.slides[132].element.get("showMasterSp") == "0"  # 픽스처 실측 전제
-    new_idx = _duplicate_slide(prs, 132)
+    # 화답송이 절 수만큼만 생성돼 고정 인덱스(132)가 밀리므로 2차봉헌_content_end(=옛 idx132)로 찾는다.
+    idx = mtp.find_sections(prs)["2차봉헌_content_end"]
+    assert prs.slides[idx].element.get("showMasterSp") == "0"  # 픽스처 실측 전제
+    new_idx = _duplicate_slide(prs, idx)
     assert prs.slides[new_idx].element.get("showMasterSp") == "0"
 
 
@@ -1825,7 +1677,7 @@ def e_full_output(tmp_path_factory):
     upload_calls = []  # missa_onedrive 폐지 — 업로드 경로 자체가 없다(e1은 빈 목록을 확인).
 
     files = {
-        'ref_pptx': ref_dst, '시작기도': None, '화답송_pptx': None, '화답송_img': None,
+        'ref_pptx': ref_dst, '시작기도': None,
         '미사후기도': None, '공지사항': None, '성가': {},
     }
     성가_선택 = {
@@ -2134,7 +1986,7 @@ def test_f3_log_dir_wiring_points_to_youth_output_folder_after_main_run(tmp_path
     monkeypatch.setattr(mtp.missa_youth_gospel, 'get_youth_mass', lambda d: en_fixture)
 
     files = {
-        'ref_pptx': ref_dst, '시작기도': None, '화답송_pptx': None, '화답송_img': None,
+        'ref_pptx': ref_dst, '시작기도': None,
         '미사후기도': None, '공지사항': None, '성가': {},
     }
     성가_선택 = {
@@ -2375,14 +2227,13 @@ def test_j4_youth_file_rows_order_changed_but_adult_order_untouched(tmp_path):
         key=lambda w: w['grid_row'],
     )
     adult_texts = [w['text'] for w in adult_labels]
-    assert len(adult_texts) == 5, adult_texts
+    # 2026-11-17 화답송 악보 행 폐지 — 성인도 [참조, 시작기도, 공지사항, 미사후기도] 4행.
+    assert len(adult_texts) == 4, adult_texts
     assert '참조' in adult_texts[0], adult_texts
     assert '시작기도' in adult_texts[1], adult_texts
-    assert '화답송' in adult_texts[2], (
-        "성인미사 화답송 행 위치가 J4 작업 중 잘못 바뀜(절대 건드리지 않아야 함)", adult_texts,
-    )
-    assert '공지사항' in adult_texts[3], adult_texts
-    assert '미사' in adult_texts[4] and '기도' in adult_texts[4], adult_texts
+    assert '공지사항' in adult_texts[2], adult_texts
+    assert '미사' in adult_texts[3] and '기도' in adult_texts[3], adult_texts
+    assert not any('화답송' in t for t in adult_texts), adult_texts
 
 
 def test_j6_file_check_log_includes_공지사항():
@@ -3173,7 +3024,6 @@ def test_fs_browse_defaults_per_row(fs_cfg, fs_tree):
         assert f(mt, "공지사항") == common / "11.공지사항 PPT문서"
     assert f("adult", "ref_pptx") == adult / "10.기타 PPT문서" / "PPT 자동화" / "1.Template"
     assert f("youth", "ref_pptx") == youth / "1.Template"
-    assert f("adult", "화답송_pptx") == adult / "14.화답송 악보"
 
 
 def test_fs_browse_default_falls_back_to_deepest_existing_then_root(fs_cfg, tmp_path):
@@ -3182,7 +3032,6 @@ def test_fs_browse_default_falls_back_to_deepest_existing_then_root(fs_cfg, tmp_
     (adult / "10.기타 PPT문서").mkdir(parents=True)
     gui._ROOTS.update(adult=adult)
     assert gui.browse_initial_dir("adult", "ref_pptx") == adult / "10.기타 PPT문서"
-    assert gui.browse_initial_dir("adult", "화답송_pptx") == adult
     assert gui.browse_initial_dir("adult", "시작기도") is None  # 공용 루트 없음
 
 
@@ -3200,19 +3049,6 @@ def test_fs_browse_memory_is_per_row_and_ref_pptx_split_by_mass_type(fs_cfg, fs_
     # 저장 폴더가 사라지면 기본 폴더로
     other.rmdir()
     assert gui.browse_initial_dir("adult", "ref_pptx") == adult / "10.기타 PPT문서" / "PPT 자동화" / "1.Template"
-
-
-def test_fs_browse_memory_works_without_root_and_absorbs_legacy_psalm_dir(fs_cfg, tmp_path):
-    import missa_gui as gui
-    legacy = tmp_path / "예전 화답송"
-    legacy.mkdir()
-    _fs_write_cfg(fs_cfg, last_psalm_dir=str(legacy))
-    assert gui.browse_initial_dir("adult", "화답송_pptx") == legacy   # 옛 키 흡수
-    newer = tmp_path / "새 화답송"
-    newer.mkdir()
-    gui.remember_browse_dir("adult", "화답송_pptx", newer / "x.png")
-    assert gui.browse_initial_dir("adult", "화답송_pptx") == newer     # 행별 기억이 우선
-    assert "last_psalm_dir" not in _fs_read_cfg(fs_cfg)
 
 
 def test_fs_graph_fallback_is_removed():
@@ -3407,3 +3243,481 @@ def test_G7_region_image_ignores_degenerate_bbox(monkeypatch):
     finally:
         d.close()
     assert region.height >= hp._MIN_REGION_H
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 성인미사 화답송 악보 폐지 (2026-11-17, SPEC_성인미사 §2.1~2.4)
+# 주일·평일 모두 화답송은 텍스트 슬라이드(후렴 ◎ + 절 ○)만 만든다. 악보 PPT/사진 입력·--화답송
+# 인자·GUI 행·미선택 확인 팝업은 전부 사라진다. 청년 동작과 missa_psalm_score_image.py는 보존.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_NOPSALM_SUNDAY_TEMPLATE = (
+    BASE / "output" / "20260712" / "Template_20260628_연중 제13주일 (교황주일).pptx"
+)
+
+
+def _nopsalm_json(n_verses: int = 3) -> dict:
+    verses = "\n".join(f"○ 절{i + 1} 본문" for i in range(n_verses))
+    return {"화답송": {"title": "시편 99(98)", "content": f"◎ 후렴 테스트\n{verses}"}}
+
+
+def test_nopsalm_sunday_psalm_is_text_only_one_slide_per_verse():
+    """행동 1: 주일 템플릿(옛 악보 교대 구조)에서도 절 수만큼 텍스트 슬라이드, 악보 그림 0장, 후렴 ◎."""
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    if not _NOPSALM_SUNDAY_TEMPLATE.is_file():
+        pytest.skip("주일 회귀 픽스처 없음")
+    prs = mtp.Presentation(str(_NOPSALM_SUNDAY_TEMPLATE))
+    sections = mtp.find_sections(prs)
+    mtp.update_화답송(prs, _nopsalm_json(3), sections)
+    after = mtp.find_sections(prs)
+    start, end = after["화답송_start"], after["화답송_end"]
+    assert end - start == 3, (start, end)
+    for i in range(start, end):
+        slide = prs.slides[i]
+        assert not any(sh.shape_type == MSO_SHAPE_TYPE.PICTURE for sh in slide.shapes), i
+        body = " ".join(sh.text_frame.text for sh in slide.shapes if sh.has_text_frame)
+        assert "◎" in body and "후렴 테스트" in body, body
+        assert f"절{i - start + 1} 본문" in body, body
+        # ◎/○ 두 단락이고, ◎ run이 ○ run과 같은 latin 폰트를 가진다(옛 1단락 템플릿 분기가 폰트를 빠뜨렸다).
+        body_shape = next(sh for sh in slide.shapes if sh.has_text_frame and "◎" in sh.text_frame.text)
+        paras = body_shape.text_frame.paragraphs
+        assert [p.text[:1] for p in paras] == ["◎", "○"], [p.text for p in paras]
+        ns = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
+        def _latin(p):
+            el = p._p.find(".//a:r/a:rPr/a:latin", ns)
+            return None if el is None else el.get("typeface")
+        assert _latin(paras[1]) is not None, "전제: ○ run에 latin 폰트가 있어야 함"
+        assert _latin(paras[0]) == _latin(paras[1]), (_latin(paras[0]), _latin(paras[1]))
+
+
+def test_nopsalm_refrain_only_content_keeps_one_slide():
+    """후렴 1줄뿐(절 없음)이어도 화답송 슬라이드를 전부 지우지 않고 최소 1장 유지한다."""
+    if not _NOPSALM_SUNDAY_TEMPLATE.is_file():
+        pytest.skip("주일 회귀 픽스처 없음")
+    prs = mtp.Presentation(str(_NOPSALM_SUNDAY_TEMPLATE))
+    sections = mtp.find_sections(prs)
+    data = {"화답송": {"title": "시편 99(98)", "content": "◎ 후렴만 있음"}}
+    mtp.update_화답송(prs, data, sections)
+    after = mtp.find_sections(prs)
+    assert "화답송_start" in after and after["화답송_end"] - after["화답송_start"] >= 1
+
+
+def test_nopsalm_update_psalm_signature_has_no_score_or_sunday_args():
+    """행동 2: 악보 경로/이미지/is_sunday 인자가 시그니처에서 사라졌다."""
+    import inspect
+    from missa_content_updaters import update_화답송
+    assert list(inspect.signature(update_화답송).parameters) == ["prs", "json_data", "sections"]
+
+
+def test_nopsalm_cli_has_no_psalm_option():
+    """행동 3: 파서에 --화답송이 없다."""
+    parser = mtp._build_arg_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--날짜", "20260712", "--화답송", "x.pptx"])
+    assert not hasattr(mtp, "apply_화답송_override")
+
+
+def test_nopsalm_find_files_ignores_psalm_score_files(tmp_path):
+    """행동 3: 날짜 폴더의 '화답송 악보*.pptx'/사진은 탐색되지 않고 참조 PPT 후보도 아니다."""
+    (tmp_path / "화답송 악보 20260712.pptx").write_bytes(b"")
+    (tmp_path / "20260809_043842947.jpg").write_bytes(b"")
+    # 한글 '황'이 '화답송'보다 뒤에 정렬돼, 제외 로직이 없으면 악보 PPT가 먼저 참조 후보가 된다.
+    (tmp_path / "황 참조.pptx").write_bytes(b"")
+    files = mtp.find_files(str(tmp_path), {}, copy_hymn_scores=False)
+    assert "화답송_pptx" not in files and "화답송_img" not in files
+    assert files["ref_pptx"].name == "황 참조.pptx"
+
+
+def test_nopsalm_adult_popup_has_no_psalm_row_and_no_confirm(tmp_path):
+    """행동 4: 성인 첫 팝업은 4행([참조, 시작기도, 공지사항, 미사후기도]), 화답송 라벨 없음."""
+    widgets = _j_run_widget_probe(tmp_path, "gui._ask_combined_input_popup(mass_type='adult')")
+    labels = [w.get("text", "") for w in widgets if w["class"] == "Label"]
+    assert not any("화답송" in t for t in labels), labels
+    rows = [w for w in widgets if w["class"] == "Label" and w.get("gridded")
+            and w.get("grid_column") == 0 and w.get("grid_row", 0) >= 1]
+    assert len(rows) == 4, [w["text"] for w in rows]
+
+
+def test_nopsalm_popup_code_has_no_psalm_input_or_unselected_confirm():
+    """행동 4: 미선택 확인 팝업(askyesno)과 화답송 반환 키가 첫 팝업 코드에 남아 있지 않다.
+    on_ok는 tkinter 모달 안의 클로저라 모킹 호출이 어려워(규칙 #20 회피) 소스 검사로 확인한다."""
+    import inspect
+    import missa_gui as gui
+    for fn in (gui._ask_combined_input_popup, gui._ask_input_files_popup):
+        src = inspect.getsource(fn)
+        assert "askyesno" not in src, fn.__name__
+        assert "화답송_pptx" not in src and "화답송_img" not in src, fn.__name__
+    assert "화답송_pptx" not in gui._BROWSE_DEFAULTS
+
+
+def test_nopsalm_legacy_config_keys_are_ignored(fs_cfg, fs_tree):
+    """행동 5: 옛 화답송_pptx/last_psalm_dir/browse_dirs['화답송_pptx']가 있어도 오류 없이 무시된다."""
+    import missa_gui as gui
+    _p, common, adult, youth = fs_tree
+    gui._ROOTS.update(common=common, adult=adult, youth=youth)
+    legacy = fs_tree[0] / "예전 화답송"
+    legacy.mkdir()
+    _fs_write_cfg(fs_cfg, 화답송_pptx=str(legacy / "x.pptx"), last_psalm_dir=str(legacy),
+                  browse_dirs={"화답송_pptx": str(legacy)})
+    assert gui.browse_initial_dir("adult", "시작기도") == common / "13.기도문"
+    assert gui.browse_initial_dir("adult", "ref_pptx") == adult / "10.기타 PPT문서" / "PPT 자동화" / "1.Template"
+    gui.remember_browse_dir("adult", "공지사항", common / "11.공지사항 PPT문서" / "a.pptx")  # 옛 키가 있어도 저장 성공
+
+
+def test_nopsalm_psalm_score_module_preserved_for_youth_hymn_pdf():
+    """행동 6: 청년 성가 PDF 모듈이 쓰는 missa_psalm_score_image는 그대로 import·사용 가능."""
+    import missa_youth_hymn_pdf  # noqa: F401
+    import missa_psalm_score_image as psi
+    assert hasattr(psi, "render_화답송_score_slide")
+    assert (BASE / "assets" / "화답송_악보_template.pptx").is_file()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 화답송 서식 보존·넘침 보정 (2026-11-18, SPEC_성인미사 §화답송 "서식 원칙")
+# 11월 주일 3개 PPT 육안 검수에서 ◎/○ 단락이 템플릿 서식을 안 따르고(전 run 36pt·1.0으로 덮어씀, ○ 본문
+# 32→30pt) 슬라이드 하단 밖으로 넘친 사례(11/8 슬라이드 50)가 나왔다. 기대값은 11/8 템플릿(슬라이드 54)의
+# 실제 구성(◎ 37pt / ○ 라벨 30pt + 본문 32pt, 줄간격 1.1, 박스 아래 경계 TextBox 1 top=4804578)이다.
+# ═══════════════════════════════════════════════════════════════════════════
+import glob as _glob
+import json as _json
+
+_PSALMFMT_LIMIT_EMU = 4804578       # TextBox 1(전례문 줄) top — 본문 하단 경계
+_PSALMFMT_SLIDE_H = 5143500
+_PSALMFMT_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
+
+def _psalmfmt_load(date="20261108"):
+    import missa_to_ppt as mtp_
+    tmpl = _glob.glob(str(BASE / "output" / date / "Template*.pptx"))
+    jf = BASE / "output" / date / f"missa_{date}.json"
+    if not tmpl or not jf.is_file():
+        pytest.skip(f"{date} 템플릿/JSON 없음")
+    prs = mtp_.Presentation(tmpl[0])
+    sections = mtp_.find_sections(prs)
+    data = _json.loads(jf.read_text(encoding="utf-8"))
+    return mtp_, prs, sections, data
+
+
+def _psalmfmt_shapes(prs, sections):
+    """화답송 슬라이드마다 ◎/○ 본문 도형(텍스트가 ◎로 시작하는 도형)."""
+    out = []
+    for i in range(sections["화답송_start"], sections["화답송_end"]):
+        for sh in prs.slides[i].shapes:
+            if sh.has_text_frame and sh.text_frame.text.startswith("◎"):
+                out.append((prs.slides[i], sh))
+                break
+    return out
+
+
+def _psalmfmt_para_sizes(p):
+    """(텍스트, sz) run 목록 — sz는 1/100pt 정수."""
+    ns = {"a": _PSALMFMT_A}
+    res = []
+    for r in p._p.findall("a:r", ns):
+        rpr = r.find("a:rPr", ns)
+        res.append((r.find("a:t", ns).text or "", int(rpr.get("sz")) if rpr is not None and rpr.get("sz") else None))
+    return res
+
+
+def _psalmfmt_lnspc(p):
+    ns = {"a": _PSALMFMT_A}
+    el = p._p.find("a:pPr/a:lnSpc/a:spcPct", ns)
+    return None if el is None else int(el.get("val"))
+
+
+def _psalmfmt_fit_everything(monkeypatch):
+    """측정을 항상 '여유 있게 들어감'으로 고정 — 넘침 보정이 서식을 건드리지 않는 경로."""
+    import missa_content_updaters as cu
+    monkeypatch.setattr(cu, "_measure_화답송_bottom_emu", lambda prs, slide, shape: (shape.top + 1_000_000, "com"))
+
+
+def _psalmfmt_one_verse(data):
+    return {"화답송": {"title": data["화답송"]["title"],
+                     "content": "\n".join(data["화답송"]["content"].split("\n")[:2])}}
+
+
+def test_psalmfmt_template_run_sizes_preserved_when_it_fits(monkeypatch):
+    """(a) 안 넘치면 ◎ 단락 37pt·○ 라벨(○, 탭) 30pt·○ 본문 32pt·○ 줄간격 1.1이 템플릿 그대로다."""
+    mtp_, prs, sections, data = _psalmfmt_load()
+    _psalmfmt_fit_everything(monkeypatch)
+    mtp_.update_화답송(prs, data, sections)
+    after = mtp_.find_sections(prs)
+    shapes = _psalmfmt_shapes(prs, after)
+    assert len(shapes) >= 3
+    for _slide, sh in shapes:
+        paras = sh.text_frame.paragraphs
+        assert [p.text[:1] for p in paras] == ["◎", "○"]
+        assert {sz for _t, sz in _psalmfmt_para_sizes(paras[0])} == {3700}, _psalmfmt_para_sizes(paras[0])
+        runs = _psalmfmt_para_sizes(paras[1])
+        assert runs[0] == ("○", 3000), runs
+        assert runs[1] == ("\t", 3000), runs
+        body = runs[2:]
+        assert body and all(sz == 3200 for _t, sz in body), runs
+        assert _psalmfmt_lnspc(paras[1]) == 110000
+        assert _psalmfmt_lnspc(paras[0]) is None  # 템플릿 ◎ 단락은 줄간격 지정 없음(건드리지 않는다)
+
+
+def test_psalmfmt_label_body_split_does_not_assume_run_count():
+    """규칙 13: 본문 run이 5개여도, 탭이 라벨 run에 붙어 있어도 라벨 서식·본문 서식이 각각 복제된다."""
+    from pptx.oxml import parse_xml
+    from missa_ooxml_utils import _set_화답송_content_text
+    A = _PSALMFMT_A
+
+    def run(t, sz):
+        return (f'<a:r><a:rPr lang="ko-KR" sz="{sz}" b="1"><a:latin typeface="바탕"/></a:rPr>'
+                f'<a:t>{t}</a:t></a:r>')
+
+    def make(label_runs, body_runs):
+        xml = (f'<p:txBody xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="{A}">'
+               '<a:bodyPr/><a:lstStyle/>'
+               f'<a:p>{run("◎", 3700)}{run(chr(9), 3700)}{run("후렴", 3700)}</a:p>'
+               f'<a:p><a:pPr><a:lnSpc><a:spcPct val="110000"/></a:lnSpc></a:pPr>{label_runs}{body_runs}</a:p></p:txBody>')
+        return parse_xml(xml)
+
+    class _TF:
+        def __init__(self, tx):
+            self._txBody = tx
+
+    def read(tx):
+        p2 = tx.findall(f"{{{A}}}p")[1]
+        return [(r.find(f"{{{A}}}t").text, r.find(f"{{{A}}}rPr").get("sz")) for r in p2.findall(f"{{{A}}}r")]
+
+    # 케이스 1: 라벨 2 run + 본문 5 run
+    tx = make(run("○", 3000) + run("\t", 3000), "".join(run(f"본문{i}", 3200) for i in range(5)))
+    _set_화답송_content_text(_TF(tx), "◎\t후렴 새", "○\t새 절 본문")
+    got = read(tx)
+    assert got[0] == ("○", "3000") and got[1] == ("\t", "3000"), got
+    assert got[2:] == [("새 절 본문", "3200")], got
+    # 케이스 2: 라벨이 '○\t' 한 run
+    tx = make(run("○\t", 3000), run("본문A", 3200) + run("본문B", 3200))
+    _set_화답송_content_text(_TF(tx), "◎\t후렴 새", "○\t새 절")
+    assert read(tx) == [("○\t", "3000"), ("새 절", "3200")], read(tx)
+
+
+def _psalmfmt_install_fake_measure(monkeypatch, k_110, k_100, log):
+    """높이(pt) = 80.7 + 본문pt × k(줄간격별). 호출마다 (줄간격, 본문pt, ◎pt, 라벨pt)를 log에 남긴다."""
+    import missa_content_updaters as cu
+
+    def fake(prs, slide, shape):
+        paras = shape.text_frame.paragraphs
+        runs = _psalmfmt_para_sizes(paras[1])
+        body_pt = runs[2][1] / 100
+        lnspc = _psalmfmt_lnspc(paras[1])
+        log.append((lnspc, body_pt, _psalmfmt_para_sizes(paras[0])[0][1], runs[0][1]))
+        k = k_110 if lnspc == 110000 else k_100
+        return int((80.7 + body_pt * k) * 12700), "com"
+
+    monkeypatch.setattr(cu, "_measure_화답송_bottom_emu", fake)
+
+
+def test_psalmfmt_overflow_order_linespacing_then_body_only(monkeypatch):
+    """(b) 넘치면 ○ 줄간격 1.0이 먼저, 그다음 ○ 본문만 1pt씩. ◎ 단락·○ 라벨은 끝까지 불변."""
+    mtp_, prs, sections, data = _psalmfmt_load()
+    log = []
+    # 32pt·1.1 → 432pt(초과), 32pt·1.0 → 400pt(초과), 본문 29pt·1.0 → 370.7pt(경계 378.3pt 이내)
+    _psalmfmt_install_fake_measure(monkeypatch, k_110=11.0, k_100=10.0, log=log)
+    mtp_.update_화답송(prs, _psalmfmt_one_verse(data), sections)
+    after = mtp_.find_sections(prs)
+    assert after["화답송_end"] - after["화답송_start"] == 1
+    assert [(l, b) for l, b, _r, _lab in log] == [
+        (110000, 32.0), (100000, 32.0), (100000, 31.0), (100000, 30.0), (100000, 29.0)], log
+    assert all(r == 3700 and lab == 3000 for _l, _b, r, lab in log), log     # ◎·라벨은 한 번도 안 바뀜
+    (_s, sh), = _psalmfmt_shapes(prs, after)
+    paras = sh.text_frame.paragraphs
+    assert _psalmfmt_lnspc(paras[1]) == 100000
+    assert _psalmfmt_lnspc(paras[0]) is None
+    assert _psalmfmt_para_sizes(paras[1])[2][1] == 2900
+
+
+def test_psalmfmt_linespacing_alone_is_enough_when_it_fits(monkeypatch):
+    """줄간격 1.0만으로 들어가면 본문 글자 크기는 32pt 그대로다."""
+    mtp_, prs, sections, data = _psalmfmt_load()
+    log = []
+    _psalmfmt_install_fake_measure(monkeypatch, k_110=11.0, k_100=9.0, log=log)   # 32pt·1.0 → 368.7pt
+    mtp_.update_화답송(prs, data, sections)
+    for _slide, sh in _psalmfmt_shapes(prs, mtp_.find_sections(prs)):
+        paras = sh.text_frame.paragraphs
+        assert _psalmfmt_lnspc(paras[1]) == 100000
+        assert _psalmfmt_para_sizes(paras[1])[2][1] == 3200
+        assert {sz for _t, sz in _psalmfmt_para_sizes(paras[0])} == {3700}
+
+
+def test_psalmfmt_floor_16pt_then_warning(monkeypatch, capsys):
+    """(b) 하한 16pt까지 줄여도 넘치면 16pt에서 멈추고 [경고]를 출력한다. ◎·라벨은 불변."""
+    mtp_, prs, sections, data = _psalmfmt_load()
+    log = []
+    _psalmfmt_install_fake_measure(monkeypatch, k_110=100.0, k_100=100.0, log=log)  # 항상 초과
+    mtp_.update_화답송(prs, _psalmfmt_one_verse(data), sections)
+    out = capsys.readouterr().out
+    assert "[경고]" in out and "화답송" in out, out
+    (_s, sh), = _psalmfmt_shapes(prs, mtp_.find_sections(prs))
+    assert _psalmfmt_para_sizes(sh.text_frame.paragraphs[1])[2][1] == 1600
+    assert min(b for _l, b, _r, _lab in log) == 16.0
+    assert all(r == 3700 and lab == 3000 for _l, _b, r, lab in log)
+
+
+def test_psalmfmt_never_grows_font_beyond_template(monkeypatch):
+    """원인 재발 방지: 보정은 크기를 키우지 않는다(옛 코드는 ○ 30/32pt를 36pt로 키웠다)."""
+    mtp_, prs, sections, data = _psalmfmt_load()
+    log = []
+    _psalmfmt_install_fake_measure(monkeypatch, k_110=11.0, k_100=10.0, log=log)
+    mtp_.update_화답송(prs, data, sections)
+    assert log and all(b <= 32.0 for _l, b, _r, _lab in log), log
+    for _slide, sh in _psalmfmt_shapes(prs, mtp_.find_sections(prs)):
+        paras = sh.text_frame.paragraphs
+        assert all(sz is not None and sz <= 3700 for _t, sz in _psalmfmt_para_sizes(paras[0]))
+        assert all(sz <= 3200 for _t, sz in _psalmfmt_para_sizes(paras[1]))
+
+
+def test_psalmfmt_com_unavailable_leaves_format_untouched_and_warns_once(monkeypatch, capsys):
+    """(c) COM을 쓸 수 없으면 추정으로 줄이지 않는다(추정은 양방향으로 틀린다) — 템플릿 서식을 그대로 두고
+    '실측 불가 — 넘침 미검증' 경고를 미사당 한 번만 출력한다."""
+    import missa_reading_layout as rl
+    mtp_, prs, sections, data = _psalmfmt_load()
+    monkeypatch.setattr(rl, "_COM_DISABLED", [True], raising=False)
+    mtp_.update_화답송(prs, data, sections)
+    out = capsys.readouterr().out
+    assert out.count("넘침 미검증") == 1 and "[경고]" in out, out
+    assert "높이조정" not in out
+    for _slide, sh in _psalmfmt_shapes(prs, mtp_.find_sections(prs)):
+        paras = sh.text_frame.paragraphs
+        assert {sz for _t, sz in _psalmfmt_para_sizes(paras[0])} == {3700}
+        runs = _psalmfmt_para_sizes(paras[1])
+        assert runs[0][1] == 3000 and all(sz == 3200 for _t, sz in runs[2:]), runs
+        assert _psalmfmt_lnspc(paras[1]) == 110000
+
+
+@pytest.fixture(autouse=True)
+def _psalm_no_real_powerpoint(request, monkeypatch):
+    """화답송 서식과 무관한 테스트(test_nopsalm_* 등)가 update_화답송 때문에 실제 PowerPoint를 띄우지 않게
+    측정을 '실측 불가'로 고정한다(규칙 20). 서식·COM을 직접 검증하는 test_psalmfmt_*는 예외."""
+    if request.node.name.startswith("test_psalmfmt_"):
+        yield
+        return
+    import missa_content_updaters as cu
+    monkeypatch.setattr(cu, "_measure_화답송_bottom_emu", lambda prs, slide, shape: (None, "unmeasured"))
+    yield
+
+
+def _psalmfmt_fake_com(monkeypatch, measure):
+    """ppt_com_verify 대역 + reading_layout의 probe/스위치 고정. 반환: (대역 모듈, atexit 등록 기록)."""
+    import atexit
+    import sys
+    import types
+    import missa_reading_layout as rl
+    fake = types.ModuleType("ppt_com_verify")
+
+    class _Unavailable(Exception):
+        pass
+
+    class _NotFound(Exception):
+        pass
+
+    fake.ComVerificationUnavailable = _Unavailable
+    fake.ComShapeNotFound = _NotFound
+    fake.measure_text_bottom_pt = measure
+    fake.shutdown = lambda: None
+    monkeypatch.setitem(sys.modules, "ppt_com_verify", fake)
+    monkeypatch.setattr(rl, "_COM_DISABLED", [False], raising=False)
+    monkeypatch.setattr(rl, "_COM_ATEXIT_REGISTERED", [False], raising=False)
+    monkeypatch.setattr(rl, "_com_verification_enabled", lambda: True)
+    monkeypatch.setattr(rl, "_build_com_probe_pptx", lambda prs, slide: (BASE / "dummy.pptx", 1))
+    registered = []
+    monkeypatch.setattr(atexit, "register", lambda fn, *a, **k: registered.append(fn))
+    return fake, registered
+
+
+def test_psalmfmt_refrain_without_circle_is_found_by_its_own_text_and_not_found_does_not_disable_com(
+        monkeypatch, capsys):
+    """리뷰 1: 후렴이 '◎ '로 시작하지 않아도 probe에서 도형을 자기 텍스트로 찾는다. 그래도 못 찾으면 그 슬라이드만
+    '미검증' 처리하고 COM 전역 스위치(_COM_DISABLED)는 켜지 않는다."""
+    import missa_reading_layout as rl
+    mtp_, prs, sections, data = _psalmfmt_load()
+    prefixes = []
+
+    def measure(path, prefix):
+        prefixes.append(prefix)
+        raise fake.ComShapeNotFound("probe에 없음")
+
+    fake, _reg = _psalmfmt_fake_com(monkeypatch, measure)
+    odd = {"화답송": {"title": "시편 1", "content": "후렴 그냥 시작\n○ 절1 본문\n○ 절2 본문"}}
+    mtp_.update_화답송(prs, odd, sections)       # 예외 없이 끝나야 한다
+    assert rl._COM_DISABLED[0] is False
+    assert len(prefixes) == 2, prefixes          # 두 번째 슬라이드도 COM을 계속 시도한다(전역 비활성화 안 됨)
+    assert all(pf and not pf.startswith("◎") and "후렴" in pf for pf in prefixes), prefixes
+    out = capsys.readouterr().out
+    assert "[경고]" in out and "찾지 못" in out, out
+
+
+def test_psalmfmt_shutdown_registered_even_when_measurement_fails(monkeypatch):
+    """리뷰 8: 측정이 실패하는 경로에서도 atexit.register(com.shutdown)이 걸려 있어야 한다(앱이 이미 떴을 수 있다)."""
+    mtp_, prs, sections, data = _psalmfmt_load()
+
+    def measure(path, prefix):
+        raise fake.ComVerificationUnavailable("simulated")
+
+    fake, registered = _psalmfmt_fake_com(monkeypatch, measure)
+    mtp_.update_화답송(prs, _psalmfmt_one_verse(data), sections)
+    assert fake.shutdown in registered, registered
+
+
+def test_psalmfmt_body_without_explicit_size_is_never_resized(monkeypatch, capsys):
+    """리뷰 6: ○ 본문 run에 sz가 없으면(상속 크기를 모른다) 글자 크기를 건드리지 않고 경고한다 — 32pt를 가정해
+    설정하면 오히려 키울 수 있다. 줄간격 1.0 단계까지는 수행한다."""
+    import missa_content_updaters as cu
+    mtp_, prs, sections, data = _psalmfmt_load()
+    with monkeypatch.context() as m:
+        _psalmfmt_fit_everything(m)
+        mtp_.update_화답송(prs, _psalmfmt_one_verse(data), sections)
+    (slide, sh), = _psalmfmt_shapes(prs, mtp_.find_sections(prs))
+    verse_p = sh.text_frame.paragraphs[1]
+    for r in cu._psalm_body_runs(verse_p):
+        del r.find("{%s}rPr" % _PSALMFMT_A).attrib["sz"]
+    monkeypatch.setattr(cu, "_measure_화답송_bottom_emu", lambda prs_, sl, shp: (10_000_000, "com"))
+    cu._fit_화답송_verse_to_slide(prs, slide, sh)
+    for r in cu._psalm_body_runs(verse_p):
+        assert r.find("{%s}rPr" % _PSALMFMT_A).get("sz") is None
+    assert _psalmfmt_lnspc(verse_p) == 100000
+    out = capsys.readouterr().out
+    assert "[경고]" in out and "크기" in out, out
+
+
+def test_psalmfmt_one_paragraph_template_refrain_gets_no_line_spacing(monkeypatch):
+    """리뷰 7: 1단락 템플릿(○만 있음)에서도 새로 만든 ◎ 단락은 37pt·줄간격 지정 없음(2단락 템플릿과 같다) —
+    ○ pPr를 통째로 복사해 lnSpc 1.1이 따라오면 안 된다."""
+    mtp_, prs, sections, data = _psalmfmt_load()
+    for i in range(sections["화답송_start"], sections["화답송_end"]):
+        for sh in prs.slides[i].shapes:
+            if sh.has_text_frame and sh.text_frame.text.startswith("◎"):
+                p0 = sh.text_frame.paragraphs[0]._p
+                p0.getparent().remove(p0)
+    _psalmfmt_fit_everything(monkeypatch)
+    mtp_.update_화답송(prs, data, sections)
+    shapes = _psalmfmt_shapes(prs, mtp_.find_sections(prs))
+    assert shapes
+    for _slide, sh in shapes:
+        paras = sh.text_frame.paragraphs
+        assert [p.text[:1] for p in paras] == ["◎", "○"]
+        assert {sz for _t, sz in _psalmfmt_para_sizes(paras[0])} == {3700}
+        assert _psalmfmt_lnspc(paras[0]) is None
+        assert _psalmfmt_lnspc(paras[1]) == 110000
+
+
+@pytest.mark.skipif(
+    not __import__("importlib.util").util.find_spec("win32com"), reason="pywin32 없음")
+def test_psalmfmt_real_powerpoint_no_overflow_on_nov8(tmp_path):
+    """(d) 실제 PowerPoint 실측: 11/8 화답송 슬라이드 전부 텍스트 하단이 박스 하단 경계·슬라이드 높이 이내, ◎ 37pt 유지."""
+    import ppt_com_verify as com
+    if not com.is_available():
+        pytest.skip("PowerPoint COM 사용 불가")
+    mtp_, prs, sections, data = _psalmfmt_load()
+    mtp_.update_화답송(prs, data, sections)
+    out = tmp_path / "psalm.pptx"
+    prs.save(str(out))
+    bottoms = com.measure_text_bottoms_pt(str(out), "◎")
+    assert len(bottoms) >= 3
+    limit_pt = min(_PSALMFMT_LIMIT_EMU, _PSALMFMT_SLIDE_H) / 12700
+    for slide_no, bottom_pt in bottoms:
+        assert bottom_pt <= limit_pt + 0.5, (slide_no, bottom_pt, limit_pt)
+    for _slide, sh in _psalmfmt_shapes(prs, mtp_.find_sections(prs)):
+        assert {sz for _t, sz in _psalmfmt_para_sizes(sh.text_frame.paragraphs[0])} == {3700}

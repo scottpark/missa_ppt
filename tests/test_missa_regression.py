@@ -423,29 +423,24 @@ def test_blackbg_covers_full_slide(generated_case):
 
 
 def test_화답송_pattern_matches_mass_type(generated_case):
-    """주일: 악보/텍스트 슬라이드 교대(짝수 인덱스=악보). 평일: 텍스트만, 악보 이미지 없음."""
-    prs, sections, case = (
-        generated_case["prs"], generated_case["sections"], generated_case["case"]
-    )
+    """주일·평일 모두 화답송은 텍스트 슬라이드만 — 악보 이미지가 없다(2026-11-17 악보 폐지)."""
+    prs, sections = generated_case["prs"], generated_case["sections"]
+    json_data = generated_case["json_data"]
     if "화답송_start" not in sections:
         pytest.skip("화답송 섹션 없음")
     s, e = sections["화답송_start"], sections["화답송_end"]
-    problems = []
-    for i in range(s, e):
-        slide = prs.slides[i]
-        has_picture = any(sh.shape_type == MSO_SHAPE_TYPE.PICTURE for sh in slide.shapes)
-        rel_i = i - s
-        if case["is_sunday"]:
-            expected_picture = (rel_i % 2 == 0)
-            if has_picture != expected_picture:
-                problems.append(
-                    f"화답송 슬라이드 {i + 1}: 악보 유무 불일치 "
-                    f"(기대={expected_picture}, 실제={has_picture})"
-                )
-        else:
-            if has_picture:
-                problems.append(f"화답송 슬라이드 {i + 1}: 평일미사인데 악보 이미지 존재")
+    problems = [
+        f"화답송 슬라이드 {i + 1}: 악보 이미지 존재"
+        for i in range(s, e)
+        if any(sh.shape_type == MSO_SHAPE_TYPE.PICTURE for sh in prs.slides[i].shapes)
+    ]
     assert not problems, "\n".join(problems)
+    # 슬라이드 수 = 절 수, 모든 슬라이드에 ◎ 후렴
+    lines = [l.strip() for l in json_data["화답송"]["content"].split("\n") if l.strip()]
+    assert e - s == len(lines) - 1, (e - s, len(lines) - 1)
+    for i in range(s, e):
+        body = " ".join(sh.text_frame.text for sh in prs.slides[i].shapes if sh.has_text_frame)
+        assert "◎" in body, f"화답송 슬라이드 {i + 1}: ◎ 후렴 없음"
 
 
 def test_hymn_score_copy_matches_mass_type(generated_case):
@@ -1709,7 +1704,7 @@ def test_y2m_3_youth_preload_path_calls_youth_functions_not_adult(monkeypatch, t
     _y2m_stub_all_mass_calls(monkeypatch, calls)
 
     files = {
-        'ref_pptx': ref_dst, '시작기도': None, '화답송_pptx': None, '화답송_img': None,
+        'ref_pptx': ref_dst, '시작기도': None,
         '미사후기도': None, '공지사항': None, '성가': {},
     }
     # main()의 방어적 이중 체크(y2m_8/9, 05_review_report.md 확정 버그 대응)가 5종 전부를
@@ -1820,7 +1815,7 @@ def test_y2m_5_youth_end_to_end_produces_valid_pptx(monkeypatch, tmp_path):
     monkeypatch.setattr(mtp.missa_youth_gospel, 'get_youth_mass', lambda d: en_fixture)
 
     files = {
-        'ref_pptx': ref_dst, '시작기도': None, '화답송_pptx': None, '화답송_img': None,
+        'ref_pptx': ref_dst, '시작기도': None,
         '미사후기도': None, '공지사항': None, '성가': {},
     }
     성가_선택 = {
@@ -1942,7 +1937,7 @@ def test_y2m_8_main_aborts_when_성가_선택_missing_htypes(monkeypatch, tmp_pa
     monkeypatch.setattr(mtp.missa_youth_gospel, 'get_youth_mass', lambda d: en_fixture)
 
     files = {
-        'ref_pptx': ref_dst, '시작기도': None, '화답송_pptx': None, '화답송_img': None,
+        'ref_pptx': ref_dst, '시작기도': None,
         '미사후기도': None, '공지사항': None, '성가': {},
     }
     # 완전히 빈 성가_선택 — 취소된 팝업을 흉내낸다(리뷰 재현 스크립트와 동일 시나리오).
@@ -1980,7 +1975,7 @@ def test_y2m_9_main_aborts_when_성가_선택_partially_missing(monkeypatch, tmp
     monkeypatch.setattr(mtp.missa_youth_gospel, 'get_youth_mass', lambda d: en_fixture)
 
     files = {
-        'ref_pptx': ref_dst, '시작기도': None, '화답송_pptx': None, '화답송_img': None,
+        'ref_pptx': ref_dst, '시작기도': None,
         '미사후기도': None, '공지사항': None, '성가': {},
     }
     성가_선택 = {'입당': [{'출처': '기타', '번호': None, '제목': '테스트 입당곡'}]}
@@ -2163,7 +2158,7 @@ def test_b_youth_preload_pipeline_saves_under_suffixed_folder(monkeypatch, tmp_p
     monkeypatch.setattr(mtp, 'validate_pptx_structure', lambda *a, **k: [])
 
     files = {
-        'ref_pptx': ref_dst, '시작기도': None, '화답송_pptx': None, '화답송_img': None,
+        'ref_pptx': ref_dst, '시작기도': None,
         '미사후기도': None, '공지사항': None, '성가': {},
     }
     성가_선택 = {
@@ -2348,18 +2343,19 @@ def test_a4_combined_input_popup_youth_excludes_화답송_row(tmp_path):
     assert not any('화답송' in t for t in labels), labels
 
 
-def test_a4_combined_input_popup_adult_keeps_화답송_row(tmp_path):
-    """성인미사(기본값)는 기존과 동일하게 화답송 악보 PPT/사진 행이 있어야 한다(무회귀)."""
+def test_a4_combined_input_popup_adult_has_no_화답송_row(tmp_path):
+    """성인미사도 화답송 악보 행이 없다(2026-11-17 폐지)."""
     widgets = _a_run_widget_probe(tmp_path, "gui._ask_combined_input_popup(mass_type='adult')")
     labels = [w.get('text', '') for w in widgets if w['class'] == 'Label']
-    assert any('화답송' in t for t in labels), labels
+    assert not any('화답송' in t for t in labels), labels
 
 
 def test_a4_combined_input_popup_default_mass_type_is_adult(tmp_path):
-    """mass_type 인자를 생략하면 기존 호출부(성인 전용 경로)와 100% 동일하게 동작한다."""
+    """mass_type 인자를 생략하면 성인 경로와 동일(참조 PPT 행 존재, 화답송 행 없음)."""
     widgets = _a_run_widget_probe(tmp_path, "gui._ask_combined_input_popup()")
     labels = [w.get('text', '') for w in widgets if w['class'] == 'Label']
-    assert any('화답송' in t for t in labels), labels
+    assert any('참조' in t for t in labels), labels
+    assert not any('화답송' in t for t in labels), labels
 
 
 # ---------------------------------------------------------------------------

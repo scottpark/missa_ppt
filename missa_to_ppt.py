@@ -231,10 +231,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--y파견', dest='y_파견', type=str, default=None,
                         help='[청년] 파견 성가 (--y입당과 동일 형식)')
 
-    parser.add_argument('--화답송', dest='화답송_pptx', type=str, default=None,
-
-                        help='화답송 악보 PPT 경로 (기본: 날짜 폴더의 화답송 악보.pptx)')
-
     parser.add_argument('--미사후기도', dest='미사후기도', type=str, default=None,
 
                         help='미사 후 기도 PPT 경로 (평일미사 전용)')
@@ -329,7 +325,7 @@ def parse_args():
               file=sys.stderr)
         sys.exit(1)
 
-    return (args.date, numbers, args.화답송_pptx, getattr(args, '미사후기도', None), 공지사항_path,
+    return (args.date, numbers, getattr(args, '미사후기도', None), 공지사항_path,
             mass_type, 성가_선택)
 
 
@@ -420,54 +416,7 @@ def find_files(date_str: str, hymn_numbers: dict, copy_hymn_scores: bool = None,
 
 
 
-    files = {'ref_pptx': None, '시작기도': None, '화답송_pptx': None, '화답송_img': None, '미사후기도': None, '공지사항': None, '성가': {}}
-
-
-
-    # 화답송 악보 PPT
-
-    for f in folder.iterdir():
-
-        if f.suffix.lower() == '.pptx' and '화답송 악보' in f.name and not f.name.startswith('~$'):
-
-            files['화답송_pptx'] = f
-
-
-
-    # 화답송 악보 이미지: 수작업 PPT가 있으면 그것을 우선하고(기존 동작 완전 보존) 없을 때만
-
-    # 탐색한다(설계서 §4.1). 촬영 앱이 붙인 타임스탬프 파일명("20260809_043842947.jpg")은
-
-    # 파일명에 '화답송'이 없으므로, 이름 매칭이 안 되면 "폴더 내 유일 이미지"로 폴백한다.
-
-    # 단, 날짜 폴더에 화답송과 무관한 이미지가 여러 개 섞여 있으면 어떤 것인지 모호하므로
-
-    # 폴백하지 않는다 — 잘못된 이미지를 화답송으로 오인해 처리하는 것보다 미검출이 안전하다.
-
-    if not files['화답송_pptx']:
-
-        _HWADAPSONG_IMG_EXTS = {'.png', '.jpg', '.jpeg'}
-
-        named_imgs = [
-            f for f in folder.iterdir()
-            if f.suffix.lower() in _HWADAPSONG_IMG_EXTS and '화답송' in f.name
-            and not f.name.startswith('~$')
-        ]
-
-        if named_imgs:
-
-            files['화답송_img'] = named_imgs[0]
-
-        else:
-
-            all_imgs = [
-                f for f in folder.iterdir()
-                if f.suffix.lower() in _HWADAPSONG_IMG_EXTS and not f.name.startswith('~$')
-            ]
-
-            if len(all_imgs) == 1:
-
-                files['화답송_img'] = all_imgs[0]
+    files = {'ref_pptx': None, '시작기도': None, '미사후기도': None, '공지사항': None, '성가': {}}
 
 
 
@@ -560,7 +509,7 @@ def find_files(date_str: str, hymn_numbers: dict, copy_hymn_scores: bool = None,
 
                 and f != files['시작기도']
 
-                and f != files['화답송_pptx']
+                and '화답송 악보' not in f.name   # 폐지된 악보 PPT가 날짜 폴더에 남아 있어도 참조 후보가 되면 안 된다
 
                 and date_str not in f.name
 
@@ -581,25 +530,6 @@ def find_files(date_str: str, hymn_numbers: dict, copy_hymn_scores: bool = None,
 
 
     return files
-
-
-def apply_화답송_override(files: dict, override_path_str: str) -> None:
-    """--화답송 CLI 오버라이드를 확장자에 따라 화답송_pptx/화답송_img 키로 분기해 반영한다.
-
-    오버라이드는 find_files()가 자동 탐색해 이미 채워둔 반대쪽 키를 명시적으로 비워야 한다 —
-    안 그러면 update_화답송()의 "PPT 우선" 규칙 때문에 자동 탐색된 파일이 사용자가 명시적으로
-    지정한 오버라이드를 조용히 무시해 버린다(설계서 §4.2).
-    """
-    override_path = Path(override_path_str)
-    if override_path.suffix.lower() in ('.png', '.jpg', '.jpeg'):
-        files['화답송_img'] = override_path
-        files['화답송_pptx'] = None
-    else:
-        files['화답송_pptx'] = override_path
-        files['화답송_img'] = None
-
-
-
 
 
 def get_json_data(content_date_str: str, mass_type: str = 'adult', input_date_str: str = None) -> dict:
@@ -812,7 +742,7 @@ def main():
 
     else:
 
-        (date_str, hymn_numbers, 화답송_override, 미사후기도_override, 공지사항_override,
+        (date_str, hymn_numbers, 미사후기도_override, 공지사항_override,
          mass_type, 성가_선택) = parse_args()
 
         # 청년미사는 files['성가']를 아예 쓰지 않는다(replace_성가_youth가 출처별 탐색·PDF
@@ -822,10 +752,6 @@ def main():
             resolve_mass_flags('adult', date_str)['copy_hymn_scores'] if mass_type == 'adult' else False
         )
         files = find_files(date_str, hymn_numbers, copy_hymn_scores, mass_type)
-
-        if 화답송_override:
-
-            apply_화답송_override(files, 화답송_override)
 
         if 미사후기도_override:
 
@@ -883,14 +809,6 @@ def main():
     print(f'  참조 PPT: {files["ref_pptx"].name}')
 
     print(f'  시작기도: {files["시작기도"].name if files["시작기도"] else "없음"}')
-
-    화답송_source = files.get('화답송_pptx') or files.get('화답송_img')
-
-    print(f'  화답송 악보: {화답송_source.name if 화답송_source else "없음"}')
-
-    if mass_type == 'adult' and is_sunday and not 화답송_source:
-
-        print('  [경고] 주일미사인데 화답송 악보 파일(PPT/이미지)이 없습니다.')
 
     if files.get('미사후기도'):
 
@@ -1055,17 +973,7 @@ def main():
 
         print('  화답송...')
 
-        # update_화답송()의 is_sunday 파라미터는 "주일 포맷(악보 포함)인가"를 뜻하므로
-        # (함수 내부에서 `if not is_sunday: 평일 포맷`), "평일식 표시인가"를 뜻하는
-        # mass_flags['use_weekday_display']를 그대로 넘기면 의미가 정반대로 뒤집힌다.
-        # 부정(not)해서 넘긴다 — adult에서는 not use_weekday_display == is_calendar_sunday라
-        # 기존 동작과 동일하다(구현 노트 참고, 설계서 §8.3 표의 직접 대입은 이 반전을
-        # 놓치고 있었다). youth는 use_weekday_display가 항상 True라 is_sunday=False로 호출돼
-        # 요구사항 §6.2가 명시한 "악보 없는 텍스트만" 포맷이 그대로 나온다.
-        update_화답송(
-            prs, json_data, sec, files.get('화답송_pptx'), files.get('화답송_img'),
-            is_sunday=not mass_flags['use_weekday_display'],
-        )
+        update_화답송(prs, json_data, sec)
 
 
     # 섹션 재탐색

@@ -417,7 +417,6 @@ def find_youth_hymn_file(kind: str, subfolder: str | None, pattern: str) -> Path
 # ─────────────────────────────────────────────────────────────────────────────
 
 _BROWSE_DIRS_KEY = 'browse_dirs'
-_LEGACY_PSALM_DIR_KEY = 'last_psalm_dir'   # 행별 기억(`browse_dirs`)이 흡수한 옛 키
 # 행 id -> (루트 role, 루트 아래 기본 하위 경로)
 _BROWSE_DEFAULTS = {
     '시작기도':      ('common', ('13.기도문',)),
@@ -425,7 +424,6 @@ _BROWSE_DEFAULTS = {
     '공지사항':      ('common', ('11.공지사항 PPT문서',)),
     'adult.ref_pptx': ('adult', ('10.기타 PPT문서', 'PPT 자동화', '1.Template')),
     'youth.ref_pptx': ('youth', ('1.Template',)),
-    '화답송_pptx':   ('adult', ('14.화답송 악보',)),
 }
 
 
@@ -438,8 +436,6 @@ def browse_initial_dir(mass_type: str, key: str):
     row = _browse_row_id(mass_type, key)
     config = _load_config()
     saved = (config.get(_BROWSE_DIRS_KEY) or {}).get(row, '')
-    if not saved and row == '화답송_pptx':
-        saved = config.get(_LEGACY_PSALM_DIR_KEY, '')
     if saved and Path(saved).is_dir():
         return Path(saved)
     role, subpath = _BROWSE_DEFAULTS.get(row, (mass_type, ()))
@@ -447,14 +443,12 @@ def browse_initial_dir(mass_type: str, key: str):
 
 
 def remember_browse_dir(mass_type: str, key: str, path) -> None:
-    """찾아보기로 고른 파일의 폴더를 그 행의 다음 시작 폴더로 기억한다(옛 `last_psalm_dir`은 흡수·삭제)."""
+    """찾아보기로 고른 파일의 폴더를 그 행의 다음 시작 폴더로 기억한다."""
     try:
         config = _load_config()
         dirs = dict(config.get(_BROWSE_DIRS_KEY) or {})
         dirs[_browse_row_id(mass_type, key)] = str(Path(path).parent)
         config[_BROWSE_DIRS_KEY] = dirs
-        if _browse_row_id(mass_type, key) == '화답송_pptx':
-            config.pop(_LEGACY_PSALM_DIR_KEY, None)
         _save_config(config)
     except Exception:
         pass
@@ -1118,7 +1112,7 @@ def _ask_date_popup() -> str:
 
 def _ask_input_files_popup() -> dict:
 
-    """참조 미사 PPT(필수), 시작기도 PPT(선택), 화답송 악보 PPT(필수)를
+    """참조 미사 PPT(필수), 시작기도·미사 후 기도 PPT(선택)를
 
     하나의 창에서 선택한다."""
 
@@ -1144,26 +1138,6 @@ def _ask_input_files_popup() -> dict:
 
     PPTX_TYPES = [('PowerPoint 파일', '*.pptx'), ('모든 파일', '*.*')]
 
-    # 화답송 악보 행 전용 filetypes (공유 상수 PPTX_TYPES는 다른 행 회귀 방지를 위해 건드리지
-
-    # 않는다 — 설계서 §4.2). 원본 사진(PNG/JPG) 입력을 지원한다.
-
-    HWADAPSONG_TYPES = [
-
-        ('악보 파일', '*.pptx *.png *.jpg *.jpeg'),
-
-        ('PowerPoint', '*.pptx'),
-
-        ('이미지', '*.png *.jpg *.jpeg'),
-
-        ('모든 파일', '*.*'),
-
-    ]
-
-    _IMG_EXTS = ('.png', '.jpg', '.jpeg')
-
-
-
     frame = tk.Frame(root, padx=20, pady=16)
 
     frame.pack(fill='both', expand=True)
@@ -1173,8 +1147,6 @@ def _ask_input_files_popup() -> dict:
     rows = [
 
         ('ref_pptx',    '참조 미사 PPT  *',  True),
-
-        ('화답송_pptx', '화답송 악보 PPT/사진', False),
 
         ('시작기도',    '시작기도 PPT',      False),
 
@@ -1204,7 +1176,7 @@ def _ask_input_files_popup() -> dict:
 
         )
 
-        row_types = HWADAPSONG_TYPES if key == '화답송_pptx' else PPTX_TYPES
+        row_types = PPTX_TYPES
 
         def _browse(v=var, types=row_types):
 
@@ -1240,26 +1212,6 @@ def _ask_input_files_popup() -> dict:
 
             return
 
-        화답송 = vars_['화답송_pptx'].get()
-
-        # 확장자로 PPT/이미지 분기 (설계서 §4.2)
-
-        화답송_pptx_val = None
-
-        화답송_img_val = None
-
-        if 화답송:
-
-            _p = Path(화답송)
-
-            if _p.suffix.lower() in _IMG_EXTS:
-
-                화답송_img_val = _p
-
-            else:
-
-                화답송_pptx_val = _p
-
         시작기도 = vars_['시작기도'].get()
 
         미사후기도 = vars_['미사후기도'].get()
@@ -1267,10 +1219,6 @@ def _ask_input_files_popup() -> dict:
         result[0] = {
 
             'ref_pptx':    Path(ref),
-
-            '화답송_pptx': 화답송_pptx_val,
-
-            '화답송_img':  화답송_img_val,
 
             '시작기도':    Path(시작기도) if 시작기도 else None,
 
@@ -1313,8 +1261,7 @@ def _ask_combined_input_popup(mass_type: str = 'adult') -> tuple:
 
     반환: (date_str, files_dict)
 
-    mass_type='youth'(청년미사)는 화답송 악보 PPT/사진 행 자체가 없고(요구사항 §A4 — 청년미사 악보는 성가
-    선택 팝업에서 별도 출처로 다룬다) 파일 행 순서가 다르다(§J4). '찾아보기'는 두 유형 모두 로컬 파일
+    mass_type='youth'(청년미사)는 파일 행 순서가 성인과 다르다(§J4). '찾아보기'는 두 유형 모두 로컬 파일
     다이얼로그이며 시작 폴더는 행별 기억 → 기본 하위 폴더 → 루트 순(`browse_initial_dir`).
     mass_type 인자를 생략하면 기존 호출부(성인 전용 경로) 동작과 100% 동일하다."""
 
@@ -1331,26 +1278,6 @@ def _ask_combined_input_popup(mass_type: str = 'adult') -> tuple:
     DIALOG_TITLE = '미사 PPT 파일 자동화 - 브로큰베이교구 한인 천주교회' + _DIALOG_TITLE_SUFFIX.get(mass_type, '')
 
     PPTX_TYPES = [('PowerPoint 파일', '*.pptx'), ('모든 파일', '*.*')]
-
-    # 화답송 악보 행 전용 filetypes (공유 상수 PPTX_TYPES는 다른 행 회귀 방지를 위해 건드리지
-
-    # 않는다 — 설계서 §4.2). 원본 사진(PNG/JPG) 입력을 지원한다.
-
-    HWADAPSONG_TYPES = [
-
-        ('악보 파일', '*.pptx *.png *.jpg *.jpeg'),
-
-        ('PowerPoint', '*.pptx'),
-
-        ('이미지', '*.png *.jpg *.jpeg'),
-
-        ('모든 파일', '*.*'),
-
-    ]
-
-    _IMG_EXTS = ('.png', '.jpg', '.jpeg')
-
-
 
     root = tk.Tk()
 
@@ -1394,8 +1321,6 @@ def _ask_combined_input_popup(mass_type: str = 'adult') -> tuple:
 
         ('시작기도',    '시작기도 PPT',      False),
 
-        ('화답송_pptx', '화답송 악보 PPT/사진', False),
-
         ('공지사항',    '공지사항 PPT',      False),
 
         ('미사후기도',  '미사 후 기도 PPT',  False),
@@ -1403,11 +1328,8 @@ def _ask_combined_input_popup(mass_type: str = 'adult') -> tuple:
     ]
 
     if mass_type == 'youth':
-        # 청년미사는 화답송 악보 PPT/사진 입력 자체가 없다(요구사항 §A4) — 성가 선택
-        # 팝업에서 별도 출처로 다룬다.
-        file_rows = [row for row in file_rows if row[0] != '화답송_pptx']
         # §J4 — 청년미사만 [ref_pptx, 시작기도, 미사후기도, 공지사항] 순서로 바꾼다.
-        # 성인미사 순서(위 file_rows 원본, 화답송 위치 포함)는 절대 건드리지 않는다 —
+        # 성인미사 순서(위 file_rows 원본)는 절대 건드리지 않는다 —
         # dict 재배열로 원본 튜플(라벨·필수 여부)을 그대로 보존해 값 자체는 안 바뀐다.
         _rows_by_key = {row[0]: row for row in file_rows}
         file_rows = [_rows_by_key[k] for k in ('ref_pptx', '시작기도', '미사후기도', '공지사항')]
@@ -1436,7 +1358,7 @@ def _ask_combined_input_popup(mass_type: str = 'adult') -> tuple:
 
         entries[key] = entry
 
-        row_types = HWADAPSONG_TYPES if key == '화답송_pptx' else PPTX_TYPES
+        row_types = PPTX_TYPES
 
         def _browse(v=var, types=row_types, key=key):
 
@@ -1460,7 +1382,6 @@ def _ask_combined_input_popup(mass_type: str = 'adult') -> tuple:
     result = [None]
 
     def _field_value(key: str) -> str:
-        # 청년미사는 화답송_pptx 행 자체가 없어 vars_에 키가 없다 — 빈 문자열로 통일.
         return vars_[key].get() if key in vars_ else ''
 
 
@@ -1490,43 +1411,6 @@ def _ask_combined_input_popup(mass_type: str = 'adult') -> tuple:
             messagebox.showwarning('입력 오류', '참조 미사 PPT를 선택해 주세요.', parent=root)
 
             return
-
-        # 청년미사는 화답송_pptx 행 자체가 없어 vars_에 키가 없다(위 file_rows 필터링) —
-        # `_resolved_field_value`가 키 부재 시 빈 문자열을 반환하므로 기존 삼항 분기와
-        # 동일하게 동작한다.
-        화답송 = _field_value('화답송_pptx')
-
-        if not 화답송 and mass_type == 'adult' and is_sunday_mass(date_val):
-
-            if not messagebox.askyesno(
-
-                '확인',
-
-                '주일미사인데 화답송 악보 PPT가 선택되지 않았습니다.\n계속하시겠습니까?',
-
-                parent=root,
-
-            ):
-
-                return
-
-        # 확장자로 PPT/이미지 분기 (설계서 §4.2)
-
-        화답송_pptx_val = None
-
-        화답송_img_val = None
-
-        if 화답송:
-
-            _p = Path(화답송)
-
-            if _p.suffix.lower() in _IMG_EXTS:
-
-                화답송_img_val = _p
-
-            else:
-
-                화답송_pptx_val = _p
 
         # 공지사항: 파일 선택 필터에 '모든 파일'이 있어 .docx 등을 고를 수 있으므로
         # 확인 시점에 확장자를 검증한다(요구사항 §1.2.1). 빈 값이면 선택 사항이라 통과.
@@ -1559,10 +1443,6 @@ def _ask_combined_input_popup(mass_type: str = 'adult') -> tuple:
             {
 
                 'ref_pptx':    Path(ref),
-
-                '화답송_pptx': 화답송_pptx_val,
-
-                '화답송_img':  화답송_img_val,
 
                 '공지사항':    Path(공지사항) if 공지사항 else None,
 

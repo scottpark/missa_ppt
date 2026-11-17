@@ -41,9 +41,7 @@ else:  # 'youth'
 
 adult 경로는 4개 값 전부 `is_calendar_sunday`(또는 부정)로만 정의되므로 기존 동작과 100%
 동일하다. 호출부 치환: `find_files(..., copy_hymn_scores)`(매개변수명 `is_sunday`→
-`copy_hymn_scores`로 리네임), `update_화답송(..., is_sunday=not use_weekday_display)`(**부호
-반전 — `is_sunday`는 "평일식 표시인가"가 아니라 "주일 포맷(악보 포함)인가"를 뜻하므로 그대로
-대입하면 안 됨**), `replace_성가(..., copy_scores=copy_hymn_scores)`, 미사후기도 처리는
+`copy_hymn_scores`로 리네임), `update_화답송(prs, json_data, sections)`(2026-11-17 `is_sunday`·악보 인자 제거), `replace_성가(..., copy_scores=copy_hymn_scores)`, 미사후기도 처리는
 `use_weekday_display`가 참일 때만, `validate(prs2, json_data)`는 `is_sunday` 매개변수 자체가
 제거됨(화답송 라벨 체크를 항상 수행).
 
@@ -223,15 +221,15 @@ python-pptx, lxml, Pillow, numpy(화답송 악보 사진 배열 연산), pywin32
 버전(v1.0~2026-09 초)의 성인 전용 동작과 100% 동일하다. 아래는 성인 경로에서만 실행되는
 분기·함수를 모아 정리한다.
 
-## 2.1 화답송 — `update_화답송(prs, json_data, sections, 화답송_pptx_path,
-화답송_img_path=None, is_sunday=True)`
+## 2.1 화답송 — `update_화답송(prs, json_data, sections)` (2026-11-17 악보 폐지)
 
-- **주일**(`is_sunday=True`): 필요 슬라이드 `2n+1`(악보 n+1장 + 텍스트 n장), 짝수 인덱스가
-  악보. 악보 슬라이드는 `copy_slide_from_prs()`로 화답송 악보 PPT에서 복사(§1.5). PPT가
-  없고 사진만 있으면 `missa_psalm_score_image.render_화답송_score_slide()`를 내부에서
-  지연 import해 대신 호출(모듈 최상단 import 없음 — 상시 하드 의존 아님).
-- **평일**(`is_sunday=False`): 텍스트 슬라이드만(`needed = len(verses)`), 참조 PPT의 화답송
-  템플릿을 `insert_slide_copy()`로 복제. 후렴(◎)도 표시.
+주일·평일 구분 없이 **텍스트 슬라이드만** 만든다(`needed = len(verses)`). 참조 PPT의 화답송 템플릿(악보 없는
+구조)을 `insert_slide_copy()`로 복제하고 후렴(◎)도 표시한다. `화답송_pptx_path`·`화답송_img_path`·`is_sunday`
+매개변수와 악보 슬라이드 교대 배치·`copy_slide_from_prs` 악보 복사 분기는 제거됐다. 호출부(`missa_to_ppt.py`)의
+`--화답송` 인자·`화답송 악보*.pptx` 자동 탐색·사진 입력도 제거. `missa_psalm_score_image.py`·
+`assets/화답송_악보_template.pptx`·`tools/build_화답송_template.py`는 청년 성가 PDF 모듈 때문에 **보존**하고
+성인 파이프라인에서의 호출만 끊는다(지연 import도 없음). `missa_gui.py`: 화답송 악보 입력 행·`화답송_pptx`
+browse 키·`{성인}/14.화답송 악보` 기본 시작 폴더 제거, 옛 config 키(`화답송_pptx`, `last_psalm_dir`)는 읽지 않고 무시.
 
 ## 2.2 복음환호송 — `update_복음환호송(prs, json_data, sections, mass_type='adult')`
 
@@ -327,7 +325,7 @@ OneDrive 접근은 **로컬 동기화 폴더 전용**이다. Graph API(`missa_on
 | 키 | 의미 |
 |---|---|
 | `onedrive_common_folder` / `onedrive_adult_folder` / `onedrive_youth_folder` | 세 루트의 로컬 절대경로 |
-| `browse_dirs` | `{행 id: 폴더}` — 첫 화면 '찾아보기'로 고른 폴더를 행별로 기억(행 id: `시작기도`·`미사후기도`·`공지사항`·`화답송_pptx`·`adult.ref_pptx`·`youth.ref_pptx`) |
+| `browse_dirs` | `{행 id: 폴더}` — 첫 화면 '찾아보기'로 고른 폴더를 행별로 기억(행 id: `시작기도`·`미사후기도`·`공지사항`·`adult.ref_pptx`·`youth.ref_pptx`) |
 
 옛 키(`onedrive_ppt_folder`·`onedrive_hymn_folder`·`onedrive_youth_hymn_folder`·`onedrive_hymn_path`·
 `onedrive_youth_hymn_path`·`last_psalm_dir`)는 읽지 않는다(`onedrive_ppt_folder`는 이관 대상, `last_psalm_dir`은
@@ -337,7 +335,7 @@ OneDrive 접근은 **로컬 동기화 폴더 전용**이다. Graph API(`missa_on
 
 - **시작 폴더**: `browse_initial_dir(mass_type, key)` 우선순위 = `browse_dirs`(존재할 때만) → `_BROWSE_DEFAULTS`
   (행 id → 루트 role + 하위 경로: 시작기도·미사후기도 `{공용}/13.기도문`, 공지사항 `{공용}/11.공지사항 PPT문서`, 참조 PPT
-  성인 `{성인}/10.기타 PPT문서/PPT 자동화/1.Template`·청년 `{청년}/1.Template`, 화답송 `{성인}/14.화답송 악보`; 없는
+  성인 `{성인}/10.기타 PPT문서/PPT 자동화/1.Template`·청년 `{청년}/1.Template`. 없는
   하위 폴더는 `resolve_browse_start_dir`가 있는 곳까지) → 루트 → `None`(OS 기본). `_browse()`가 모든 행에서
   `askopenfilename(initialdir=…)` 후 `remember_browse_dir()`로 선택 파일의 폴더를 저장한다.
 - **결과 복사**: `result_copy_dir`/`result_copy_exists`/`copy_result_to_onedrive`(`shutil.copy2`, OneDrive 앱이 동기화) +

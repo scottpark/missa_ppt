@@ -14,7 +14,7 @@
 - `missa_reading_layout.py` — 독서·복음 절 파싱 → COM 실측으로 슬라이드마다 정확히 9줄씩 채우기(폴백 Pillow).
 - `missa_sections.py` — 섹션 탐색(`find_sections`)과 검증(`validate*`).
 - `missa_content_updaters.py` — 화답송·성가·입당송 등 섹션별 콘텐츠 갱신(`update_*`).
-- `missa_psalm_score_image.py` — 화답송 악보 원본 이미지 → 슬라이드 변환(leaf 모듈).
+- `missa_psalm_score_image.py` — 화답송 악보 원본 이미지 → 슬라이드 변환(leaf 모듈; 성인미사 화답송은 2026-11-17부터 텍스트 전용이라 청년 성가 PDF 모듈의 이미지 유틸로만 쓰임).
 - `missa_youth_gospel.py` — 청년미사 영문 독서/복음 조회(universalis.com).
 - `missa_youth_hymn_pdf.py` — PDF 성가집(나주노/야훼이레) → 성가 슬라이드 PPT 생성.
 - `missa_updater.py` — GitHub 기반 자동 업데이트(화이트리스트 파일만 덮어씀).
@@ -107,6 +107,11 @@ SPEC에 확정 결정으로 반영해 리뷰를 요청한다(열린 질문을 SP
     (2026-10-18, 나주노 479·692·468).
 27. **개발자 OCR 캐시에 없는 곡을 조용히 생략하지 않는다** — 저작권은 미등록 시 폴백+경고, 공유 페이지(곡 2~3개)는
     곡별 `y_range`가 없으면 오류로 중단한다. `has_copyright:false`는 OCR이 Copyright를 못 찾았을 때만(2026-10-18).
+
+28. **넘침 보정은 전 run 일괄 덮어쓰기 금지, 대상 단락만·단방향·COM 실측으로** — 템플릿의 단락/run별 크기(◎37·○라벨30·○본문32)를
+    보존하고, 실측 불가 시 서식은 두고 경고만 한다. 라벨 run과 본문 run을 합치지 않는다(2026-11-18, 11월 주일 화답송).
+29. **PowerPoint COM은 사용자 인스턴스에 붙을 수 있다** — 우리가 띄운 인스턴스(`_we_launched_app`)이고 열린 문서가 0개로 확인될 때만
+    `Quit()`한다. 불확실하면 종료하지 않는다(2026-11-18).
 
 ## 회귀 테스트
 

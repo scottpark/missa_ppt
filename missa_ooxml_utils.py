@@ -737,6 +737,56 @@ def _replace_para_text_clone(para, new_text: str):
         _para_append_run(p, pptx_parse_xml(f'<a:r xmlns:a="{A_NS}"><a:t>{_xml_escape(new_text)}</a:t></a:r>'))
 
 
+def _rebuild_화답송_para_runs(p, text: str):
+    """단락의 run을 템플릿 구성대로 다시 만든다: 라벨(◎/○ + 탭) run들은 템플릿 서식 그대로, 본문은 템플릿의
+    본문 run 서식(첫 본문 run)을 복제한 1개 run.
+
+    템플릿 ○ 단락은 라벨(30pt)과 본문(32pt)의 크기가 다르다 — 첫 run만 복제하면 본문이 라벨 크기로 통일돼
+    템플릿과 어긋난다(2026-11-18, 11/8 화답송 육안 검수). run 개수는 가정하지 않고 첫 탭이 든 run을 라벨의
+    끝으로 본다. 탭이 없거나 text에 탭이 없으면 옛 방식(첫 run 복제 1개)으로 폴백한다.
+    """
+    from pptx.oxml import parse_xml as pptx_parse_xml
+    A_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+    runs = p.findall(qn('a:r'))
+
+    def _t(r):
+        el = r.find(qn('a:t'))
+        return (el.text or '') if el is not None else ''
+
+    tab_idx = next((i for i, r in enumerate(runs) if '	' in _t(r)), None)
+    if tab_idx is not None and '	' in text:
+        label, body = text.split('	', 1)
+        tab_run = runs[tab_idx]
+        before = [copy.deepcopy(r) for r in runs[:tab_idx]]
+        tab_copy = copy.deepcopy(tab_run)
+        if _t(tab_run) == '	' and before:
+            # 라벨 run과 탭 run이 따로 있는 템플릿: 라벨은 첫 run에 담고, 사이 run은 버린다.
+            before[0].find(qn('a:t')).text = label
+            new_runs = [before[0], tab_copy]
+        else:
+            # '○	'처럼 탭이 라벨 run 안에 있는 템플릿
+            tab_copy.find(qn('a:t')).text = label + '	'
+            new_runs = [tab_copy]
+        body_src = runs[tab_idx + 1] if tab_idx + 1 < len(runs) else tab_run
+        body_r = copy.deepcopy(body_src)
+        body_r.find(qn('a:t')).text = body
+        rPr = body_r.find(qn('a:rPr'))
+        if rPr is not None and 'err' in rPr.attrib:
+            del rPr.attrib['err']   # 옛 본문의 맞춤법 오류 표시가 새 본문에 붙지 않게
+        new_runs.append(body_r)
+    else:
+        tmpl = copy.deepcopy(runs[0]) if runs else pptx_parse_xml(f'<a:r xmlns:a="{A_NS}"><a:t/></a:r>')
+        tmpl.find(qn('a:t')).text = text
+        new_runs = [tmpl]
+
+    for r in runs:
+        p.remove(r)
+    for br in p.findall(qn('a:br')):
+        p.remove(br)
+    for r in new_runs:
+        _para_append_run(p, r)
+
+
 def _set_화답송_content_text(tf, refrain_text: str, verse_text: str):
     """화답송 본문에 ◎ 후렴(para0) + ○ 절(para1) 설정.
 
@@ -751,12 +801,7 @@ def _set_화답송_content_text(tf, refrain_text: str, verse_text: str):
     if len(paras) >= 2:
         # 2단락 템플릿: para[0]=◎ 서식, para[1]=○ 서식 각각 보존
         for p, text in zip(paras[:2], [refrain_text, verse_text]):
-            runs = p.findall(qn('a:r'))
-            tmpl_r = copy.deepcopy(runs[0]) if runs else pptx_parse_xml(f'<a:r xmlns:a="{A_NS}"><a:t/></a:r>')
-            for r in runs: p.remove(r)
-            for br in p.findall(qn('a:br')): p.remove(br)
-            tmpl_r.find(qn('a:t')).text = text
-            _para_append_run(p, tmpl_r)
+            _rebuild_화답송_para_runs(p, text)
         for p in paras[2:]:
             txBody.remove(p)
     else:
@@ -766,19 +811,21 @@ def _set_화답송_content_text(tf, refrain_text: str, verse_text: str):
         if verse_p is not None:
             runs = verse_p.findall(qn('a:r'))
             verse_tmpl_r = copy.deepcopy(runs[0]) if runs else pptx_parse_xml(f'<a:r xmlns:a="{A_NS}"><a:t/></a:r>')
-            for r in runs: verse_p.remove(r)
-            for br in verse_p.findall(qn('a:br')): verse_p.remove(br)
-            verse_tmpl_r.find(qn('a:t')).text = verse_text
-            _para_append_run(verse_p, verse_tmpl_r)
+            _rebuild_화답송_para_runs(verse_p, verse_text)
 
         # ◎ 단락: verse_p의 pPr(들여쓰기/탭) 복사 + ◎ 서식(37pt, bg2)
         refrain_p = pptx_parse_xml(f'<a:p xmlns:a="{A_NS}"/>')
         if verse_p is not None:
             pPr_src = verse_p.find(qn('a:pPr'))
             if pPr_src is not None:
-                refrain_p.insert(0, copy.deepcopy(pPr_src))
+                refrain_pPr = copy.deepcopy(pPr_src)
+                # 줄간격은 ○ 단락 것이다 — 템플릿 ◎ 단락은 lnSpc가 없다(2단락 템플릿과 동일하게 유지).
+                for ln in refrain_pPr.findall(qn('a:lnSpc')):
+                    refrain_pPr.remove(ln)
+                refrain_p.insert(0, refrain_pPr)
 
         rPr_extra = 'lang="ko-KR" dirty="0" '
+        verse_rPr = None
         if verse_tmpl_r is not None:
             verse_rPr = verse_tmpl_r.find(qn('a:rPr'))
             if verse_rPr is not None:
@@ -795,6 +842,13 @@ def _set_화답송_content_text(tf, refrain_text: str, verse_text: str):
             f'</a:r>'
         )
         refrain_r.find(qn('a:t')).text = refrain_text
+        # ◎ run에 ○ run의 글꼴(latin/ea/cs)을 맞춘다 — 빠지면 테마 폰트로 떨어져 ◎만 글꼴이 달라진다.
+        if verse_tmpl_r is not None and verse_rPr is not None:
+            new_rPr = refrain_r.find(qn('a:rPr'))
+            for tag in ('a:latin', 'a:ea', 'a:cs'):
+                f = verse_rPr.find(qn(tag))
+                if f is not None:
+                    new_rPr.append(copy.deepcopy(f))
         _para_append_run(refrain_p, refrain_r)
 
         if verse_p is not None:

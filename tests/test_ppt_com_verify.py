@@ -155,6 +155,156 @@ class TestShutdown:
         assert m._app is None
 
 
+class _CountApp:
+    """Presentations.Count와 Quit() 호출만 흉내 내는 가짜 Application."""
+
+    def __init__(self, count=0, count_raises=False):
+        self.quit_calls = 0
+        self.Visible = False
+
+        class _Pres:
+            Count = 0
+
+            def Add(self, **kwargs):
+                return object()
+
+        pres = _Pres()
+        if count_raises:
+            class _Raising(_Pres):
+                @property
+                def Count(self):
+                    raise RuntimeError("simulated: Count 조회 실패")
+            pres = _Raising()
+        else:
+            pres.Count = count
+        self.Presentations = pres
+
+    def Quit(self):
+        self.quit_calls += 1
+
+
+class TestDiscardAppProtectsUserPowerPoint:
+    """2026-11-18: Dispatch는 사용자가 이미 띄운 PowerPoint에 붙을 수 있다 — 우리가 띄운 인스턴스이고 열린
+    프레젠테이션이 0개임이 확실할 때만 Quit한다(불확실하면 Quit 안 함)."""
+
+    @staticmethod
+    def _run(monkeypatch, app, launched):
+        monkeypatch.setattr(m, "_app", app)
+        monkeypatch.setattr(m, "_keepalive_presentation", None)
+        monkeypatch.setattr(m, "_we_launched_app", launched, raising=False)
+        m._discard_app()
+        assert m._app is None
+
+    def test_quits_when_we_launched_it_and_no_presentation_is_open(self, monkeypatch):
+        app = _CountApp(count=0)
+        self._run(monkeypatch, app, launched=True)
+        assert app.quit_calls == 1
+
+    def test_does_not_quit_when_other_presentations_are_open(self, monkeypatch):
+        app = _CountApp(count=1)
+        self._run(monkeypatch, app, launched=True)
+        assert app.quit_calls == 0
+
+    def test_does_not_quit_when_count_lookup_fails(self, monkeypatch):
+        app = _CountApp(count_raises=True)
+        self._run(monkeypatch, app, launched=True)
+        assert app.quit_calls == 0
+
+    def test_does_not_quit_an_instance_that_was_already_running(self, monkeypatch):
+        app = _CountApp(count=0)
+        self._run(monkeypatch, app, launched=False)
+        assert app.quit_calls == 0
+
+
+class _StuckPresentation:
+    """Close()가 실패해(예: 0x800401fd) PowerPoint 쪽에는 계속 열려 있는 우리 프레젠테이션."""
+
+    def Close(self):
+        raise RuntimeError("simulated: Close 실패")
+
+
+class TestOurOwnPresentationsAreNotUserDocuments:
+    """우리가 만든 keepalive/probe가 닫히지 않고 Count에 남아도 '사용자 문서'로 세지 않는다 — 안 그러면 우리가
+    띄운 PowerPoint가 좀비로 남는다(2026-11-18 전체 pytest 후 POWERPNT.EXE 1개 잔존)."""
+
+    @staticmethod
+    def _run(monkeypatch, app, keepalive, launched=True, unclosed=0):
+        monkeypatch.setattr(m, "_app", app)
+        monkeypatch.setattr(m, "_keepalive_presentation", keepalive)
+        monkeypatch.setattr(m, "_we_launched_app", launched, raising=False)
+        monkeypatch.setattr(m, "_unclosed_ours", unclosed, raising=False)
+        m._discard_app()
+
+    def test_quits_when_only_our_unclosable_keepalive_remains(self, monkeypatch):
+        app = _CountApp(count=1)
+        self._run(monkeypatch, app, _StuckPresentation())
+        assert app.quit_calls == 1
+
+    def test_does_not_quit_when_a_user_document_is_also_open(self, monkeypatch):
+        app = _CountApp(count=2)
+        self._run(monkeypatch, app, _StuckPresentation())
+        assert app.quit_calls == 0
+
+    def test_unclosed_probe_presentations_are_ours_too(self, monkeypatch):
+        app = _CountApp(count=2)
+        self._run(monkeypatch, app, None, unclosed=2)
+        assert app.quit_calls == 1
+
+    def test_attached_user_instance_is_never_quit_even_with_only_ours_left(self, monkeypatch):
+        app = _CountApp(count=1)
+        self._run(monkeypatch, app, _StuckPresentation(), launched=False)
+        assert app.quit_calls == 0
+
+    def test_failed_probe_close_is_tracked(self, monkeypatch):
+        monkeypatch.setattr(m, "_unclosed_ours", 0, raising=False)
+        m._close_ours(_StuckPresentation())
+        assert m._unclosed_ours == 1
+
+
+class TestEnsureAppRecordsWhoLaunched:
+    @staticmethod
+    def _install(monkeypatch, get_active, dispatched):
+        import sys
+        import types
+        wc = types.ModuleType("win32com.client")
+        wc.Dispatch = lambda name: dispatched
+        wc.GetActiveObject = get_active
+        w32 = types.ModuleType("win32com")
+        w32.client = wc
+        pc = types.ModuleType("pythoncom")
+        pc.CoInitialize = lambda: None
+        monkeypatch.setitem(sys.modules, "win32com", w32)
+        monkeypatch.setitem(sys.modules, "win32com.client", wc)
+        monkeypatch.setitem(sys.modules, "pythoncom", pc)
+        monkeypatch.setattr(m, "_keepalive_presentation", None)
+        monkeypatch.setattr(m, "_we_launched_app", False, raising=False)
+
+    def test_already_running_instance_is_not_ours(self, monkeypatch):
+        existing = _CountApp(count=2)
+        self._install(monkeypatch, lambda name: existing, dispatched=_CountApp())
+        assert m._ensure_app() is existing
+        assert m._we_launched_app is False
+
+    def test_not_running_means_we_launched_it(self, monkeypatch):
+        import pywintypes
+
+        def not_running(name):
+            raise pywintypes.com_error(-2147221021, "unavailable", None, None)
+
+        ours = _CountApp()
+        self._install(monkeypatch, not_running, dispatched=ours)
+        assert m._ensure_app() is ours
+        assert m._we_launched_app is True
+
+    def test_unknown_lookup_error_is_treated_as_not_ours(self, monkeypatch):
+        def weird(name):
+            raise RuntimeError("simulated: 알 수 없는 실패")
+
+        self._install(monkeypatch, weird, dispatched=_CountApp())
+        m._ensure_app()
+        assert m._we_launched_app is False
+
+
 class TestRealComSmoke:
     def test_real_com_counts_one_line_text(self, tmp_path):
         if not m.is_available():

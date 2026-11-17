@@ -3,28 +3,31 @@
 > 임시/단기 문서. 작업이 끝나면 내용을 비우고(또는 `archive/`로 이동) 다음 작업으로 교체한다.
 > 작성 순서: PRD → SPEC → ARCHITECTURE → 이 문서, **각 문서마다 사용자 승인**. 이 문서 승인 후 코딩 시작.
 
-## 진행 중: OneDrive 폴더 구조 개편 대응 (2026-10-18, 사용자 지시로 승인 면제)
+## 진행 중: 성인미사 화답송 악보 폐지 (2026-11-17, 사용자 승인: SPEC 승인 + ARCH/PLAN 면제·즉시 개발)
 
-목표·명세: `SPECS/SPEC_OneDrive_폴더구조_개편.md`(§4 확정 결정 포함). 설계: `ARCHITECTURE.md` §3.3·§3.4.
+명세: `SPECS/SPEC_성인미사.md` §2.1·2.2·2.3·2.4. 설계: `ARCHITECTURE.md` §2.1. 경량 경로(TDD→독립 리뷰→검증→문서동기화).
 
 ### 단계별 체크리스트
-- [x] 1. 이 계획 + ARCHITECTURE 갱신
-- [x] 2. 프로그레션 테스트 선작성(`tests/test_missa_progression.py`, 접두 `test_fs_`) — 아래 행동 목록
-- [x] 3. `missa_gui.py` 루트 3종 관리·경로 규칙·찾아보기 기억 구현, Graph 폴백·원격 브라우저·프리페치·캐시 삭제
-- [x] 4. `missa_to_ppt.py`·`missa_content_updaters.py` 호출부를 새 API로 교체(`ensure_onedrive_login`·모드 분기 제거)
-- [x] 5. `missa_onedrive.py`·`msal` 의존 제거(참조 grep 후), `tools/build_dist_zip.py`·`requirements.txt`·운영자 안내서 문구 갱신
-- [x] 6. 기존 테스트 갱신/폐지(`test_missa_youth_local_mode.py` 재작성, `test_missa_gui_onedrive.py`·`test_missa_onedrive.py` 삭제, regression/progression의 Graph 의존 테스트 정리)
-- [x] 7. SPEC·README·CLAUDE.md 문구 갱신, 하네스 변경 이력은 해당 없음(코드/문서만)
-- [ ] 8. `pytest tests/ -q` 전체 1회
+- [x] 1. 프로그레션 테스트 선작성(`tests/test_missa_progression.py`, 접두 `test_nopsalm_`) — 아래 행동 목록, red 확인
+- [x] 2. `missa_content_updaters.py` `update_화답송` 단순화(주일 분기·악보 인자 제거)
+- [x] 3. `missa_to_ppt.py` `--화답송` 인자·악보 PPT 탐색·사진 입력·경고 출력 제거
+- [x] 4. `missa_gui.py` 화답송 악보 행·`화답송_pptx` browse 키·14.화답송 악보 기본폴더·미선택 확인 팝업 제거, 옛 키 무시
+- [x] 5. 기존 테스트(악보 의존) 갱신/폐지, `tools/build_dist_zip.py` 화이트리스트는 보존 모듈이라 유지
+- [x] 6. 독립 리뷰 → 관련 테스트 → 전체 pytest 1회 → 문서 동기화(운영자 README·module-notes·CLAUDE.md) → 하네스 변경 이력 해당 없음
 
-### 테스트 대상 행동 (인수 기준 §3 매핑)
-1. 루트 유효성: 공용=`09.가톨릭 성가`, 성인=`10.기타 PPT문서`, 청년=`2.성가` 포함 시 유효, 공백 차이 무시.
-2. 필요 루트만 묻는다: 청년 실행은 공용+청년, 성인 실행은 공용+성인. 불필요 루트는 묻지 않음.
-3. 청년 PC(두 루트가 서로 다른 위치): 선택창 2회 후 config에 저장, 재실행 시 묻지 않음.
-4. 마스터 편의: 'PPT 문서'(상위)를 고르면 세 루트가 모두 채워진다.
-5. 옛 구조 config(`onedrive_ppt_folder`가 옛 'PPT 문서'/`onedrive_hymn_folder`)는 무효로 보고 선택창으로 간다. 새 구조를 품은 `onedrive_ppt_folder`는 세 루트로 자동 이관.
-6. 무효 선택 시 안내 후 재선택, 취소 시 False 반환(호출부는 안내 후 종료).
-7. 경로 규칙 표 전 행: 가톨릭 성가 검색, 청년 성가 검색/신규 저장, 결과 복사(성인/청년), 찾아보기 기본 폴더(시작기도·미사후기도·공지·참조·화답송).
-8. 찾아보기 기억: 행별 저장, 참조 PPT는 성인/청년 구분, 화답송 `last_psalm_dir` 흡수, 저장 폴더 삭제 시 기본 폴더로.
-9. 폐지 확인: `missa_gui`에 Graph 관련 심볼(`ensure_onedrive_login`·`_mirror_onedrive_folder` 등)이 없고 `missa_onedrive` 모듈 파일이 없다.
-10. 모달 방지: 선택창은 `ask_if_missing=True`인 GUI 진입점에서만, 헤드리스 테스트는 monkeypatch.
+### 테스트 대상 행동
+1. 주일(is_calendar_sunday) 미사에서도 화답송 슬라이드는 절 수만큼 텍스트 슬라이드이며 악보 슬라이드가 없다(후렴 ◎ 표시).
+2. `update_화답송` 시그니처에 악보 경로/`is_sunday` 인자가 없다.
+3. CLI 파서에 `--화답송`이 없고, 날짜 폴더의 `화답송 악보*.pptx`가 있어도 사용되지 않는다.
+4. 첫 팝업(성인)에 화답송 악보 행이 없고 미선택 확인 팝업이 뜨지 않는다. 청년 팝업은 변화 없음.
+5. config에 옛 `화답송_pptx`/`last_psalm_dir`가 있어도 오류 없이 무시된다.
+6. 청년 성가 PDF 모듈(`missa_psalm_score_image` import)은 정상 동작.
+
+## 추가 작업: 화답송 서식 보존·넘침 보정 (2026-11-18, 11월 주일 3개 PPT 육안 검수 결과)
+
+명세: `SPECS/SPEC_성인미사.md` §화답송 "서식 원칙". 사용자 결정: ○ 템플릿 구성 그대로(라벨 30+본문 32) / 줄간격 1.0 먼저 후 ○ 본문 축소(하한 16pt) / COM 실측 검증 상시 / CLAUDE.md 함정 규칙+pitfalls 로그.
+- [x] 1. 재현·원인 측정(11/8 슬라이드 50: `_adjust_fit_if_needed`가 ◎·○ 전 run을 일괄 36pt+줄간격 1.0으로 덮어씀, `_set_화답송_content_text`가 ○ 단락을 첫 run 서식으로 통일해 본문 32→30pt) + 평일/청년에서 안 보이던 이유 확인
+- [x] 2. 프로그레션 테스트 선작성(`test_psalmfmt_`): 템플릿 run 크기 보존, 조정 시 ◎ 불변·○ 라벨 불변·본문만 축소, 줄간격 순서
+- [x] 3. `_set_화답송_content_text`(라벨/본문 run 구분 복제)·화답송 전용 넘침 보정 구현(실측 COM 기반)
+- [x] 4. 생성 직후 COM 실측 검증(화답송 슬라이드 하단이 슬라이드 높이 초과 시 경고) 추가
+- [x] 5. 독립 리뷰 → 관련 테스트 → 11/8·11/15·11/22 재생성 → PowerPoint 열어 실측·이미지 확인 → CLAUDE.md 규칙/pitfalls 로그/ module-notes 동기화

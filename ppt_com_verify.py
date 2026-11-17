@@ -51,11 +51,25 @@ _app = None
 # 존재하도록 보장한다.
 _keepalive_presentation = None
 
+# 이 Application을 우리가 새로 띄웠는지. True는 "Dispatch 직전 실행 중인 PowerPoint가 없다고 확실히
+# 확인된 경우"뿐이다 — 이미 떠 있던(사용자의) 인스턴스이거나 확인이 불확실하면 False이고, False면 절대
+# Quit()하지 않는다(사용자의 작업 중인 PowerPoint 보호, 2026-11-18).
+_we_launched_app = False
+
+# Close()가 실패해 PowerPoint 쪽에 남았을 수 있는 "우리가 만든" 프레젠테이션(keepalive/probe) 수. Quit 판단에서
+# 사용자 문서로 세지 않는다 — 안 세면 우리가 띄운 PowerPoint가 좀비로 남는다(2026-11-18 실측).
+_unclosed_ours = 0
+
 # 이 프로세스에서 CoInitialize()를 이미 호출했는지 여부.
 _com_initialized = False
 
 # is_available()의 메모이즈된 결과. None이면 아직 판정하지 않음.
 _available_cache = None
+
+
+class ComShapeNotFound(Exception):
+    """COM 자체는 정상인데 probe 슬라이드에서 요청한 텍스트의 도형이 없을 때. ComVerificationUnavailable이
+    아니라서 호출부가 COM 전역 비활성화 없이 그 슬라이드만 처리할 수 있다."""
 
 
 class ComVerificationUnavailable(Exception):
@@ -72,7 +86,7 @@ def _ensure_app():
     이미 생성돼 있으면 그대로 재사용한다. 이 함수는 실패 시 원래 예외를 그대로
     올린다(래핑은 호출부인 is_available()/count_slide_lines()의 책임).
     """
-    global _app, _com_initialized, _keepalive_presentation
+    global _app, _com_initialized, _keepalive_presentation, _we_launched_app
 
     import pythoncom
     import win32com.client
@@ -91,7 +105,20 @@ def _ensure_app():
         print('  [알림] 줄 수를 정확히 확인하려고 PowerPoint를 백그라운드에서 실행합니다 '
               '(작업표시줄에 잠깐 나타날 수 있지만, 지금 쓰고 있는 창의 포커스를 '
               '가져가지는 않습니다).')
-        app = win32com.client.Dispatch("PowerPoint.Application")
+        # Dispatch는 이미 실행 중인 PowerPoint가 있으면 그 인스턴스에 붙는다. 먼저 실행 중인지 확인해 우리가
+        # 띄운 것인지 기록한다 — "실행 중 아님(MK_E_UNAVAILABLE)"이 확실할 때만 우리 것으로 본다.
+        existing = None
+        launched = False
+        try:
+            existing = win32com.client.GetActiveObject("PowerPoint.Application")
+        except Exception as exc:
+            if getattr(exc, 'hresult', None) == -2147221021:
+                launched = True
+        if existing is not None:
+            app = existing
+        else:
+            app = win32com.client.Dispatch("PowerPoint.Application")
+        _we_launched_app = launched
         app.Visible = True
         _app = app
 
@@ -156,7 +183,17 @@ def _open_and_measure(temp_pptx_path: str, shape_index: int, want_bounds: bool =
             return {'lines': lines, 'bound_height_pt': float(tr.BoundHeight)}
         return lines
     finally:
+        _close_ours(presentation)
+
+
+def _close_ours(presentation) -> None:
+    """우리가 연 프레젠테이션을 닫는다. 닫기에 실패하면(예외를 밖으로 내지 않는다) 남은 것으로 세어 두어
+    _discard_app()이 이를 사용자 문서와 구분한다."""
+    global _unclosed_ours
+    try:
         presentation.Close()
+    except Exception:
+        _unclosed_ours += 1
 
 
 def _discard_app():
@@ -165,21 +202,29 @@ def _discard_app():
     count_slide_lines()가 "The PowerPoint Frame window does not exist"류의
     드문 COM 상태 이상을 만났을 때, 원인을 정확히 진단하는 대신 캐시된 연결을
     통째로 버리고 다음 시도에서 완전히 새로 Dispatch하기 위한 것이다."""
-    global _app, _keepalive_presentation
+    global _app, _keepalive_presentation, _we_launched_app, _unclosed_ours
 
     if _keepalive_presentation is not None:
-        try:
-            _keepalive_presentation.Close()
-        except Exception:
-            pass
+        _close_ours(_keepalive_presentation)
     _keepalive_presentation = None
 
     if _app is not None:
-        try:
-            _app.Quit()
-        except Exception:
-            pass
+        # 우리가 띄운 인스턴스이고 열린 프레젠테이션이 0개임이 확인될 때만 Quit한다. 이미 떠 있던 사용자의
+        # PowerPoint이거나, Count 조회가 실패해 확실하지 않으면 Quit하지 않는다(2026-11-18).
+        if _we_launched_app:
+            try:
+                # 우리가 만들었지만 닫히지 않은 프레젠테이션(keepalive/probe)은 사용자 문서가 아니다.
+                others = int(_app.Presentations.Count) - _unclosed_ours
+            except Exception:
+                others = None
+            if others is not None and others <= 0:
+                try:
+                    _app.Quit()
+                except Exception:
+                    pass
     _app = None
+    _we_launched_app = False
+    _unclosed_ours = 0
 
 
 def count_slide_lines(temp_pptx_path: str, shape_index: int) -> int:
@@ -244,6 +289,57 @@ def measure_line_starts(temp_pptx_path: str, shape_index: int, max_lines: int = 
         raise ComVerificationUnavailable(
             f"PowerPoint COM 줄 시작 측정 실패: {exc}"
         ) from exc
+
+
+def _open_and_measure_bottoms(temp_pptx_path: str, text_prefix: str):
+    """모든 슬라이드에서 텍스트가 text_prefix로 시작하는 도형의 텍스트 하단(BoundTop+BoundHeight, pt)을
+    [(슬라이드 번호(1-based), 하단pt)]로 돌려준다(슬라이드 하나당 첫 도형만)."""
+    app = _ensure_app()
+    presentation = app.Presentations.Open(
+        temp_pptx_path, ReadOnly=True, Untitled=False, WithWindow=False,
+    )
+    try:
+        out = []
+        for si in range(1, int(presentation.Slides.Count) + 1):
+            slide = presentation.Slides(si)
+            for k in range(1, int(slide.Shapes.Count) + 1):
+                shape = slide.Shapes(k)
+                if not shape.HasTextFrame:
+                    continue
+                tr = shape.TextFrame.TextRange
+                if str(tr.Text).startswith(text_prefix):
+                    out.append((si, float(tr.BoundTop) + float(tr.BoundHeight)))
+                    break
+        return out
+    finally:
+        _close_ours(presentation)
+
+
+def measure_text_bottoms_pt(temp_pptx_path: str, text_prefix: str) -> list:
+    """temp_pptx_path의 모든 슬라이드에서 텍스트가 text_prefix로 시작하는 도형의 실제 렌더 하단(pt)을
+    [(슬라이드 번호, 하단pt)]로 돌려준다(PowerPoint 실측 — 화답송 넘침 검증용). 재시도/예외 변환 규칙은
+    count_slide_lines()와 동일."""
+    try:
+        return _open_and_measure_bottoms(temp_pptx_path, text_prefix)
+    except Exception:
+        pass
+
+    try:
+        _discard_app()
+        return _open_and_measure_bottoms(temp_pptx_path, text_prefix)
+    except Exception as exc:
+        raise ComVerificationUnavailable(
+            f"PowerPoint COM 텍스트 하단 측정 실패: {exc}"
+        ) from exc
+
+
+def measure_text_bottom_pt(temp_pptx_path: str, text_prefix: str) -> float:
+    """단일 슬라이드 probe pptx에서 text_prefix로 시작하는 첫 도형의 텍스트 하단(pt). 도형이 없으면
+    ComShapeNotFound(COM 장애가 아니므로 ComVerificationUnavailable이 아니다)."""
+    res = measure_text_bottoms_pt(temp_pptx_path, text_prefix)
+    if not res:
+        raise ComShapeNotFound(f"'{text_prefix}'로 시작하는 도형을 probe에서 찾지 못함")
+    return res[0][1]
 
 
 def shutdown() -> None:
